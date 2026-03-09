@@ -361,6 +361,24 @@
     font-weight: 600;
   }
   #btn-send:hover { opacity: 0.85; }
+  .history-btn {
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    width: 32px;
+    height: 36px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all 0.1s;
+  }
+  .history-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+  .history-btn:disabled { opacity: 0.3; cursor: default; }
 
   /* Modal */
   #modal-overlay {
@@ -407,6 +425,118 @@
   #modal-cancel { background: var(--bg-highlight); color: var(--text); }
   #modal-submit { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 
+  /* Sidebar footer */
+  #sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+  }
+  #btn-sessions {
+    width: 100%;
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    text-align: left;
+    transition: all 0.15s;
+  }
+  #btn-sessions:hover { color: var(--text); border-color: var(--accent); }
+  #btn-sessions.active { color: var(--accent); border-color: var(--accent); background: var(--bg); }
+
+  /* Sessions view */
+  #sessions-view {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #sessions-view.visible { display: flex; }
+  #sessions-header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  #sessions-header h2 { font-size: 15px; color: var(--text); font-weight: 600; }
+  #sessions-count { font-size: 12px; color: var(--text-dim); }
+  #sessions-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 24px;
+  }
+  .session-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    transition: border-color 0.15s;
+  }
+  .session-card:hover { border-color: var(--accent); }
+  .session-card.active-session { border-left: 3px solid var(--green); }
+  .session-info { flex: 1; min-width: 0; }
+  .session-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .session-active-badge {
+    font-size: 10px;
+    background: var(--green);
+    color: var(--bg);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .session-details {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-top: 4px;
+  }
+  .session-detail-label { color: var(--text-dim); opacity: 0.7; }
+  .session-path-row {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .session-delete-btn {
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    transition: all 0.15s;
+  }
+  .session-delete-btn:hover { border-color: var(--red); color: var(--red); }
+  .sessions-empty {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 48px 16px;
+    font-size: 13px;
+  }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -418,53 +548,65 @@
 <div id="sidebar">
   <div id="sidebar-header">
     <h1>Claude Squad</h1>
-    <button id="btn-new" onclick="showNewModal()">+ New</button>
+    <button id="btn-new">+ New</button>
   </div>
   <div id="instance-list"></div>
+  <div id="sidebar-footer">
+    <button id="btn-sessions">All Saved Sessions</button>
+  </div>
 </div>
 
 <div id="main">
   <div id="empty-state">Select or create an instance to get started</div>
+  <div id="sessions-view">
+    <div id="sessions-header">
+      <h2>Saved Sessions</h2>
+      <span id="sessions-count"></span>
+    </div>
+    <div id="sessions-list"></div>
+  </div>
   <div id="active-view">
     <div id="tabs">
-      <div class="tab active" data-tab="terminal" onclick="switchTab('terminal')">Terminal</div>
-      <div class="tab" data-tab="diff" onclick="switchTab('diff')">Diff</div>
-      <div class="tab" data-tab="rules" onclick="switchTab('rules')">Rules</div>
+      <div class="tab active" data-tab="terminal">Terminal</div>
+      <div class="tab" data-tab="diff">Diff</div>
+      <div class="tab" data-tab="rules">Rules</div>
     </div>
     <div id="toolbar">
       <div class="mode-selector">
         <span>Mode:</span>
-        <button class="mode-btn" id="mode-agent" onclick="setMode('agent')">Agent</button>
-        <button class="mode-btn" id="mode-plan" onclick="setMode('plan')">Plan</button>
+        <button class="mode-btn" id="mode-agent">Agent</button>
+        <button class="mode-btn" id="mode-plan">Plan</button>
       </div>
-      <button class="toolbar-btn" onclick="actionPause()">Pause</button>
-      <button class="toolbar-btn" onclick="actionResume()">Resume</button>
-      <button class="toolbar-btn danger" onclick="actionKill()">Kill</button>
+      <button class="toolbar-btn" id="btn-pause">Pause</button>
+      <button class="toolbar-btn" id="btn-resume">Resume</button>
+      <button class="toolbar-btn danger" id="btn-kill">Kill</button>
     </div>
     <div id="output-area"></div>
     <div id="rules-editor">
       <div id="rules-toolbar">
         <span id="rules-path"></span>
         <span id="rules-status"></span>
-        <button id="rules-save-btn" onclick="saveRules()">Save</button>
+        <button id="rules-save-btn">Save</button>
       </div>
-      <textarea id="rules-textarea" placeholder="# CLAUDE.md&#10;&#10;Add rules and instructions for Claude Code here..." oninput="onRulesEdit()"></textarea>
+      <textarea id="rules-textarea" placeholder="# CLAUDE.md&#10;&#10;Add rules and instructions for Claude Code here..."></textarea>
     </div>
     <div id="input-area">
-      <input id="prompt-input" type="text" placeholder="Send a message..." onkeydown="if(event.key==='Enter')sendPrompt()">
-      <button id="btn-send" onclick="sendPrompt()">Send</button>
+      <input id="prompt-input" type="text" placeholder="Send a message...">
+      <button id="btn-send">Send</button>
+      <button class="history-btn" id="btn-hist-prev" title="Previous prompt" disabled>&#x25B2;</button>
+      <button class="history-btn" id="btn-hist-next" title="Next prompt" disabled>&#x25BC;</button>
     </div>
   </div>
 </div>
 
-<div id="modal-overlay" onclick="if(event.target===this)hideModal()">
+<div id="modal-overlay">
   <div id="modal">
     <h2>New Instance</h2>
-    <input id="modal-title" type="text" placeholder="Instance name" onkeydown="if(event.key==='Enter')document.getElementById('modal-path').focus()">
+    <input id="modal-title" type="text" placeholder="Instance name">
     <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Working directory</label>
     <input id="modal-path" type="text" placeholder="Absolute path (default: current dir)">
     <label style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;color:var(--text-dim)">
-      <input id="modal-gitmode" type="checkbox" onchange="toggleGitOptions()"> Use git worktree isolation
+      <input id="modal-gitmode" type="checkbox"> Use git worktree isolation
     </label>
     <div id="git-options" style="display:none;margin-bottom:12px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg)">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Git repo path (the repo to branch from)</label>
@@ -475,151 +617,51 @@
     </div>
     <textarea id="modal-prompt" placeholder="Initial prompt (optional)"></textarea>
     <div id="modal-actions">
-      <button id="modal-cancel" onclick="hideModal()">Cancel</button>
-      <button id="modal-submit" onclick="createInstance()">Create</button>
+      <button id="modal-cancel">Cancel</button>
+      <button id="modal-submit">Create</button>
     </div>
   </div>
 </div>
 
-<script>
-const API = '/api/instances';
+<script type="module">
+import { ConvLogView } from '/static/js/convlog.js';
+import { InputHistory } from '/static/js/input-history.js';
+import { api, apiFetch } from '/static/js/api.js';
+import { esc, safeAnsiToHtml } from '/static/js/ansi.js';
+
 let selectedTitle = null;
 let activeTab = 'terminal';
-let ws = null;
-let autoScroll = true;
-let currentMode = 'agent'; // 'agent' or 'plan'
-let instanceStatuses = {}; // title -> status, updated via WS for immediate feedback
+let currentMode = 'agent';
+let instanceStatuses = {};
 
-// --- ANSI-to-HTML parser ---
-const ANSI_COLORS_16 = [
-  '#1a1b26','#f7768e','#9ece6a','#e0af68','#7aa2f7','#bb9af7','#7dcfff','#c0caf5',
-  '#565f89','#f7768e','#9ece6a','#e0af68','#7aa2f7','#bb9af7','#7dcfff','#ffffff',
-];
+// --- ConvLogView + InputHistory ---
+const outputArea = document.getElementById('output-area');
+const convLog = new ConvLogView(outputArea);
 
-// 256-color palette: 16 base + 216 cube + 24 grayscale
-const ANSI_256 = (() => {
-  const c = [...ANSI_COLORS_16];
-  for (let r = 0; r < 6; r++)
-    for (let g = 0; g < 6; g++)
-      for (let b = 0; b < 6; b++)
-        c.push(`#${[r,g,b].map(v => (v ? v*40+55 : 0).toString(16).padStart(2,'0')).join('')}`);
-  for (let i = 0; i < 24; i++) {
-    const v = (i * 10 + 8).toString(16).padStart(2, '0');
-    c.push(`#${v}${v}${v}`);
-  }
-  return c;
-})();
+convLog.onStatus = (title, status) => {
+  const prev = instanceStatuses[title];
+  instanceStatuses[title] = status;
+  if (prev !== status) refreshList();
+};
 
-function ansiToHtml(text) {
-  if (!text) return '';
-  // Match ESC[ ... m sequences (SGR) and other CSI sequences
-  // Also match bare ESC sequences and OSC sequences
-  const re = /\x1b\[[0-9;]*m|\x1b\[[0-9;]*[A-HJKSTfhln]|\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b[^[\]]/g;
+convLog.onContent = (content) => {
+  detectMode(content);
+};
 
-  let fg = null, bg = null;
-  let bold = false, dim = false, italic = false, underline = false, inverse = false, strikethrough = false;
-  let result = '';
-  let lastIdx = 0;
-
-  for (const match of text.matchAll(re)) {
-    // Append text before this escape sequence (HTML-escaped)
-    if (match.index > lastIdx) {
-      result += openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough);
-      result += esc(text.slice(lastIdx, match.index));
-      result += '</span>';
-    }
-    lastIdx = match.index + match[0].length;
-
-    const seq = match[0];
-    // Only process SGR sequences (ending in 'm')
-    if (!seq.endsWith('m')) continue;
-
-    const codes = seq.slice(2, -1).split(';').map(s => s === '' ? 0 : parseInt(s, 10));
-
-    for (let i = 0; i < codes.length; i++) {
-      const c = codes[i];
-      if (c === 0) { fg = bg = null; bold = dim = italic = underline = inverse = strikethrough = false; }
-      else if (c === 1) bold = true;
-      else if (c === 2) dim = true;
-      else if (c === 3) italic = true;
-      else if (c === 4) underline = true;
-      else if (c === 7) inverse = true;
-      else if (c === 9) strikethrough = true;
-      else if (c === 22) { bold = false; dim = false; }
-      else if (c === 23) italic = false;
-      else if (c === 24) underline = false;
-      else if (c === 27) inverse = false;
-      else if (c === 29) strikethrough = false;
-      else if (c >= 30 && c <= 37) fg = ANSI_COLORS_16[c - 30];
-      else if (c === 38) {
-        if (codes[i+1] === 5 && codes[i+2] != null) { fg = ANSI_256[codes[i+2]]; i += 2; }
-        else if (codes[i+1] === 2 && codes[i+4] != null) {
-          fg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4;
-        }
-      }
-      else if (c === 39) fg = null;
-      else if (c >= 40 && c <= 47) bg = ANSI_COLORS_16[c - 40];
-      else if (c === 48) {
-        if (codes[i+1] === 5 && codes[i+2] != null) { bg = ANSI_256[codes[i+2]]; i += 2; }
-        else if (codes[i+1] === 2 && codes[i+4] != null) {
-          bg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4;
-        }
-      }
-      else if (c === 49) bg = null;
-      else if (c >= 90 && c <= 97) fg = ANSI_COLORS_16[c - 90 + 8];
-      else if (c >= 100 && c <= 107) bg = ANSI_COLORS_16[c - 100 + 8];
+const inputHistory = new InputHistory(
+  document.getElementById('prompt-input'),
+  async (text) => {
+    if (!selectedTitle) return;
+    try {
+      await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      });
+    } catch (e) {
+      alert('Failed to send: ' + e.message);
     }
   }
-
-  // Append remaining text
-  if (lastIdx < text.length) {
-    result += openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough);
-    result += esc(text.slice(lastIdx));
-    result += '</span>';
-  }
-
-  return result;
-}
-
-function openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough) {
-  const styles = [];
-  const classes = [];
-  const fgActual = inverse ? bg : fg;
-  const bgActual = inverse ? (fg || 'var(--text)') : bg;
-  if (fgActual) styles.push(`color:${fgActual}`);
-  if (bgActual) styles.push(`background:${bgActual}`);
-  if (bold) classes.push('ansi-bold');
-  if (dim) classes.push('ansi-dim');
-  if (italic) classes.push('ansi-italic');
-  if (underline) classes.push('ansi-underline');
-  if (strikethrough) classes.push('ansi-strikethrough');
-  let tag = '<span';
-  if (classes.length) tag += ` class="${classes.join(' ')}"`;
-  if (styles.length) tag += ` style="${styles.join(';')}"`;
-  return tag + '>';
-}
-
-// --- API helpers ---
-async function api(path, opts = {}) {
-  let res;
-  try {
-    res = await fetch(API + path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...opts,
-    });
-  } catch (e) {
-    throw new Error('Failed to fetch: server unreachable');
-  }
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text);
-  }
-  if (res.status === 200 || res.status === 201) {
-    const ct = res.headers.get('content-type');
-    if (ct && ct.includes('json')) return res.json();
-  }
-  return null;
-}
+);
 
 // --- Instance list ---
 async function refreshList() {
@@ -635,7 +677,6 @@ function renderList(instances) {
   const el = document.getElementById('instance-list');
   el.innerHTML = '';
   instances.forEach(inst => {
-    // Use WS-updated status if available for immediate feedback
     const status = instanceStatuses[inst.title] || inst.status;
     const isWaiting = status === 'ready';
     const statusLabel = isWaiting ? 'waiting' : status;
@@ -668,18 +709,35 @@ function renderList(instances) {
 
 function selectInstance(title) {
   selectedTitle = title;
+  hideSessions();
+  diffGeneration++;
+  rulesGeneration++;
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('active-view').classList.add('visible');
   refreshList();
+
+  // Load input history for this instance
+  loadInputHistory(title);
+
   if (activeTab === 'diff') {
     loadDiff();
   } else {
     activeTab = 'terminal';
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'terminal'));
-    connectWS(title);
+    convLog.connect(title);
   }
-  // Auto-focus the prompt input
   setTimeout(() => document.getElementById('prompt-input').focus(), 50);
+}
+
+async function loadInputHistory(title) {
+  try {
+    const data = await api(`/${encodeURIComponent(title)}/input-history`);
+    if (data && data.history) {
+      inputHistory.loadHistory(data.history);
+    }
+  } catch (e) {
+    // Ignore - input history is a nice-to-have
+  }
 }
 
 // --- Tabs ---
@@ -696,30 +754,40 @@ function switchTab(tab) {
     output.className = '';
     rulesEditor.classList.remove('visible');
     inputArea.style.display = 'flex';
-    connectWS(selectedTitle);
+    convLog.connect(selectedTitle);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
     output.style.display = '';
     output.className = 'diff';
     rulesEditor.classList.remove('visible');
     inputArea.style.display = 'flex';
-    closeWS();
+    convLog.disconnect();
     loadDiff();
   } else if (tab === 'rules') {
     output.style.display = 'none';
     rulesEditor.classList.add('visible');
     inputArea.style.display = 'none';
-    closeWS();
+    convLog.disconnect();
     loadRules();
   }
 }
 
+// --- Tab click handlers ---
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => switchTab(t.dataset.tab));
+});
+
 // --- Rules ---
 let rulesSavedContent = '';
 let rulesUnsaved = false;
+let rulesGeneration = 0;
 
 async function loadRules() {
   if (!selectedTitle) return;
+  rulesGeneration++;
+  const gen = rulesGeneration;
+  const titleAtRequest = selectedTitle;
+
   const statusEl = document.getElementById('rules-status');
   const pathEl = document.getElementById('rules-path');
   const textarea = document.getElementById('rules-textarea');
@@ -729,7 +797,8 @@ async function loadRules() {
   statusEl.className = '';
 
   try {
-    const data = await api(`/${encodeURIComponent(selectedTitle)}/rules`);
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/rules`);
+    if (gen !== rulesGeneration) return;
     rulesSavedContent = data.content || '';
     textarea.value = rulesSavedContent;
     pathEl.textContent = data.path || 'CLAUDE.md';
@@ -742,6 +811,7 @@ async function loadRules() {
       statusEl.className = 'unsaved';
     }
   } catch (e) {
+    if (gen !== rulesGeneration) return;
     statusEl.textContent = 'Error loading';
     statusEl.className = 'unsaved';
     textarea.value = '';
@@ -798,123 +868,24 @@ async function saveRules() {
   }
 }
 
-// --- WebSocket ---
-let historyLoaded = false;
-
-function connectWS(title) {
-  closeWS();
-  if (!title) return;
-
-  const output = document.getElementById('output-area');
-  output.innerHTML = '';
-  historyLoaded = false;
-
-  // Load full scrollback history, then overlay live pane on top
-  loadHistoryThenStream(title, output);
-}
-
-function showConnectionError(output, message) {
-  output.innerHTML = `<div class="connection-error">
-    <div class="error-icon">&#x26A0;</div>
-    <div class="error-msg">${esc(message)}</div>
-    <button class="retry-btn" onclick="connectWS(selectedTitle)">Retry</button>
-  </div>`;
-}
-
-function safeAnsiToHtml(text) {
-  // Render into a detached div to ensure well-formed HTML
-  const tmp = document.createElement('div');
-  tmp.innerHTML = ansiToHtml(text);
-  // Extract only the sanitized innerHTML (browser auto-closes unclosed tags)
-  return tmp.innerHTML;
-}
-
-async function loadHistoryThenStream(title, output) {
-  let historyContent = '';
-
-  // Fetch full scrollback history
-  try {
-    const data = await api(`/${encodeURIComponent(title)}/history`);
-    if (data && data.content) {
-      historyContent = data.content;
-    }
-  } catch (e) {
-    if (e.message && e.message.includes('Failed to fetch')) {
-      showConnectionError(output, 'Cannot connect to Claude Squad server. Is it running?');
-      return;
-    }
-  }
-
-  // Render history if we have it
-  if (historyContent) {
-    // Create two containers: history (scrollback) and live (current pane)
-    // Use safeAnsiToHtml to ensure well-formed HTML
-    output.innerHTML = '';
-    const historyDiv = document.createElement('div');
-    historyDiv.id = 'output-history';
-    historyDiv.innerHTML = safeAnsiToHtml(historyContent);
-    const liveDiv = document.createElement('div');
-    liveDiv.id = 'output-live';
-    output.appendChild(historyDiv);
-    output.appendChild(liveDiv);
-    historyLoaded = true;
-    output.scrollTop = output.scrollHeight;
-  } else {
-    output.innerHTML = '<span style="color:var(--text-dim)">Connecting...</span>';
-    historyLoaded = false;
-  }
-
-  // Connect WS for live updates
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  try {
-    ws = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
-  } catch (e) {
-    showConnectionError(output, 'Cannot connect to Claude Squad server. Is it running?');
-    return;
-  }
-
-  ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'output') {
-      const wasAtBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
-
-      if (historyLoaded) {
-        const live = document.getElementById('output-live');
-        if (live) live.innerHTML = safeAnsiToHtml(msg.content);
-      } else {
-        output.innerHTML = safeAnsiToHtml(msg.content);
-      }
-
-      if (wasAtBottom) output.scrollTop = output.scrollHeight;
-
-      // Immediately update status in sidebar
-      if (msg.status && title) {
-        const prev = instanceStatuses[title];
-        instanceStatuses[title] = msg.status;
-        if (prev !== msg.status) refreshList();
-      }
-
-      detectMode(msg.content);
-    }
-  };
-  ws.onerror = () => {
-    showConnectionError(output, 'Connection to server lost. The server may have stopped.');
-  };
-  ws.onclose = () => { ws = null; };
-}
-
-function closeWS() {
-  if (ws) { ws.close(); ws = null; }
-}
+document.getElementById('rules-textarea').addEventListener('input', onRulesEdit);
+document.getElementById('rules-save-btn').addEventListener('click', saveRules);
 
 // --- Load diff ---
+let diffGeneration = 0;
+
 async function loadDiff() {
   if (!selectedTitle) return;
+  diffGeneration++;
+  const gen = diffGeneration;
+  const titleAtRequest = selectedTitle;
   try {
-    const data = await api(`/${encodeURIComponent(selectedTitle)}/diff`);
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/diff`);
+    if (gen !== diffGeneration) return;
     const output = document.getElementById('output-area');
     output.innerHTML = formatDiff(data.content || 'No changes');
   } catch (e) {
+    if (gen !== diffGeneration) return;
     document.getElementById('output-area').textContent = 'Error: ' + e.message;
   }
 }
@@ -933,27 +904,12 @@ function formatDiff(text) {
 }
 
 // --- Actions ---
-async function sendPrompt() {
-  const input = document.getElementById('prompt-input');
-  const text = input.value.trim();
-  if (!text || !selectedTitle) return;
-  input.value = '';
-  try {
-    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-    });
-  } catch (e) {
-    alert('Failed to send: ' + e.message);
-  }
-}
-
 async function actionPause() {
   if (!selectedTitle) return;
   if (!confirm(`Pause "${selectedTitle}"?`)) return;
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
-    closeWS();
+    convLog.disconnect();
     refreshList();
   } catch (e) { alert('Error: ' + e.message); }
 }
@@ -963,7 +919,7 @@ async function actionResume() {
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
     refreshList();
-    connectWS(selectedTitle);
+    convLog.connect(selectedTitle);
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -972,13 +928,26 @@ async function actionKill() {
   if (!confirm(`Kill "${selectedTitle}"? This cannot be undone.`)) return;
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/kill`, { method: 'POST' });
-    closeWS();
+    convLog.disconnect();
     selectedTitle = null;
     document.getElementById('empty-state').style.display = 'flex';
     document.getElementById('active-view').classList.remove('visible');
     refreshList();
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+// Toolbar button handlers
+document.getElementById('btn-pause').addEventListener('click', actionPause);
+document.getElementById('btn-resume').addEventListener('click', actionResume);
+document.getElementById('btn-kill').addEventListener('click', actionKill);
+document.getElementById('btn-send').addEventListener('click', () => inputHistory.send());
+document.getElementById('btn-hist-prev').addEventListener('click', () => inputHistory.prev());
+document.getElementById('btn-hist-next').addEventListener('click', () => inputHistory.next());
+
+inputHistory.onNavigate = () => {
+  document.getElementById('btn-hist-prev').disabled = !inputHistory.hasPrev;
+  document.getElementById('btn-hist-next').disabled = !inputHistory.hasNext;
+};
 
 // --- Modal ---
 function showNewModal() {
@@ -1021,10 +990,19 @@ async function createInstance() {
   } catch (e) { alert('Error: ' + e.message); }
 }
 
+document.getElementById('btn-new').addEventListener('click', showNewModal);
+document.getElementById('modal-overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('modal-overlay')) hideModal();
+});
+document.getElementById('modal-cancel').addEventListener('click', hideModal);
+document.getElementById('modal-submit').addEventListener('click', createInstance);
+document.getElementById('modal-title').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('modal-path').focus();
+});
+document.getElementById('modal-gitmode').addEventListener('change', toggleGitOptions);
+
 // --- Mode ---
 function detectMode(content) {
-  // Claude Code shows mode in its status bar / prompt area
-  // Look for plan mode indicators in the raw text
   const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
   if (/plan\s*mode/i.test(plain) || /\bplan\b.*\bmode\b/i.test(plain)) {
     updateModeUI('plan');
@@ -1041,7 +1019,6 @@ function updateModeUI(mode) {
 
 async function setMode(mode) {
   if (!selectedTitle) return;
-  // Send the slash command to switch modes
   const cmd = mode === 'plan' ? '/plan' : '/agent';
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/send`, {
@@ -1054,9 +1031,126 @@ async function setMode(mode) {
   }
 }
 
-// --- Util ---
-function esc(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+document.getElementById('mode-agent').addEventListener('click', () => setMode('agent'));
+document.getElementById('mode-plan').addEventListener('click', () => setMode('plan'));
+
+// --- Sessions screen ---
+let sessionsVisible = false;
+
+function showSessions() {
+  sessionsVisible = true;
+  selectedTitle = null;
+  convLog.disconnect();
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('active-view').classList.remove('visible');
+  document.getElementById('sessions-view').classList.add('visible');
+  document.getElementById('btn-sessions').classList.add('active');
+  document.querySelectorAll('.instance-item').forEach(el => el.classList.remove('active'));
+  loadSessions();
+}
+
+function hideSessions() {
+  sessionsVisible = false;
+  document.getElementById('sessions-view').classList.remove('visible');
+  document.getElementById('btn-sessions').classList.remove('active');
+}
+
+async function loadSessions() {
+  try {
+    const res = await fetch('/api/sessions', { headers: { 'Content-Type': 'application/json' } });
+    if (!res.ok) throw new Error(await res.text());
+    const sessions = await res.json();
+    renderSessions(sessions);
+  } catch (e) {
+    document.getElementById('sessions-list').innerHTML =
+      `<div class="sessions-empty">Failed to load sessions: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderSessions(sessions) {
+  const list = document.getElementById('sessions-list');
+  const count = document.getElementById('sessions-count');
+  count.textContent = `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`;
+
+  if (sessions.length === 0) {
+    list.innerHTML = '<div class="sessions-empty">No saved sessions found</div>';
+    return;
+  }
+
+  sessions.sort((a, b) => {
+    if (a.active !== b.active) return b.active ? 1 : -1;
+    return new Date(b.updated_at) - new Date(a.updated_at);
+  });
+
+  list.innerHTML = '';
+  sessions.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'session-card' + (s.active ? ' active-session' : '');
+
+    const statusLabel = s.status === 'ready' ? 'waiting' : s.status;
+    const created = formatRelativeTime(s.created_at);
+    const updated = formatRelativeTime(s.updated_at);
+    const shortPath = (s.path || '').replace(/^\/Users\/[^/]+/, '~');
+    const diffInfo = (s.diff_added || s.diff_removed) ? `+${s.diff_added} -${s.diff_removed}` : '';
+
+    card.innerHTML = `
+      <div class="session-info">
+        <div class="session-title">
+          ${esc(s.title)}
+          ${s.active ? '<span class="session-active-badge">ACTIVE</span>' : ''}
+          <span class="status-dot ${s.status}" style="margin-left:4px"></span>
+          <span class="status-label ${s.status}" style="font-size:11px">${statusLabel}</span>
+        </div>
+        <div class="session-details">
+          ${s.program ? `<span><span class="session-detail-label">program:</span> ${esc(s.program)}</span>` : ''}
+          ${s.git_mode ? `<span style="color:var(--orange)">git mode</span>` : '<span>direct mode</span>'}
+          ${s.branch_name ? `<span><span class="session-detail-label">branch:</span> ${esc(s.branch_name)}</span>` : ''}
+          ${diffInfo ? `<span>${diffInfo}</span>` : ''}
+          <span><span class="session-detail-label">created:</span> ${created}</span>
+          <span><span class="session-detail-label">updated:</span> ${updated}</span>
+        </div>
+        <div class="session-path-row" title="${esc(s.path || '')}">${esc(shortPath)}</div>
+      </div>
+      <div class="session-actions">
+        <button class="session-delete-btn">Delete</button>
+      </div>
+    `;
+    // Attach delete handler
+    card.querySelector('.session-delete-btn').addEventListener('click', (event) => {
+      event.stopPropagation();
+      deleteSession(s.title);
+    });
+    list.appendChild(card);
+  });
+}
+
+async function deleteSession(title) {
+  if (!confirm(`Delete session "${title}"? This will remove it from storage and clean up resources. This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(title)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    loadSessions();
+    refreshList();
+  } catch (e) {
+    alert('Failed to delete: ' + e.message);
+  }
+}
+
+document.getElementById('btn-sessions').addEventListener('click', showSessions);
+
+function formatRelativeTime(isoString) {
+  if (!isoString) return 'unknown';
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 30) return `${diffDay}d ago`;
+  return date.toLocaleDateString();
 }
 
 // --- Keyboard shortcuts ---

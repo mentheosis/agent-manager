@@ -24,6 +24,7 @@ var upgrader = websocket.Upgrader{
 type Server struct {
 	mu        sync.RWMutex
 	instances []*session.Instance
+	convLogs  map[string]*ConversationLog
 	storage   *session.Storage
 	program   string
 	autoYes   bool
@@ -41,8 +42,14 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 		return nil, fmt.Errorf("failed to load instances: %w", err)
 	}
 
+	convLogs := make(map[string]*ConversationLog)
+	for _, inst := range instances {
+		convLogs[inst.Title] = NewConversationLog()
+	}
+
 	return &Server{
 		instances: instances,
+		convLogs:  convLogs,
 		storage:   storage,
 		program:   program,
 		autoYes:   autoYes,
@@ -112,6 +119,17 @@ func (s *Server) save() error {
 	return s.storage.SaveInstances(s.instances)
 }
 
+// getOrCreateConvLog returns the ConversationLog for the given title, creating one if needed.
+// Must be called with s.mu held.
+func (s *Server) getOrCreateConvLog(title string) *ConversationLog {
+	cl, ok := s.convLogs[title]
+	if !ok {
+		cl = NewConversationLog()
+		s.convLogs[title] = cl
+	}
+	return cl
+}
+
 // pollMetadata updates status for all instances (like the TUI's tickUpdateMetadataCmd)
 func (s *Server) pollMetadata() {
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -136,6 +154,30 @@ func (s *Server) pollMetadata() {
 			_ = inst.UpdateDiffStats()
 		}
 		s.mu.Unlock()
+	}
+}
+
+// pollOutput captures tmux output for all active instances and feeds it to their ConversationLogs.
+func (s *Server) pollOutput() {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.RLock()
+		for _, inst := range s.instances {
+			if !inst.Started() || inst.Paused() {
+				continue
+			}
+			cl := s.convLogs[inst.Title]
+			if cl == nil {
+				continue
+			}
+			content, err := inst.PreviewFullHistory()
+			if err != nil {
+				continue
+			}
+			cl.Ingest(content)
+		}
+		s.mu.RUnlock()
 	}
 }
 
@@ -211,6 +253,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.instances = append(s.instances, inst)
+	s.convLogs[body.Title] = NewConversationLog()
 	if err := s.save(); err != nil {
 		log.ErrorLog.Printf("failed to save: %v", err)
 	}
@@ -256,6 +299,10 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Record in input history
+		if cl := s.convLogs[title]; cl != nil {
+			cl.AddInput(body.Text)
+		}
 		w.WriteHeader(http.StatusOK)
 
 	case "pause":
@@ -271,6 +318,8 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Ensure convLog exists for resumed instance
+		s.getOrCreateConvLog(title)
 		_ = s.save()
 		w.WriteHeader(http.StatusOK)
 
@@ -286,6 +335,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+		delete(s.convLogs, title)
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
 
@@ -299,13 +349,23 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"content": content})
 
 	case "history":
-		content, err := inst.PreviewFullHistory()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		cl := s.getOrCreateConvLog(title)
+		stableLines, stableSeqNo, pane := cl.GetState()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"content": content})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"stable_lines":  stableLines,
+			"stable_seq_no": stableSeqNo,
+			"stable_count":  len(stableLines),
+			"pane":          pane,
+		})
+
+	case "input-history":
+		cl := s.getOrCreateConvLog(title)
+		history := cl.GetInputHistory()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"history": history,
+		})
 
 	case "diff":
 		ds := inst.GetDiffStats()
@@ -366,7 +426,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 
 	case "ws":
 		s.mu.Unlock() // Release lock for long-lived WebSocket
-		s.handleWebSocket(w, r, inst)
+		s.handleWebSocket(w, r, inst, title)
 		s.mu.Lock() // Re-acquire for deferred unlock
 		return
 
@@ -377,7 +437,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *session.Instance) {
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *session.Instance, title string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.ErrorLog.Printf("websocket upgrade failed: %v", err)
@@ -385,33 +445,171 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 	}
 	defer conn.Close()
 
-	// Stream terminal output
+	// Start a goroutine to read (and discard) client messages to detect close
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	s.mu.RLock()
+	cl := s.convLogs[title]
+	s.mu.RUnlock()
+	if cl == nil {
+		return
+	}
+
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	var lastContent string
-	for range ticker.C {
+	var lastStableCount int
+	var lastPaneContent string
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+		}
+
+		stableLines, _, pane := cl.GetState()
+
 		s.mu.RLock()
-		content, err := inst.Preview()
 		status := statusString(inst.Status)
 		s.mu.RUnlock()
 
-		if err != nil {
-			break
+		// Send new stable lines as history_append
+		if len(stableLines) > lastStableCount {
+			newLines := stableLines[lastStableCount:]
+			msg := map[string]interface{}{
+				"type":  "history_append",
+				"lines": newLines,
+			}
+			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+			lastStableCount = len(stableLines)
 		}
 
-		if content != lastContent {
-			lastContent = content
-			msg := map[string]string{
-				"type":    "output",
-				"content": content,
+		// Send current pane (volatile) - only if changed
+		paneContent := strings.Join(pane, "\n")
+		if paneContent != lastPaneContent {
+			lastPaneContent = paneContent
+			msg := map[string]interface{}{
+				"type":    "pane",
+				"content": paneContent,
 				"status":  status,
 			}
 			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// sessionJSON is a lightweight representation of a saved session (read directly from state.json)
+type sessionJSON struct {
+	Title       string `json:"title"`
+	Status      string `json:"status"`
+	Branch      string `json:"branch"`
+	Program     string `json:"program"`
+	Path        string `json:"path"`
+	GitMode     bool   `json:"git_mode"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	DiffAdded   int    `json:"diff_added"`
+	DiffRemoved int    `json:"diff_removed"`
+	WorktreeDir string `json:"worktree_dir"`
+	RepoPath    string `json:"repo_path"`
+	BranchName  string `json:"branch_name"`
+	Active      bool   `json:"active"` // true if this session is loaded in the current web server
+}
+
+// handleListSessions reads state.json fresh to list ALL saved sessions, including
+// those created from the terminal TUI that may not be loaded in this web server.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	appState := config.LoadState()
+	rawJSON := appState.GetInstances()
+
+	var sessionsData []session.InstanceData
+	if err := json.Unmarshal(rawJSON, &sessionsData); err != nil {
+		http.Error(w, "failed to read sessions: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.RLock()
+	activeSet := make(map[string]bool)
+	for _, inst := range s.instances {
+		activeSet[inst.Title] = true
+	}
+	s.mu.RUnlock()
+
+	result := make([]sessionJSON, len(sessionsData))
+	for i, data := range sessionsData {
+		result[i] = sessionJSON{
+			Title:       data.Title,
+			Status:      statusString(data.Status),
+			Branch:      data.Branch,
+			Program:     data.Program,
+			Path:        data.Path,
+			GitMode:     data.GitMode,
+			CreatedAt:   data.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:   data.UpdatedAt.Format(time.RFC3339),
+			DiffAdded:   data.DiffStats.Added,
+			DiffRemoved: data.DiffStats.Removed,
+			WorktreeDir: data.Worktree.WorktreePath,
+			RepoPath:    data.Worktree.RepoPath,
+			BranchName:  data.Worktree.BranchName,
+			Active:      activeSet[data.Title],
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleSessionAction handles DELETE /api/sessions/{title} - removes a session from state.json
+func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	title := strings.TrimSuffix(path, "/")
+
+	if title == "" {
+		http.Error(w, "missing session title", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// If the session is loaded in our server, kill it first
+	inst := s.findInstance(title)
+	if inst != nil {
+		_ = inst.Kill()
+		for i, existing := range s.instances {
+			if existing.Title == title {
+				s.instances = append(s.instances[:i], s.instances[i+1:]...)
 				break
 			}
 		}
 	}
+	delete(s.convLogs, title)
+
+	// Delete from persistent storage
+	if err := s.storage.DeleteInstance(title); err != nil {
+		http.Error(w, "failed to delete session: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func Run(program string, autoYes bool, port int) error {
@@ -421,10 +619,22 @@ func Run(program string, autoYes bool, port int) error {
 	}
 
 	go srv.pollMetadata()
+	go srv.pollOutput()
 
 	mux := http.NewServeMux()
 
 	// API routes
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			srv.handleListSessions(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		srv.handleSessionAction(w, r)
+	})
 	mux.HandleFunc("/api/instances", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -440,7 +650,12 @@ func Run(program string, autoYes bool, port int) error {
 	})
 
 	// Static files
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("webserver/static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		http.ServeFile(w, r, "webserver/static/index.html")
 	})
 
