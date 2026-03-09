@@ -142,14 +142,6 @@ var (
 			log.Initialize(false)
 			defer log.Close()
 
-			currentDir, err := filepath.Abs(".")
-			if err != nil {
-				return fmt.Errorf("failed to get current directory: %w", err)
-			}
-			if !git.IsGitRepo(currentDir) {
-				return fmt.Errorf("error: claude-squad must be run from within a git repository")
-			}
-
 			cfg := config.LoadConfig()
 			program := cfg.DefaultProgram
 			if programFlag != "" {

@@ -67,10 +67,21 @@
     border-radius: 6px;
     cursor: pointer;
     margin-bottom: 4px;
-    transition: background 0.1s;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    border: 1px solid transparent;
   }
   .instance-item:hover { background: var(--bg-highlight); }
   .instance-item.active { background: var(--bg-highlight); border-left: 3px solid var(--accent); }
+  .instance-item.waiting {
+    border-color: var(--yellow);
+    background: rgba(224, 175, 104, 0.08);
+    box-shadow: 0 0 8px rgba(224, 175, 104, 0.15);
+    animation: pulse-waiting 2s ease-in-out infinite;
+  }
+  @keyframes pulse-waiting {
+    0%, 100% { box-shadow: 0 0 4px rgba(224, 175, 104, 0.1); }
+    50% { box-shadow: 0 0 12px rgba(224, 175, 104, 0.25); }
+  }
   .instance-title { font-size: 13px; font-weight: 600; }
   .instance-meta {
     font-size: 11px;
@@ -80,15 +91,32 @@
     gap: 8px;
     align-items: center;
   }
+  .instance-path {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .status-dot {
     width: 8px; height: 8px;
     border-radius: 50%;
     display: inline-block;
   }
-  .status-dot.running { background: var(--green); }
+  .status-dot.running { background: var(--green); animation: pulse-dot 1.5s ease-in-out infinite; }
   .status-dot.ready { background: var(--yellow); }
-  .status-dot.loading { background: var(--orange); }
+  .status-dot.loading { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
   .status-dot.paused { background: var(--text-dim); }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .status-label { font-weight: 600; }
+  .status-label.ready { color: var(--yellow); }
+  .status-label.running { color: var(--green); }
+  .status-label.loading { color: var(--orange); }
+  .status-label.paused { color: var(--text-dim); }
 
   /* Main area */
   #main {
@@ -96,6 +124,8 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    overflow: hidden;
+    height: 100vh;
   }
 
   /* Tab bar */
@@ -135,14 +165,39 @@
   }
   .toolbar-btn:hover { border-color: var(--accent); }
   .toolbar-btn.danger:hover { border-color: var(--red); color: var(--red); }
+  .toolbar-separator { width: 1px; background: var(--border); margin: 0 4px; }
+  .mode-selector {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .mode-btn {
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    transition: all 0.1s;
+  }
+  .mode-btn:hover { border-color: var(--accent); color: var(--text); }
+  .mode-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 
   /* Terminal output */
   #output-area {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 16px;
-    white-space: pre;
+    white-space: pre-wrap;
     word-wrap: break-word;
+    overflow-wrap: break-word;
     font-size: 13px;
     line-height: 1.4;
     background: var(--bg);
@@ -265,16 +320,21 @@
 
 <div id="main">
   <div id="empty-state">Select or create an instance to get started</div>
-  <div id="active-view" style="display:none; flex-direction:column; flex:1;">
+  <div id="active-view" style="display:none; flex-direction:column; flex:1; min-height:0; overflow:hidden;">
     <div id="tabs">
       <div class="tab active" data-tab="terminal" onclick="switchTab('terminal')">Terminal</div>
       <div class="tab" data-tab="diff" onclick="switchTab('diff')">Diff</div>
-      <div class="tab" data-tab="history" onclick="switchTab('history')">Full History</div>
     </div>
     <div id="toolbar">
       <button class="toolbar-btn" onclick="actionPause()">Pause</button>
       <button class="toolbar-btn" onclick="actionResume()">Resume</button>
       <button class="toolbar-btn danger" onclick="actionKill()">Kill</button>
+      <div class="toolbar-separator"></div>
+      <div class="mode-selector">
+        <span>Mode:</span>
+        <button class="mode-btn" id="mode-agent" onclick="setMode('agent')">Agent</button>
+        <button class="mode-btn" id="mode-plan" onclick="setMode('plan')">Plan</button>
+      </div>
     </div>
     <div id="output-area"></div>
     <div id="input-area">
@@ -287,7 +347,19 @@
 <div id="modal-overlay" onclick="if(event.target===this)hideModal()">
   <div id="modal">
     <h2>New Instance</h2>
-    <input id="modal-title" type="text" placeholder="Instance name" onkeydown="if(event.key==='Enter')document.getElementById('modal-prompt').focus()">
+    <input id="modal-title" type="text" placeholder="Instance name" onkeydown="if(event.key==='Enter')document.getElementById('modal-path').focus()">
+    <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Working directory</label>
+    <input id="modal-path" type="text" placeholder="Absolute path (default: current dir)">
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;color:var(--text-dim)">
+      <input id="modal-gitmode" type="checkbox" onchange="toggleGitOptions()"> Use git worktree isolation
+    </label>
+    <div id="git-options" style="display:none;margin-bottom:12px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg)">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Git repo path (the repo to branch from)</label>
+      <input id="modal-repo" type="text" placeholder="Same as working directory if empty" style="margin-bottom:8px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Branch name (optional, auto-generated if empty)</label>
+      <input id="modal-branch" type="text" placeholder="e.g. feature/my-task">
+      <p style="font-size:10px;color:var(--text-dim);margin-top:6px">Agent will work in an isolated worktree branched from this repo. The working directory above is used as the repo if no separate repo path is given.</p>
+    </div>
     <textarea id="modal-prompt" placeholder="Initial prompt (optional)"></textarea>
     <div id="modal-actions">
       <button id="modal-cancel" onclick="hideModal()">Cancel</button>
@@ -302,6 +374,8 @@ let selectedTitle = null;
 let activeTab = 'terminal';
 let ws = null;
 let autoScroll = true;
+let currentMode = 'agent'; // 'agent' or 'plan'
+let instanceStatuses = {}; // title -> status, updated via WS for immediate feedback
 
 // --- ANSI-to-HTML parser ---
 const ANSI_COLORS_16 = [
@@ -443,19 +517,32 @@ function renderList(instances) {
   const el = document.getElementById('instance-list');
   el.innerHTML = '';
   instances.forEach(inst => {
+    // Use WS-updated status if available for immediate feedback
+    const status = instanceStatuses[inst.title] || inst.status;
+    const isWaiting = status === 'ready';
+    const statusLabel = isWaiting ? 'waiting' : status;
+
     const div = document.createElement('div');
-    div.className = 'instance-item' + (inst.title === selectedTitle ? ' active' : '');
+    let cls = 'instance-item';
+    if (inst.title === selectedTitle) cls += ' active';
+    if (isWaiting) cls += ' waiting';
+    div.className = cls;
     div.onclick = () => selectInstance(inst.title);
+
     const diffInfo = (inst.diff_added || inst.diff_removed)
       ? `+${inst.diff_added} -${inst.diff_removed}`
       : '';
+    const shortPath = inst.work_dir ? inst.work_dir.replace(/^\/Users\/[^/]+/, '~') : '';
+    const gitBadge = inst.git_mode ? '<span style="color:var(--orange)">git</span>' : '';
     div.innerHTML = `
       <div class="instance-title">${esc(inst.title)}</div>
       <div class="instance-meta">
-        <span class="status-dot ${inst.status}"></span>
-        ${inst.status}
+        <span class="status-dot ${status}"></span>
+        <span class="status-label ${status}">${statusLabel}</span>
+        ${gitBadge}
         ${diffInfo ? `<span>${diffInfo}</span>` : ''}
       </div>
+      <div class="instance-path" title="${esc(inst.work_dir || '')}">${esc(shortPath)}</div>
     `;
     el.appendChild(div);
   });
@@ -466,9 +553,15 @@ function selectInstance(title) {
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('active-view').style.display = 'flex';
   refreshList();
-  connectWS(title);
-  if (activeTab === 'diff') loadDiff();
-  if (activeTab === 'history') loadHistory();
+  if (activeTab === 'diff') {
+    loadDiff();
+  } else {
+    activeTab = 'terminal';
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'terminal'));
+    connectWS(title);
+  }
+  // Auto-focus the prompt input
+  setTimeout(() => document.getElementById('prompt-input').focus(), 50);
 }
 
 // --- Tabs ---
@@ -480,28 +573,80 @@ function switchTab(tab) {
 
   if (tab === 'terminal') {
     connectWS(selectedTitle);
+    setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
     closeWS();
     loadDiff();
-  } else if (tab === 'history') {
-    closeWS();
-    loadHistory();
   }
 }
 
 // --- WebSocket ---
+let historyLoaded = false;
+
 function connectWS(title) {
   closeWS();
   if (!title) return;
+
+  const output = document.getElementById('output-area');
+  output.innerHTML = '';
+  historyLoaded = false;
+
+  // Load full scrollback history, then overlay live pane on top
+  loadHistoryThenStream(title, output);
+}
+
+async function loadHistoryThenStream(title, output) {
+  // Fetch full history
+  try {
+    const data = await api(`/${encodeURIComponent(title)}/history`);
+    if (data && data.content) {
+      // Render history safely into an iframe-like isolated container
+      const historyDiv = document.createElement('div');
+      historyDiv.id = 'output-history';
+      historyDiv.innerHTML = ansiToHtml(data.content);
+      const liveDiv = document.createElement('div');
+      liveDiv.id = 'output-live';
+      output.textContent = '';
+      output.appendChild(historyDiv);
+      output.appendChild(liveDiv);
+      historyLoaded = true;
+    }
+  } catch (e) {
+    // Ignore history errors, WS will still work
+  }
+
+  if (!historyLoaded) {
+    output.innerHTML = '';
+  }
+
+  output.scrollTop = output.scrollHeight;
+
+  // Connect WS for live updates
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'output') {
-      const output = document.getElementById('output-area');
       const wasAtBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
-      output.innerHTML = ansiToHtml(msg.content);
+
+      if (historyLoaded) {
+        const live = document.getElementById('output-live');
+        if (live) live.innerHTML = ansiToHtml(msg.content);
+      } else {
+        output.innerHTML = ansiToHtml(msg.content);
+      }
+
       if (wasAtBottom) output.scrollTop = output.scrollHeight;
+
+      // Immediately update status in sidebar
+      if (msg.status && title) {
+        const prev = instanceStatuses[title];
+        instanceStatuses[title] = msg.status;
+        if (prev !== msg.status) refreshList();
+      }
+
+      // Detect mode from terminal output
+      detectMode(msg.content);
     }
   };
   ws.onerror = () => {};
@@ -512,23 +657,13 @@ function closeWS() {
   if (ws) { ws.close(); ws = null; }
 }
 
-// --- Load diff/history ---
+// --- Load diff ---
 async function loadDiff() {
   if (!selectedTitle) return;
   try {
     const data = await api(`/${encodeURIComponent(selectedTitle)}/diff`);
     const output = document.getElementById('output-area');
     output.innerHTML = formatDiff(data.content || 'No changes');
-  } catch (e) {
-    document.getElementById('output-area').textContent = 'Error: ' + e.message;
-  }
-}
-
-async function loadHistory() {
-  if (!selectedTitle) return;
-  try {
-    const data = await api(`/${encodeURIComponent(selectedTitle)}/history`);
-    document.getElementById('output-area').innerHTML = ansiToHtml(data.content || 'No history');
   } catch (e) {
     document.getElementById('output-area').textContent = 'Error: ' + e.message;
   }
@@ -599,8 +734,18 @@ async function actionKill() {
 function showNewModal() {
   document.getElementById('modal-overlay').classList.add('visible');
   document.getElementById('modal-title').value = '';
+  document.getElementById('modal-path').value = '';
+  document.getElementById('modal-gitmode').checked = false;
+  document.getElementById('modal-repo').value = '';
+  document.getElementById('modal-branch').value = '';
   document.getElementById('modal-prompt').value = '';
+  document.getElementById('git-options').style.display = 'none';
   setTimeout(() => document.getElementById('modal-title').focus(), 100);
+}
+
+function toggleGitOptions() {
+  document.getElementById('git-options').style.display =
+    document.getElementById('modal-gitmode').checked ? 'block' : 'none';
 }
 
 function hideModal() {
@@ -609,17 +754,54 @@ function hideModal() {
 
 async function createInstance() {
   const title = document.getElementById('modal-title').value.trim();
+  const path = document.getElementById('modal-path').value.trim();
+  const git_mode = document.getElementById('modal-gitmode').checked;
+  const repo_path = document.getElementById('modal-repo').value.trim();
+  const branch = document.getElementById('modal-branch').value.trim();
   const prompt = document.getElementById('modal-prompt').value.trim();
   if (!title) { alert('Title is required'); return; }
   hideModal();
   try {
     await api('', {
       method: 'POST',
-      body: JSON.stringify({ title, prompt }),
+      body: JSON.stringify({ title, prompt, path: path || '', git_mode, repo_path, branch }),
     });
     selectInstance(title);
     refreshList();
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+// --- Mode ---
+function detectMode(content) {
+  // Claude Code shows mode in its status bar / prompt area
+  // Look for plan mode indicators in the raw text
+  const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  if (/plan\s*mode/i.test(plain) || /\bplan\b.*\bmode\b/i.test(plain)) {
+    updateModeUI('plan');
+  } else {
+    updateModeUI('agent');
+  }
+}
+
+function updateModeUI(mode) {
+  currentMode = mode;
+  document.getElementById('mode-agent').classList.toggle('active', mode === 'agent');
+  document.getElementById('mode-plan').classList.toggle('active', mode === 'plan');
+}
+
+async function setMode(mode) {
+  if (!selectedTitle) return;
+  // Send the slash command to switch modes
+  const cmd = mode === 'plan' ? '/plan' : '/agent';
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ text: cmd }),
+    });
+    updateModeUI(mode);
+  } catch (e) {
+    alert('Failed to switch mode: ' + e.message);
+  }
 }
 
 // --- Util ---

@@ -47,13 +47,16 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 }
 
 type instanceJSON struct {
-	Title     string `json:"title"`
-	Status    string `json:"status"`
-	Branch    string `json:"branch"`
-	Program   string `json:"program"`
-	CreatedAt string `json:"created_at"`
-	DiffAdded int    `json:"diff_added"`
-	DiffRemoved int  `json:"diff_removed"`
+	Title       string `json:"title"`
+	Status      string `json:"status"`
+	Branch      string `json:"branch"`
+	Program     string `json:"program"`
+	Path        string `json:"path"`
+	WorkDir     string `json:"work_dir"`
+	GitMode     bool   `json:"git_mode"`
+	CreatedAt   string `json:"created_at"`
+	DiffAdded   int    `json:"diff_added"`
+	DiffRemoved int    `json:"diff_removed"`
 }
 
 func statusString(s session.Status) string {
@@ -77,7 +80,14 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 		Status:    statusString(inst.Status),
 		Branch:    inst.Branch,
 		Program:   inst.Program,
+		Path:      inst.Path,
+		WorkDir:   inst.GetWorktreePath(),
+		GitMode:   inst.GitMode,
 		CreatedAt: inst.CreatedAt.Format(time.RFC3339),
+	}
+	// For non-git mode, work_dir is just the path
+	if j.WorkDir == "" {
+		j.WorkDir = inst.Path
 	}
 	if ds := inst.GetDiffStats(); ds != nil {
 		j.DiffAdded = ds.Added
@@ -140,8 +150,12 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title  string `json:"title"`
-		Prompt string `json:"prompt"`
+		Title    string `json:"title"`
+		Prompt   string `json:"prompt"`
+		Path     string `json:"path"`
+		GitMode  bool   `json:"git_mode"`
+		RepoPath string `json:"repo_path"`
+		Branch   string `json:"branch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -150,6 +164,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if body.Title == "" {
 		http.Error(w, "title is required", http.StatusBadRequest)
 		return
+	}
+	if body.Path == "" {
+		body.Path = "."
 	}
 
 	s.mu.Lock()
@@ -161,10 +178,12 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inst, err := session.NewInstance(session.InstanceOptions{
-		Title:   body.Title,
-		Path:    ".",
-		Program: s.program,
-		AutoYes: s.autoYes,
+		Title:    body.Title,
+		Path:     body.Path,
+		RepoPath: body.RepoPath,
+		Program:  s.program,
+		AutoYes:  s.autoYes,
+		GitMode:  body.GitMode,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
