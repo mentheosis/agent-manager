@@ -9,6 +9,7 @@ import (
 	"claude-squad/session"
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
+	"claude-squad/webserver"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -133,6 +134,36 @@ var (
 		},
 	}
 
+	servePort int
+	serveCmd  = &cobra.Command{
+		Use:   "serve",
+		Short: "Start the web UI server",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			currentDir, err := filepath.Abs(".")
+			if err != nil {
+				return fmt.Errorf("failed to get current directory: %w", err)
+			}
+			if !git.IsGitRepo(currentDir) {
+				return fmt.Errorf("error: claude-squad must be run from within a git repository")
+			}
+
+			cfg := config.LoadConfig()
+			program := cfg.DefaultProgram
+			if programFlag != "" {
+				program = programFlag
+			}
+			autoYes := cfg.AutoYes
+			if autoYesFlag {
+				autoYes = true
+			}
+
+			return webserver.Run(program, autoYes, servePort)
+		},
+	}
+
 	versionCmd = &cobra.Command{
 		Use:   "version",
 		Short: "Print the version number of claude-squad",
@@ -157,9 +188,14 @@ func init() {
 		panic(err)
 	}
 
+	serveCmd.Flags().IntVar(&servePort, "port", 8080, "Port for the web UI server")
+	serveCmd.Flags().StringVarP(&programFlag, "program", "p", "", "Program to run in new instances")
+	serveCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false, "Auto-accept prompts")
+
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+	rootCmd.AddCommand(serveCmd)
 }
 
 func main() {

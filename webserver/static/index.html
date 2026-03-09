@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Squad</title>
+<style>
+  :root {
+    --bg: #1a1b26;
+    --bg-surface: #24283b;
+    --bg-highlight: #2f3549;
+    --border: #3b4261;
+    --text: #c0caf5;
+    --text-dim: #565f89;
+    --accent: #7aa2f7;
+    --green: #9ece6a;
+    --red: #f7768e;
+    --yellow: #e0af68;
+    --orange: #ff9e64;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* Sidebar */
+  #sidebar {
+    width: 280px;
+    min-width: 280px;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+  #sidebar-header {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  #sidebar-header h1 { font-size: 14px; color: var(--accent); }
+  #btn-new {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  #btn-new:hover { opacity: 0.85; }
+  #instance-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .instance-item {
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 4px;
+    transition: background 0.1s;
+  }
+  .instance-item:hover { background: var(--bg-highlight); }
+  .instance-item.active { background: var(--bg-highlight); border-left: 3px solid var(--accent); }
+  .instance-title { font-size: 13px; font-weight: 600; }
+  .instance-meta {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .status-dot.running { background: var(--green); }
+  .status-dot.ready { background: var(--yellow); }
+  .status-dot.loading { background: var(--orange); }
+  .status-dot.paused { background: var(--text-dim); }
+
+  /* Main area */
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  /* Tab bar */
+  #tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+  }
+  .tab {
+    padding: 10px 20px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-dim);
+    border-bottom: 2px solid transparent;
+    transition: all 0.1s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* Toolbar */
+  #toolbar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+  }
+  .toolbar-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+  }
+  .toolbar-btn:hover { border-color: var(--accent); }
+  .toolbar-btn.danger:hover { border-color: var(--red); color: var(--red); }
+
+  /* Terminal output */
+  #output-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    white-space: pre;
+    word-wrap: break-word;
+    font-size: 13px;
+    line-height: 1.4;
+    background: var(--bg);
+    tab-size: 8;
+  }
+  #output-area.diff { color: var(--text); }
+  .diff-add { color: var(--green); }
+  .diff-del { color: var(--red); }
+  .diff-hunk { color: var(--accent); }
+  .ansi-bold { font-weight: 700; }
+  .ansi-dim { opacity: 0.6; }
+  .ansi-italic { font-style: italic; }
+  .ansi-underline { text-decoration: underline; }
+  .ansi-strikethrough { text-decoration: line-through; }
+  .ansi-inverse { filter: invert(1); }
+
+  /* Empty state */
+  #empty-state {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  /* Input area */
+  #input-area {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+    display: flex;
+    gap: 8px;
+  }
+  #prompt-input {
+    flex: 1;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+  #prompt-input:focus { border-color: var(--accent); }
+  #btn-send {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  #btn-send:hover { opacity: 0.85; }
+
+  /* Modal */
+  #modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  #modal-overlay.visible { display: flex; }
+  #modal {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    width: 400px;
+  }
+  #modal h2 { font-size: 14px; margin-bottom: 16px; }
+  #modal input, #modal textarea {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    margin-bottom: 12px;
+  }
+  #modal textarea { height: 80px; resize: vertical; }
+  #modal input:focus, #modal textarea:focus { border-color: var(--accent); }
+  #modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  #modal-actions button {
+    padding: 6px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    border: 1px solid var(--border);
+  }
+  #modal-cancel { background: var(--bg-highlight); color: var(--text); }
+  #modal-submit { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>Claude Squad</h1>
+    <button id="btn-new" onclick="showNewModal()">+ New</button>
+  </div>
+  <div id="instance-list"></div>
+</div>
+
+<div id="main">
+  <div id="empty-state">Select or create an instance to get started</div>
+  <div id="active-view" style="display:none; flex-direction:column; flex:1;">
+    <div id="tabs">
+      <div class="tab active" data-tab="terminal" onclick="switchTab('terminal')">Terminal</div>
+      <div class="tab" data-tab="diff" onclick="switchTab('diff')">Diff</div>
+      <div class="tab" data-tab="history" onclick="switchTab('history')">Full History</div>
+    </div>
+    <div id="toolbar">
+      <button class="toolbar-btn" onclick="actionPause()">Pause</button>
+      <button class="toolbar-btn" onclick="actionResume()">Resume</button>
+      <button class="toolbar-btn danger" onclick="actionKill()">Kill</button>
+    </div>
+    <div id="output-area"></div>
+    <div id="input-area">
+      <input id="prompt-input" type="text" placeholder="Send a message..." onkeydown="if(event.key==='Enter')sendPrompt()">
+      <button id="btn-send" onclick="sendPrompt()">Send</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-overlay" onclick="if(event.target===this)hideModal()">
+  <div id="modal">
+    <h2>New Instance</h2>
+    <input id="modal-title" type="text" placeholder="Instance name" onkeydown="if(event.key==='Enter')document.getElementById('modal-prompt').focus()">
+    <textarea id="modal-prompt" placeholder="Initial prompt (optional)"></textarea>
+    <div id="modal-actions">
+      <button id="modal-cancel" onclick="hideModal()">Cancel</button>
+      <button id="modal-submit" onclick="createInstance()">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/api/instances';
+let selectedTitle = null;
+let activeTab = 'terminal';
+let ws = null;
+let autoScroll = true;
+
+// --- ANSI-to-HTML parser ---
+const ANSI_COLORS_16 = [
+  '#1a1b26','#f7768e','#9ece6a','#e0af68','#7aa2f7','#bb9af7','#7dcfff','#c0caf5',
+  '#565f89','#f7768e','#9ece6a','#e0af68','#7aa2f7','#bb9af7','#7dcfff','#ffffff',
+];
+
+// 256-color palette: 16 base + 216 cube + 24 grayscale
+const ANSI_256 = (() => {
+  const c = [...ANSI_COLORS_16];
+  for (let r = 0; r < 6; r++)
+    for (let g = 0; g < 6; g++)
+      for (let b = 0; b < 6; b++)
+        c.push(`#${[r,g,b].map(v => (v ? v*40+55 : 0).toString(16).padStart(2,'0')).join('')}`);
+  for (let i = 0; i < 24; i++) {
+    const v = (i * 10 + 8).toString(16).padStart(2, '0');
+    c.push(`#${v}${v}${v}`);
+  }
+  return c;
+})();
+
+function ansiToHtml(text) {
+  if (!text) return '';
+  // Match ESC[ ... m sequences (SGR) and other CSI sequences
+  // Also match bare ESC sequences and OSC sequences
+  const re = /\x1b\[[0-9;]*m|\x1b\[[0-9;]*[A-HJKSTfhln]|\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b[^[\]]/g;
+
+  let fg = null, bg = null;
+  let bold = false, dim = false, italic = false, underline = false, inverse = false, strikethrough = false;
+  let result = '';
+  let lastIdx = 0;
+
+  for (const match of text.matchAll(re)) {
+    // Append text before this escape sequence (HTML-escaped)
+    if (match.index > lastIdx) {
+      result += openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough);
+      result += esc(text.slice(lastIdx, match.index));
+      result += '</span>';
+    }
+    lastIdx = match.index + match[0].length;
+
+    const seq = match[0];
+    // Only process SGR sequences (ending in 'm')
+    if (!seq.endsWith('m')) continue;
+
+    const codes = seq.slice(2, -1).split(';').map(s => s === '' ? 0 : parseInt(s, 10));
+
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) { fg = bg = null; bold = dim = italic = underline = inverse = strikethrough = false; }
+      else if (c === 1) bold = true;
+      else if (c === 2) dim = true;
+      else if (c === 3) italic = true;
+      else if (c === 4) underline = true;
+      else if (c === 7) inverse = true;
+      else if (c === 9) strikethrough = true;
+      else if (c === 22) { bold = false; dim = false; }
+      else if (c === 23) italic = false;
+      else if (c === 24) underline = false;
+      else if (c === 27) inverse = false;
+      else if (c === 29) strikethrough = false;
+      else if (c >= 30 && c <= 37) fg = ANSI_COLORS_16[c - 30];
+      else if (c === 38) {
+        if (codes[i+1] === 5 && codes[i+2] != null) { fg = ANSI_256[codes[i+2]]; i += 2; }
+        else if (codes[i+1] === 2 && codes[i+4] != null) {
+          fg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4;
+        }
+      }
+      else if (c === 39) fg = null;
+      else if (c >= 40 && c <= 47) bg = ANSI_COLORS_16[c - 40];
+      else if (c === 48) {
+        if (codes[i+1] === 5 && codes[i+2] != null) { bg = ANSI_256[codes[i+2]]; i += 2; }
+        else if (codes[i+1] === 2 && codes[i+4] != null) {
+          bg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4;
+        }
+      }
+      else if (c === 49) bg = null;
+      else if (c >= 90 && c <= 97) fg = ANSI_COLORS_16[c - 90 + 8];
+      else if (c >= 100 && c <= 107) bg = ANSI_COLORS_16[c - 100 + 8];
+    }
+  }
+
+  // Append remaining text
+  if (lastIdx < text.length) {
+    result += openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough);
+    result += esc(text.slice(lastIdx));
+    result += '</span>';
+  }
+
+  return result;
+}
+
+function openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough) {
+  const styles = [];
+  const classes = [];
+  const fgActual = inverse ? bg : fg;
+  const bgActual = inverse ? (fg || 'var(--text)') : bg;
+  if (fgActual) styles.push(`color:${fgActual}`);
+  if (bgActual) styles.push(`background:${bgActual}`);
+  if (bold) classes.push('ansi-bold');
+  if (dim) classes.push('ansi-dim');
+  if (italic) classes.push('ansi-italic');
+  if (underline) classes.push('ansi-underline');
+  if (strikethrough) classes.push('ansi-strikethrough');
+  let tag = '<span';
+  if (classes.length) tag += ` class="${classes.join(' ')}"`;
+  if (styles.length) tag += ` style="${styles.join(';')}"`;
+  return tag + '>';
+}
+
+// --- API helpers ---
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text);
+  }
+  if (res.status === 200 || res.status === 201) {
+    const ct = res.headers.get('content-type');
+    if (ct && ct.includes('json')) return res.json();
+  }
+  return null;
+}
+
+// --- Instance list ---
+async function refreshList() {
+  try {
+    const instances = await api('');
+    renderList(instances);
+  } catch (e) {
+    console.error('Failed to refresh:', e);
+  }
+}
+
+function renderList(instances) {
+  const el = document.getElementById('instance-list');
+  el.innerHTML = '';
+  instances.forEach(inst => {
+    const div = document.createElement('div');
+    div.className = 'instance-item' + (inst.title === selectedTitle ? ' active' : '');
+    div.onclick = () => selectInstance(inst.title);
+    const diffInfo = (inst.diff_added || inst.diff_removed)
+      ? `+${inst.diff_added} -${inst.diff_removed}`
+      : '';
+    div.innerHTML = `
+      <div class="instance-title">${esc(inst.title)}</div>
+      <div class="instance-meta">
+        <span class="status-dot ${inst.status}"></span>
+        ${inst.status}
+        ${diffInfo ? `<span>${diffInfo}</span>` : ''}
+      </div>
+    `;
+    el.appendChild(div);
+  });
+}
+
+function selectInstance(title) {
+  selectedTitle = title;
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('active-view').style.display = 'flex';
+  refreshList();
+  connectWS(title);
+  if (activeTab === 'diff') loadDiff();
+  if (activeTab === 'history') loadHistory();
+}
+
+// --- Tabs ---
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  const output = document.getElementById('output-area');
+  output.className = tab === 'diff' ? 'diff' : '';
+
+  if (tab === 'terminal') {
+    connectWS(selectedTitle);
+  } else if (tab === 'diff') {
+    closeWS();
+    loadDiff();
+  } else if (tab === 'history') {
+    closeWS();
+    loadHistory();
+  }
+}
+
+// --- WebSocket ---
+function connectWS(title) {
+  closeWS();
+  if (!title) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'output') {
+      const output = document.getElementById('output-area');
+      const wasAtBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
+      output.innerHTML = ansiToHtml(msg.content);
+      if (wasAtBottom) output.scrollTop = output.scrollHeight;
+    }
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => { ws = null; };
+}
+
+function closeWS() {
+  if (ws) { ws.close(); ws = null; }
+}
+
+// --- Load diff/history ---
+async function loadDiff() {
+  if (!selectedTitle) return;
+  try {
+    const data = await api(`/${encodeURIComponent(selectedTitle)}/diff`);
+    const output = document.getElementById('output-area');
+    output.innerHTML = formatDiff(data.content || 'No changes');
+  } catch (e) {
+    document.getElementById('output-area').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function loadHistory() {
+  if (!selectedTitle) return;
+  try {
+    const data = await api(`/${encodeURIComponent(selectedTitle)}/history`);
+    document.getElementById('output-area').innerHTML = ansiToHtml(data.content || 'No history');
+  } catch (e) {
+    document.getElementById('output-area').textContent = 'Error: ' + e.message;
+  }
+}
+
+function formatDiff(text) {
+  if (!text) return '';
+  return text.split('\n').map(line => {
+    if (line.startsWith('+') && !line.startsWith('+++'))
+      return `<span class="diff-add">${esc(line)}</span>`;
+    if (line.startsWith('-') && !line.startsWith('---'))
+      return `<span class="diff-del">${esc(line)}</span>`;
+    if (line.startsWith('@@'))
+      return `<span class="diff-hunk">${esc(line)}</span>`;
+    return esc(line);
+  }).join('\n');
+}
+
+// --- Actions ---
+async function sendPrompt() {
+  const input = document.getElementById('prompt-input');
+  const text = input.value.trim();
+  if (!text || !selectedTitle) return;
+  input.value = '';
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    });
+  } catch (e) {
+    alert('Failed to send: ' + e.message);
+  }
+}
+
+async function actionPause() {
+  if (!selectedTitle) return;
+  if (!confirm(`Pause "${selectedTitle}"?`)) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
+    closeWS();
+    refreshList();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function actionResume() {
+  if (!selectedTitle) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
+    refreshList();
+    connectWS(selectedTitle);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function actionKill() {
+  if (!selectedTitle) return;
+  if (!confirm(`Kill "${selectedTitle}"? This cannot be undone.`)) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/kill`, { method: 'POST' });
+    closeWS();
+    selectedTitle = null;
+    document.getElementById('empty-state').style.display = 'flex';
+    document.getElementById('active-view').style.display = 'none';
+    refreshList();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// --- Modal ---
+function showNewModal() {
+  document.getElementById('modal-overlay').classList.add('visible');
+  document.getElementById('modal-title').value = '';
+  document.getElementById('modal-prompt').value = '';
+  setTimeout(() => document.getElementById('modal-title').focus(), 100);
+}
+
+function hideModal() {
+  document.getElementById('modal-overlay').classList.remove('visible');
+}
+
+async function createInstance() {
+  const title = document.getElementById('modal-title').value.trim();
+  const prompt = document.getElementById('modal-prompt').value.trim();
+  if (!title) { alert('Title is required'); return; }
+  hideModal();
+  try {
+    await api('', {
+      method: 'POST',
+      body: JSON.stringify({ title, prompt }),
+    });
+    selectInstance(title);
+    refreshList();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// --- Util ---
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// --- Poll ---
+setInterval(refreshList, 2000);
+refreshList();
+</script>
+</body>
+</html>
