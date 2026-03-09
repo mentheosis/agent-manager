@@ -71,16 +71,28 @@
     border: 1px solid transparent;
   }
   .instance-item:hover { background: var(--bg-highlight); }
-  .instance-item.active { background: var(--bg-highlight); border-left: 3px solid var(--accent); }
+  .instance-item.active {
+    background: var(--bg-highlight);
+    border-left: 3px solid var(--accent);
+  }
+  /* Waiting but NOT selected: subtle right-side yellow gradient */
   .instance-item.waiting {
-    border-color: var(--yellow);
-    background: rgba(224, 175, 104, 0.08);
-    box-shadow: 0 0 8px rgba(224, 175, 104, 0.15);
+    border-color: transparent;
+    border-right: 2px solid var(--yellow);
+    background: linear-gradient(to right, transparent 0%, rgba(224, 175, 104, 0.1) 100%);
     animation: pulse-waiting 2s ease-in-out infinite;
   }
+  /* Waiting AND selected: full yellow highlight with accent left border */
+  .instance-item.active.waiting {
+    border-left: 3px solid var(--accent);
+    border-color: var(--yellow);
+    border-left-color: var(--accent);
+    background: rgba(224, 175, 104, 0.12);
+    box-shadow: 0 0 8px rgba(224, 175, 104, 0.2);
+  }
   @keyframes pulse-waiting {
-    0%, 100% { box-shadow: 0 0 4px rgba(224, 175, 104, 0.1); }
-    50% { box-shadow: 0 0 12px rgba(224, 175, 104, 0.25); }
+    0%, 100% { box-shadow: 0 0 4px rgba(224, 175, 104, 0.05); }
+    50% { box-shadow: 0 0 10px rgba(224, 175, 104, 0.2); }
   }
   .instance-title { font-size: 13px; font-weight: 600; }
   .instance-meta {
@@ -127,6 +139,16 @@
     overflow: hidden;
     height: 100vh;
   }
+  #active-view {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #active-view.visible {
+    display: flex;
+  }
 
   /* Tab bar */
   #tabs {
@@ -170,7 +192,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    margin-left: auto;
+    margin-right: auto;
     font-size: 11px;
     color: var(--text-dim);
   }
@@ -202,7 +224,90 @@
     line-height: 1.4;
     background: var(--bg);
     tab-size: 8;
+    position: relative;
   }
+  #output-area * {
+    max-width: 100%;
+  }
+  .connection-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    font-size: 14px;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .connection-error .error-icon { font-size: 32px; opacity: 0.5; }
+  .connection-error .error-msg { max-width: 400px; text-align: center; }
+  .connection-error .retry-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .connection-error .retry-btn:hover { border-color: var(--accent); }
+
+  /* Rules editor */
+  #rules-editor {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+  #rules-editor.visible { display: flex; }
+  #rules-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  #rules-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rules-save-btn {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 4px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  #rules-save-btn:hover { opacity: 0.85; }
+  #rules-save-btn:disabled { opacity: 0.4; cursor: default; }
+  #rules-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    transition: opacity 0.3s;
+  }
+  #rules-status.saved { color: var(--green); }
+  #rules-status.unsaved { color: var(--yellow); }
+  #rules-textarea {
+    flex: 1;
+    min-height: 0;
+    background: var(--bg);
+    color: var(--text);
+    border: none;
+    padding: 16px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+    tab-size: 2;
+  }
+
   #output-area.diff { color: var(--text); }
   .diff-add { color: var(--green); }
   .diff-del { color: var(--red); }
@@ -320,23 +425,31 @@
 
 <div id="main">
   <div id="empty-state">Select or create an instance to get started</div>
-  <div id="active-view" style="display:none; flex-direction:column; flex:1; min-height:0; overflow:hidden;">
+  <div id="active-view">
     <div id="tabs">
       <div class="tab active" data-tab="terminal" onclick="switchTab('terminal')">Terminal</div>
       <div class="tab" data-tab="diff" onclick="switchTab('diff')">Diff</div>
+      <div class="tab" data-tab="rules" onclick="switchTab('rules')">Rules</div>
     </div>
     <div id="toolbar">
-      <button class="toolbar-btn" onclick="actionPause()">Pause</button>
-      <button class="toolbar-btn" onclick="actionResume()">Resume</button>
-      <button class="toolbar-btn danger" onclick="actionKill()">Kill</button>
-      <div class="toolbar-separator"></div>
       <div class="mode-selector">
         <span>Mode:</span>
         <button class="mode-btn" id="mode-agent" onclick="setMode('agent')">Agent</button>
         <button class="mode-btn" id="mode-plan" onclick="setMode('plan')">Plan</button>
       </div>
+      <button class="toolbar-btn" onclick="actionPause()">Pause</button>
+      <button class="toolbar-btn" onclick="actionResume()">Resume</button>
+      <button class="toolbar-btn danger" onclick="actionKill()">Kill</button>
     </div>
     <div id="output-area"></div>
+    <div id="rules-editor">
+      <div id="rules-toolbar">
+        <span id="rules-path"></span>
+        <span id="rules-status"></span>
+        <button id="rules-save-btn" onclick="saveRules()">Save</button>
+      </div>
+      <textarea id="rules-textarea" placeholder="# CLAUDE.md&#10;&#10;Add rules and instructions for Claude Code here..." oninput="onRulesEdit()"></textarea>
+    </div>
     <div id="input-area">
       <input id="prompt-input" type="text" placeholder="Send a message..." onkeydown="if(event.key==='Enter')sendPrompt()">
       <button id="btn-send" onclick="sendPrompt()">Send</button>
@@ -488,10 +601,15 @@ function openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough) 
 
 // --- API helpers ---
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  let res;
+  try {
+    res = await fetch(API + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+    });
+  } catch (e) {
+    throw new Error('Failed to fetch: server unreachable');
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text);
@@ -551,7 +669,7 @@ function renderList(instances) {
 function selectInstance(title) {
   selectedTitle = title;
   document.getElementById('empty-state').style.display = 'none';
-  document.getElementById('active-view').style.display = 'flex';
+  document.getElementById('active-view').classList.add('visible');
   refreshList();
   if (activeTab === 'diff') {
     loadDiff();
@@ -568,15 +686,115 @@ function selectInstance(title) {
 function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+
   const output = document.getElementById('output-area');
-  output.className = tab === 'diff' ? 'diff' : '';
+  const rulesEditor = document.getElementById('rules-editor');
+  const inputArea = document.getElementById('input-area');
 
   if (tab === 'terminal') {
+    output.style.display = '';
+    output.className = '';
+    rulesEditor.classList.remove('visible');
+    inputArea.style.display = 'flex';
     connectWS(selectedTitle);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
+    output.style.display = '';
+    output.className = 'diff';
+    rulesEditor.classList.remove('visible');
+    inputArea.style.display = 'flex';
     closeWS();
     loadDiff();
+  } else if (tab === 'rules') {
+    output.style.display = 'none';
+    rulesEditor.classList.add('visible');
+    inputArea.style.display = 'none';
+    closeWS();
+    loadRules();
+  }
+}
+
+// --- Rules ---
+let rulesSavedContent = '';
+let rulesUnsaved = false;
+
+async function loadRules() {
+  if (!selectedTitle) return;
+  const statusEl = document.getElementById('rules-status');
+  const pathEl = document.getElementById('rules-path');
+  const textarea = document.getElementById('rules-textarea');
+  const saveBtn = document.getElementById('rules-save-btn');
+
+  statusEl.textContent = 'Loading...';
+  statusEl.className = '';
+
+  try {
+    const data = await api(`/${encodeURIComponent(selectedTitle)}/rules`);
+    rulesSavedContent = data.content || '';
+    textarea.value = rulesSavedContent;
+    pathEl.textContent = data.path || 'CLAUDE.md';
+    rulesUnsaved = false;
+    saveBtn.disabled = true;
+    if (data.exists) {
+      statusEl.textContent = '';
+    } else {
+      statusEl.textContent = 'New file';
+      statusEl.className = 'unsaved';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error loading';
+    statusEl.className = 'unsaved';
+    textarea.value = '';
+    pathEl.textContent = 'CLAUDE.md';
+  }
+  textarea.focus();
+}
+
+function onRulesEdit() {
+  const textarea = document.getElementById('rules-textarea');
+  const statusEl = document.getElementById('rules-status');
+  const saveBtn = document.getElementById('rules-save-btn');
+  const changed = textarea.value !== rulesSavedContent;
+  rulesUnsaved = changed;
+  saveBtn.disabled = !changed;
+  if (changed) {
+    statusEl.textContent = 'Unsaved changes';
+    statusEl.className = 'unsaved';
+  } else {
+    statusEl.textContent = '';
+    statusEl.className = '';
+  }
+}
+
+async function saveRules() {
+  if (!selectedTitle || !rulesUnsaved) return;
+  const textarea = document.getElementById('rules-textarea');
+  const statusEl = document.getElementById('rules-status');
+  const saveBtn = document.getElementById('rules-save-btn');
+
+  saveBtn.disabled = true;
+  statusEl.textContent = 'Saving...';
+  statusEl.className = '';
+
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/rules`, {
+      method: 'PUT',
+      body: JSON.stringify({ content: textarea.value }),
+    });
+    rulesSavedContent = textarea.value;
+    rulesUnsaved = false;
+    statusEl.textContent = 'Saved';
+    statusEl.className = 'saved';
+    setTimeout(() => {
+      if (!rulesUnsaved) {
+        statusEl.textContent = '';
+        statusEl.className = '';
+      }
+    }, 2000);
+  } catch (e) {
+    statusEl.textContent = 'Save failed';
+    statusEl.className = 'unsaved';
+    saveBtn.disabled = false;
   }
 }
 
@@ -595,35 +813,66 @@ function connectWS(title) {
   loadHistoryThenStream(title, output);
 }
 
+function showConnectionError(output, message) {
+  output.innerHTML = `<div class="connection-error">
+    <div class="error-icon">&#x26A0;</div>
+    <div class="error-msg">${esc(message)}</div>
+    <button class="retry-btn" onclick="connectWS(selectedTitle)">Retry</button>
+  </div>`;
+}
+
+function safeAnsiToHtml(text) {
+  // Render into a detached div to ensure well-formed HTML
+  const tmp = document.createElement('div');
+  tmp.innerHTML = ansiToHtml(text);
+  // Extract only the sanitized innerHTML (browser auto-closes unclosed tags)
+  return tmp.innerHTML;
+}
+
 async function loadHistoryThenStream(title, output) {
-  // Fetch full history
+  let historyContent = '';
+
+  // Fetch full scrollback history
   try {
     const data = await api(`/${encodeURIComponent(title)}/history`);
     if (data && data.content) {
-      // Render history safely into an iframe-like isolated container
-      const historyDiv = document.createElement('div');
-      historyDiv.id = 'output-history';
-      historyDiv.innerHTML = ansiToHtml(data.content);
-      const liveDiv = document.createElement('div');
-      liveDiv.id = 'output-live';
-      output.textContent = '';
-      output.appendChild(historyDiv);
-      output.appendChild(liveDiv);
-      historyLoaded = true;
+      historyContent = data.content;
     }
   } catch (e) {
-    // Ignore history errors, WS will still work
+    if (e.message && e.message.includes('Failed to fetch')) {
+      showConnectionError(output, 'Cannot connect to Claude Squad server. Is it running?');
+      return;
+    }
   }
 
-  if (!historyLoaded) {
+  // Render history if we have it
+  if (historyContent) {
+    // Create two containers: history (scrollback) and live (current pane)
+    // Use safeAnsiToHtml to ensure well-formed HTML
     output.innerHTML = '';
+    const historyDiv = document.createElement('div');
+    historyDiv.id = 'output-history';
+    historyDiv.innerHTML = safeAnsiToHtml(historyContent);
+    const liveDiv = document.createElement('div');
+    liveDiv.id = 'output-live';
+    output.appendChild(historyDiv);
+    output.appendChild(liveDiv);
+    historyLoaded = true;
+    output.scrollTop = output.scrollHeight;
+  } else {
+    output.innerHTML = '<span style="color:var(--text-dim)">Connecting...</span>';
+    historyLoaded = false;
   }
-
-  output.scrollTop = output.scrollHeight;
 
   // Connect WS for live updates
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
+  try {
+    ws = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
+  } catch (e) {
+    showConnectionError(output, 'Cannot connect to Claude Squad server. Is it running?');
+    return;
+  }
+
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'output') {
@@ -631,9 +880,9 @@ async function loadHistoryThenStream(title, output) {
 
       if (historyLoaded) {
         const live = document.getElementById('output-live');
-        if (live) live.innerHTML = ansiToHtml(msg.content);
+        if (live) live.innerHTML = safeAnsiToHtml(msg.content);
       } else {
-        output.innerHTML = ansiToHtml(msg.content);
+        output.innerHTML = safeAnsiToHtml(msg.content);
       }
 
       if (wasAtBottom) output.scrollTop = output.scrollHeight;
@@ -645,11 +894,12 @@ async function loadHistoryThenStream(title, output) {
         if (prev !== msg.status) refreshList();
       }
 
-      // Detect mode from terminal output
       detectMode(msg.content);
     }
   };
-  ws.onerror = () => {};
+  ws.onerror = () => {
+    showConnectionError(output, 'Connection to server lost. The server may have stopped.');
+  };
   ws.onclose = () => { ws = null; };
 }
 
@@ -725,7 +975,7 @@ async function actionKill() {
     closeWS();
     selectedTitle = null;
     document.getElementById('empty-state').style.display = 'flex';
-    document.getElementById('active-view').style.display = 'none';
+    document.getElementById('active-view').classList.remove('visible');
     refreshList();
   } catch (e) { alert('Error: ' + e.message); }
 }
@@ -808,6 +1058,14 @@ async function setMode(mode) {
 function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// --- Keyboard shortcuts ---
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's' && activeTab === 'rules') {
+    e.preventDefault();
+    saveRules();
+  }
+});
 
 // --- Poll ---
 setInterval(refreshList, 2000);

@@ -6,7 +6,10 @@ import (
 	"claude-squad/session"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -317,6 +320,49 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			"removed": ds.Removed,
 			"content": ds.Content,
 		})
+
+	case "rules":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+		rulesPath := filepath.Join(workDir, "CLAUDE.md")
+
+		if r.Method == http.MethodGet {
+			content, err := os.ReadFile(rulesPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]interface{}{"content": "", "exists": false, "path": rulesPath})
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"content": string(content), "exists": true, "path": rulesPath})
+		} else if r.Method == http.MethodPut {
+			var body struct {
+				Content string `json:"content"`
+			}
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := os.WriteFile(rulesPath, []byte(body.Content), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": rulesPath})
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 
 	case "ws":
 		s.mu.Unlock() // Release lock for long-lived WebSocket
