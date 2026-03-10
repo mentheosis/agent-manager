@@ -29,8 +29,10 @@ const (
 
 // Instance is a running instance of claude code.
 type Instance struct {
-	// Title is the title of the instance.
+	// Title is the title of the instance (used as internal identifier).
 	Title string
+	// DisplayTitle is an optional user-facing name shown in the UI.
+	DisplayTitle string
 	// Path is the path to the workspace.
 	Path string
 	// Branch is the branch of the instance.
@@ -72,8 +74,9 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:     i.Title,
-		Path:      i.Path,
+		Title:        i.Title,
+		DisplayTitle: i.DisplayTitle,
+		Path:         i.Path,
 		Branch:    i.Branch,
 		Status:    i.Status,
 		Height:    i.Height,
@@ -111,8 +114,9 @@ func (i *Instance) ToInstanceData() InstanceData {
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
 	instance := &Instance{
-		Title:     data.Title,
-		Path:      data.Path,
+		Title:        data.Title,
+		DisplayTitle: data.DisplayTitle,
+		Path:         data.Path,
 		Branch:    data.Branch,
 		Status:    data.Status,
 		Height:    data.Height,
@@ -612,14 +616,11 @@ func (i *Instance) SendPrompt(prompt string) error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-	if err := i.tmuxSession.SendKeys(prompt); err != nil {
-		return fmt.Errorf("error sending keys to tmux session: %w", err)
-	}
-
-	// Brief pause to prevent carriage return from being interpreted as newline
-	time.Sleep(100 * time.Millisecond)
-	if err := i.tmuxSession.TapEnter(); err != nil {
-		return fmt.Errorf("error tapping enter: %w", err)
+	// Send text + Enter as a single atomic tmux send-keys command.
+	// Two separate commands (text then Enter) had a race where the Enter
+	// could be lost, causing the prompt to sit unsent until the next input.
+	if err := i.tmuxSession.SendPromptViaTmux(prompt); err != nil {
+		return fmt.Errorf("error sending prompt to tmux session: %w", err)
 	}
 
 	return nil
@@ -631,6 +632,24 @@ func (i *Instance) PreviewFullHistory() (string, error) {
 		return "", nil
 	}
 	return i.tmuxSession.CapturePaneContentWithOptions("-", "-")
+}
+
+// GetHistorySize returns the number of scrollback lines above the visible pane.
+func (i *Instance) GetHistorySize() (int, error) {
+	if !i.started || i.Status == Paused {
+		return 0, nil
+	}
+	return i.tmuxSession.GetHistorySize()
+}
+
+// CaptureScrollback captures the most recent lineCount lines from the scrollback
+// buffer (the lines just above the visible pane). Returns them oldest-first.
+func (i *Instance) CaptureScrollback(lineCount int) (string, error) {
+	if !i.started || i.Status == Paused || lineCount <= 0 {
+		return "", nil
+	}
+	start := fmt.Sprintf("-%d", lineCount)
+	return i.tmuxSession.CapturePaneContentWithOptions(start, "-1")
 }
 
 // SetTmuxSession sets the tmux session for testing purposes

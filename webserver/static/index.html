@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Squad</title>
+<title>Agent Manager</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <style>
   :root {
     --bg: #1a1b26;
@@ -44,7 +45,8 @@
     justify-content: space-between;
     align-items: center;
   }
-  #sidebar-header h1 { font-size: 14px; color: var(--accent); }
+  #sidebar-header h1 { font-size: 14px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+  #sidebar-header h1 img { width: 28px; height: 28px; }
   #btn-new {
     background: var(--accent);
     color: var(--bg);
@@ -71,16 +73,30 @@
     border: 1px solid transparent;
   }
   .instance-item:hover { background: var(--bg-highlight); }
-  .instance-item.active { background: var(--bg-highlight); border-left: 3px solid var(--accent); }
+  .instance-item.dragging { opacity: 0.4; }
+  .instance-item.drag-over { border-top: 2px solid var(--accent); }
+  .instance-item.active {
+    background: var(--bg-highlight);
+    border-left: 3px solid var(--accent);
+  }
+  /* Waiting but NOT selected: subtle right-side yellow gradient */
   .instance-item.waiting {
-    border-color: var(--yellow);
-    background: rgba(224, 175, 104, 0.08);
-    box-shadow: 0 0 8px rgba(224, 175, 104, 0.15);
+    border-color: transparent;
+    border-right: 2px solid var(--yellow);
+    background: linear-gradient(to right, transparent 0%, rgba(224, 175, 104, 0.1) 100%);
     animation: pulse-waiting 2s ease-in-out infinite;
   }
+  /* Waiting AND selected: full yellow highlight with accent left border */
+  .instance-item.active.waiting {
+    border-left: 3px solid var(--accent);
+    border-color: var(--yellow);
+    border-left-color: var(--accent);
+    background: rgba(224, 175, 104, 0.12);
+    box-shadow: 0 0 8px rgba(224, 175, 104, 0.2);
+  }
   @keyframes pulse-waiting {
-    0%, 100% { box-shadow: 0 0 4px rgba(224, 175, 104, 0.1); }
-    50% { box-shadow: 0 0 12px rgba(224, 175, 104, 0.25); }
+    0%, 100% { box-shadow: 0 0 4px rgba(224, 175, 104, 0.05); }
+    50% { box-shadow: 0 0 10px rgba(224, 175, 104, 0.2); }
   }
   .instance-title { font-size: 13px; font-weight: 600; }
   .instance-meta {
@@ -127,6 +143,16 @@
     overflow: hidden;
     height: 100vh;
   }
+  #active-view {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #active-view.visible {
+    display: flex;
+  }
 
   /* Tab bar */
   #tabs {
@@ -148,6 +174,7 @@
   /* Toolbar */
   #toolbar {
     display: flex;
+    align-items: center;
     gap: 8px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
@@ -164,13 +191,39 @@
     font-size: 11px;
   }
   .toolbar-btn:hover { border-color: var(--accent); }
+  .toolbar-btn.highlight {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .toolbar-btn.highlight:hover { opacity: 0.85; }
   .toolbar-btn.danger:hover { border-color: var(--red); color: var(--red); }
+
+  /* Paused state */
+  #active-view.paused #output-area { opacity: 0.4; }
+  #active-view.paused #input-area { opacity: 0.4; pointer-events: none; }
   .toolbar-separator { width: 1px; background: var(--border); margin: 0 4px; }
+  #toolbar-title {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    outline: none;
+    min-width: 80px;
+    max-width: 200px;
+  }
+  #toolbar-title:hover { border-color: var(--border); }
+  #toolbar-title:focus { border-color: var(--accent); background: var(--bg); }
+  .toolbar-divider { width: 1px; height: 20px; background: var(--border); }
   .mode-selector {
     display: flex;
     align-items: center;
     gap: 4px;
-    margin-left: auto;
     font-size: 11px;
     color: var(--text-dim);
   }
@@ -202,7 +255,140 @@
     line-height: 1.4;
     background: var(--bg);
     tab-size: 8;
+    position: relative;
   }
+  #output-area * {
+    max-width: 100%;
+  }
+  .connection-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    font-size: 14px;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .connection-error .error-icon { font-size: 32px; opacity: 0.5; }
+  .connection-error .error-msg { max-width: 400px; text-align: center; }
+  .connection-error .retry-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .connection-error .retry-btn:hover { border-color: var(--accent); }
+
+  .last-input {
+    color: var(--yellow);
+    font-size: 12px;
+    padding: 2px 8px;
+    opacity: 0.8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Rules editor */
+  #rules-editor {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+  #rules-editor.visible { display: flex; }
+  #rules-file-tabs, #plans-file-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    overflow-x: auto;
+  }
+  .rules-file-tab, .plans-file-tab {
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 2px solid transparent;
+    transition: all 0.1s;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rules-file-tab:hover, .plans-file-tab:hover { color: var(--text); }
+  .rules-file-tab.active, .plans-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .rules-file-tab .file-exists { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .rules-file-tab .file-exists.yes { background: var(--green); }
+  .rules-file-tab .file-exists.no { background: var(--text-dim); opacity: 0.4; }
+  #rules-toolbar, #plans-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  #rules-path, #plans-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rules-save-btn, #plans-save-btn {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 4px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  #rules-save-btn:hover, #plans-save-btn:hover { opacity: 0.85; }
+  #rules-save-btn:disabled, #plans-save-btn:disabled { opacity: 0.4; cursor: default; }
+  #rules-status, #plans-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    transition: opacity 0.3s;
+  }
+  #rules-status.saved, #plans-status.saved { color: var(--green); }
+  #rules-status.unsaved, #plans-status.unsaved { color: var(--yellow); }
+  #rules-textarea, #plans-textarea {
+    flex: 1;
+    min-height: 0;
+    background: var(--bg);
+    color: var(--text);
+    border: none;
+    padding: 16px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+    tab-size: 2;
+  }
+
+  /* Plans editor (shares styling patterns with rules) */
+  #plans-editor {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+  #plans-editor.visible { display: flex; }
+  #plans-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
   #output-area.diff { color: var(--text); }
   .diff-add { color: var(--green); }
   .diff-del { color: var(--red); }
@@ -224,6 +410,49 @@
     font-size: 14px;
   }
 
+  /* Action bar (interactive prompt buttons) */
+  #action-bar {
+    padding: 6px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+  }
+  #action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .action-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .action-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .action-btn.action-primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+  .action-btn.action-primary:hover {
+    opacity: 0.85;
+  }
+  .action-btn.action-danger {
+    color: var(--red);
+    border-color: var(--red);
+  }
+  .action-btn.action-danger:hover {
+    background: var(--red);
+    color: var(--bg);
+  }
+
   /* Input area */
   #input-area {
     padding: 12px 16px;
@@ -231,6 +460,7 @@
     background: var(--bg-surface);
     display: flex;
     gap: 8px;
+    align-items: flex-end;
   }
   #prompt-input {
     flex: 1;
@@ -242,6 +472,12 @@
     font-family: inherit;
     font-size: 13px;
     outline: none;
+    resize: vertical;
+    min-height: 36px;
+    max-height: 200px;
+    overflow-y: auto;
+    line-height: 1.4;
+    field-sizing: content;
   }
   #prompt-input:focus { border-color: var(--accent); }
   #btn-send {
@@ -256,6 +492,24 @@
     font-weight: 600;
   }
   #btn-send:hover { opacity: 0.85; }
+  .history-btn {
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    width: 32px;
+    height: 36px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all 0.1s;
+  }
+  .history-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+  .history-btn:disabled { opacity: 0.3; cursor: default; }
 
   /* Modal */
   #modal-overlay {
@@ -290,6 +544,34 @@
   }
   #modal textarea { height: 80px; resize: vertical; }
   #modal input:focus, #modal textarea:focus { border-color: var(--accent); }
+  #modal input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-bottom: 0;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    position: relative;
+  }
+  #modal input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  #modal input[type="checkbox"]:checked::after {
+    content: '✓';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--bg);
+    font-size: 13px;
+    font-weight: 700;
+  }
   #modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
   #modal-actions button {
     padding: 6px 16px;
@@ -302,6 +584,148 @@
   #modal-cancel { background: var(--bg-highlight); color: var(--text); }
   #modal-submit { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 
+  /* Sidebar footer */
+  #sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+  }
+  #btn-sessions {
+    width: 100%;
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    text-align: left;
+    transition: all 0.15s;
+  }
+  #btn-sessions:hover { color: var(--text); border-color: var(--accent); }
+  #btn-sessions.active { color: var(--accent); border-color: var(--accent); background: var(--bg); }
+
+  /* Sessions view */
+  #sessions-view {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #sessions-view.visible { display: flex; }
+  #sessions-header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  #sessions-header h2 { font-size: 15px; color: var(--text); font-weight: 600; }
+  #sessions-count { font-size: 12px; color: var(--text-dim); }
+  #sessions-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 24px;
+  }
+  .session-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    transition: border-color 0.15s;
+  }
+  .session-card:hover { border-color: var(--accent); }
+  .session-card.active-session { border-left: 3px solid var(--green); }
+  .session-info { flex: 1; min-width: 0; }
+  .session-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .session-active-badge {
+    font-size: 10px;
+    background: var(--green);
+    color: var(--bg);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .session-details {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-top: 4px;
+  }
+  .session-detail-label { color: var(--text-dim); opacity: 0.7; }
+  .session-path-row {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .session-delete-btn {
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    transition: all 0.15s;
+  }
+  .session-delete-btn:hover { border-color: var(--red); color: var(--red); }
+  .sessions-empty {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 48px 16px;
+    font-size: 13px;
+  }
+  .sessions-group-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 12px 0 8px 0;
+    margin-top: 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sessions-group-header:first-child { margin-top: 0; }
+  .sessions-group-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .sessions-group-badge.squad { background: var(--accent); color: var(--bg); }
+  .sessions-group-badge.cli { background: var(--text-dim); color: var(--bg); }
+  .session-card.cli-session { border-left: 3px solid var(--text-dim); }
+  .session-id {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: inherit;
+    opacity: 0.7;
+  }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -312,46 +736,84 @@
 
 <div id="sidebar">
   <div id="sidebar-header">
-    <h1>Claude Squad</h1>
-    <button id="btn-new" onclick="showNewModal()">+ New</button>
+    <h1><img src="/static/favicon.svg" alt="crab">Agent Manager</h1>
+    <button id="btn-new">+ New</button>
   </div>
   <div id="instance-list"></div>
+  <div id="sidebar-footer">
+    <button id="btn-sessions">All Saved Sessions</button>
+  </div>
 </div>
 
 <div id="main">
   <div id="empty-state">Select or create an instance to get started</div>
-  <div id="active-view" style="display:none; flex-direction:column; flex:1; min-height:0; overflow:hidden;">
+  <div id="sessions-view">
+    <div id="sessions-header">
+      <h2>Saved Sessions</h2>
+      <span id="sessions-count"></span>
+    </div>
+    <div id="sessions-list"></div>
+  </div>
+  <div id="active-view">
     <div id="tabs">
-      <div class="tab active" data-tab="terminal" onclick="switchTab('terminal')">Terminal</div>
-      <div class="tab" data-tab="diff" onclick="switchTab('diff')">Diff</div>
+      <div class="tab active" data-tab="terminal">Terminal</div>
+      <div class="tab" data-tab="diff">Diff</div>
+      <div class="tab" data-tab="rules">Rules</div>
+      <div class="tab" data-tab="plans">Plans</div>
     </div>
     <div id="toolbar">
-      <button class="toolbar-btn" onclick="actionPause()">Pause</button>
-      <button class="toolbar-btn" onclick="actionResume()">Resume</button>
-      <button class="toolbar-btn danger" onclick="actionKill()">Kill</button>
-      <div class="toolbar-separator"></div>
       <div class="mode-selector">
         <span>Mode:</span>
-        <button class="mode-btn" id="mode-agent" onclick="setMode('agent')">Agent</button>
-        <button class="mode-btn" id="mode-plan" onclick="setMode('plan')">Plan</button>
+        <button class="mode-btn" id="mode-agent">Agent</button>
+        <button class="mode-btn" id="mode-plan">Plan</button>
       </div>
+      <div class="toolbar-divider"></div>
+      <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
+      <div style="flex:1"></div>
+      <button class="toolbar-btn" id="btn-pause">Pause</button>
+      <button class="toolbar-btn" id="btn-resume">Resume</button>
+      <button class="toolbar-btn danger" id="btn-kill">Kill</button>
     </div>
     <div id="output-area"></div>
+    <div id="rules-editor">
+      <div id="rules-file-tabs"></div>
+      <div id="rules-toolbar">
+        <span id="rules-path"></span>
+        <span id="rules-status"></span>
+        <button id="rules-save-btn">Save</button>
+      </div>
+      <textarea id="rules-textarea" placeholder="Select a file above to edit..."></textarea>
+    </div>
+    <div id="plans-editor">
+      <div id="plans-file-tabs"></div>
+      <div id="plans-toolbar">
+        <span id="plans-path"></span>
+        <span id="plans-status"></span>
+        <button id="plans-save-btn">Save</button>
+      </div>
+      <textarea id="plans-textarea" placeholder="No plan files yet. Use /plan mode to generate plans."></textarea>
+      <div id="plans-empty" style="display:none">No plan files found. Use /plan mode to generate plans.</div>
+    </div>
+    <div id="action-bar" style="display:none">
+      <div id="action-buttons"></div>
+    </div>
     <div id="input-area">
-      <input id="prompt-input" type="text" placeholder="Send a message..." onkeydown="if(event.key==='Enter')sendPrompt()">
-      <button id="btn-send" onclick="sendPrompt()">Send</button>
+      <textarea id="prompt-input" rows="1" placeholder="Send a message..."></textarea>
+      <button id="btn-send">Send</button>
+      <button class="history-btn" id="btn-hist-prev" title="Previous prompt" disabled>&#x25B2;</button>
+      <button class="history-btn" id="btn-hist-next" title="Next prompt" disabled>&#x25BC;</button>
     </div>
   </div>
 </div>
 
-<div id="modal-overlay" onclick="if(event.target===this)hideModal()">
+<div id="modal-overlay">
   <div id="modal">
     <h2>New Instance</h2>
-    <input id="modal-title" type="text" placeholder="Instance name" onkeydown="if(event.key==='Enter')document.getElementById('modal-path').focus()">
+    <input id="modal-title" type="text" placeholder="Instance name">
     <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Working directory</label>
     <input id="modal-path" type="text" placeholder="Absolute path (default: current dir)">
-    <label style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;color:var(--text-dim)">
-      <input id="modal-gitmode" type="checkbox" onchange="toggleGitOptions()"> Use git worktree isolation
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:13px;color:var(--text-dim);cursor:pointer">
+      <input id="modal-gitmode" type="checkbox"> Use git worktree isolation
     </label>
     <div id="git-options" style="display:none;margin-bottom:12px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg)">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Git repo path (the repo to branch from)</label>
@@ -362,146 +824,105 @@
     </div>
     <textarea id="modal-prompt" placeholder="Initial prompt (optional)"></textarea>
     <div id="modal-actions">
-      <button id="modal-cancel" onclick="hideModal()">Cancel</button>
-      <button id="modal-submit" onclick="createInstance()">Create</button>
+      <button id="modal-cancel">Cancel</button>
+      <button id="modal-submit">Create</button>
     </div>
   </div>
 </div>
 
-<script>
-const API = '/api/instances';
+<script type="module">
+import { ConvLogView } from '/static/js/convlog.js';
+import { InputHistory } from '/static/js/input-history.js';
+import { api, apiFetch } from '/static/js/api.js';
+import { esc, safeAnsiToHtml } from '/static/js/ansi.js';
+
 let selectedTitle = null;
+let cachedInstances = [];
 let activeTab = 'terminal';
-let ws = null;
-let autoScroll = true;
-let currentMode = 'agent'; // 'agent' or 'plan'
-let instanceStatuses = {}; // title -> status, updated via WS for immediate feedback
+let currentMode = 'agent';
+let instanceStatuses = {};
 
-// --- ANSI-to-HTML parser ---
-const ANSI_COLORS_16 = [
-  '#1a1b26','#f7768e','#9ece6a','#e0af68','#7aa2f7','#bb9af7','#7dcfff','#c0caf5',
-  '#565f89','#f7768e','#9ece6a','#e0af68','#7aa2f7','#bb9af7','#7dcfff','#ffffff',
-];
+function updatePausedState() {
+  const status = selectedTitle ? (instanceStatuses[selectedTitle] || '') : '';
+  const isPaused = status === 'paused';
+  document.getElementById('active-view').classList.toggle('paused', isPaused);
+  document.getElementById('btn-resume').classList.toggle('highlight', isPaused);
+}
 
-// 256-color palette: 16 base + 216 cube + 24 grayscale
-const ANSI_256 = (() => {
-  const c = [...ANSI_COLORS_16];
-  for (let r = 0; r < 6; r++)
-    for (let g = 0; g < 6; g++)
-      for (let b = 0; b < 6; b++)
-        c.push(`#${[r,g,b].map(v => (v ? v*40+55 : 0).toString(16).padStart(2,'0')).join('')}`);
-  for (let i = 0; i < 24; i++) {
-    const v = (i * 10 + 8).toString(16).padStart(2, '0');
-    c.push(`#${v}${v}${v}`);
+function updateToolbarTitle() {
+  const input = document.getElementById('toolbar-title');
+  if (!selectedTitle) return;
+  const inst = cachedInstances.find(i => i.title === selectedTitle);
+  if (!inst) return;
+  // Only update if the input isn't currently focused (user may be editing)
+  if (document.activeElement !== input) {
+    input.value = inst.display_title || inst.title;
   }
-  return c;
-})();
+}
 
-function ansiToHtml(text) {
-  if (!text) return '';
-  // Match ESC[ ... m sequences (SGR) and other CSI sequences
-  // Also match bare ESC sequences and OSC sequences
-  const re = /\x1b\[[0-9;]*m|\x1b\[[0-9;]*[A-HJKSTfhln]|\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1b[^[\]]/g;
+// Toolbar title rename: commit on blur or Enter
+const toolbarTitleInput = document.getElementById('toolbar-title');
+toolbarTitleInput.addEventListener('blur', commitToolbarRename);
+toolbarTitleInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); toolbarTitleInput.blur(); }
+  if (e.key === 'Escape') { e.preventDefault(); updateToolbarTitle(); toolbarTitleInput.blur(); }
+});
 
-  let fg = null, bg = null;
-  let bold = false, dim = false, italic = false, underline = false, inverse = false, strikethrough = false;
-  let result = '';
-  let lastIdx = 0;
+async function commitToolbarRename() {
+  if (!selectedTitle) return;
+  const newName = toolbarTitleInput.value.trim();
+  const inst = cachedInstances.find(i => i.title === selectedTitle);
+  if (!inst) return;
+  const oldName = inst.display_title || inst.title;
+  if (!newName || newName === oldName) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ display_title: newName }),
+    });
+    inst.display_title = newName;
+    refreshList();
+  } catch (err) {
+    // Revert on failure
+    toolbarTitleInput.value = oldName;
+  }
+}
 
-  for (const match of text.matchAll(re)) {
-    // Append text before this escape sequence (HTML-escaped)
-    if (match.index > lastIdx) {
-      result += openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough);
-      result += esc(text.slice(lastIdx, match.index));
-      result += '</span>';
-    }
-    lastIdx = match.index + match[0].length;
+// --- ConvLogView + InputHistory ---
+const outputArea = document.getElementById('output-area');
+const convLog = new ConvLogView(outputArea);
 
-    const seq = match[0];
-    // Only process SGR sequences (ending in 'm')
-    if (!seq.endsWith('m')) continue;
+convLog.onStatus = (title, status) => {
+  const prev = instanceStatuses[title];
+  instanceStatuses[title] = status;
+  if (prev !== status) {
+    refreshList();
+    if (title === selectedTitle) updatePausedState();
+  }
+};
 
-    const codes = seq.slice(2, -1).split(';').map(s => s === '' ? 0 : parseInt(s, 10));
+convLog.onContent = (content) => {
+  detectMode(content);
+  updateActionButtons(content);
+};
 
-    for (let i = 0; i < codes.length; i++) {
-      const c = codes[i];
-      if (c === 0) { fg = bg = null; bold = dim = italic = underline = inverse = strikethrough = false; }
-      else if (c === 1) bold = true;
-      else if (c === 2) dim = true;
-      else if (c === 3) italic = true;
-      else if (c === 4) underline = true;
-      else if (c === 7) inverse = true;
-      else if (c === 9) strikethrough = true;
-      else if (c === 22) { bold = false; dim = false; }
-      else if (c === 23) italic = false;
-      else if (c === 24) underline = false;
-      else if (c === 27) inverse = false;
-      else if (c === 29) strikethrough = false;
-      else if (c >= 30 && c <= 37) fg = ANSI_COLORS_16[c - 30];
-      else if (c === 38) {
-        if (codes[i+1] === 5 && codes[i+2] != null) { fg = ANSI_256[codes[i+2]]; i += 2; }
-        else if (codes[i+1] === 2 && codes[i+4] != null) {
-          fg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4;
-        }
-      }
-      else if (c === 39) fg = null;
-      else if (c >= 40 && c <= 47) bg = ANSI_COLORS_16[c - 40];
-      else if (c === 48) {
-        if (codes[i+1] === 5 && codes[i+2] != null) { bg = ANSI_256[codes[i+2]]; i += 2; }
-        else if (codes[i+1] === 2 && codes[i+4] != null) {
-          bg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4;
-        }
-      }
-      else if (c === 49) bg = null;
-      else if (c >= 90 && c <= 97) fg = ANSI_COLORS_16[c - 90 + 8];
-      else if (c >= 100 && c <= 107) bg = ANSI_COLORS_16[c - 100 + 8];
+const inputHistory = new InputHistory(
+  document.getElementById('prompt-input'),
+  async (text) => {
+    if (!selectedTitle) return;
+    console.log('[send] firing API call:', selectedTitle, text);
+    try {
+      await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      });
+      console.log('[send] API call succeeded');
+    } catch (e) {
+      console.error('[send] API call failed:', e);
+      alert('Failed to send: ' + e.message);
     }
   }
-
-  // Append remaining text
-  if (lastIdx < text.length) {
-    result += openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough);
-    result += esc(text.slice(lastIdx));
-    result += '</span>';
-  }
-
-  return result;
-}
-
-function openSpan(fg, bg, bold, dim, italic, underline, inverse, strikethrough) {
-  const styles = [];
-  const classes = [];
-  const fgActual = inverse ? bg : fg;
-  const bgActual = inverse ? (fg || 'var(--text)') : bg;
-  if (fgActual) styles.push(`color:${fgActual}`);
-  if (bgActual) styles.push(`background:${bgActual}`);
-  if (bold) classes.push('ansi-bold');
-  if (dim) classes.push('ansi-dim');
-  if (italic) classes.push('ansi-italic');
-  if (underline) classes.push('ansi-underline');
-  if (strikethrough) classes.push('ansi-strikethrough');
-  let tag = '<span';
-  if (classes.length) tag += ` class="${classes.join(' ')}"`;
-  if (styles.length) tag += ` style="${styles.join(';')}"`;
-  return tag + '>';
-}
-
-// --- API helpers ---
-async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text);
-  }
-  if (res.status === 200 || res.status === 201) {
-    const ct = res.headers.get('content-type');
-    if (ct && ct.includes('json')) return res.json();
-  }
-  return null;
-}
+);
 
 // --- Instance list ---
 async function refreshList() {
@@ -514,10 +935,11 @@ async function refreshList() {
 }
 
 function renderList(instances) {
+  cachedInstances = instances;
+  updateToolbarTitle();
   const el = document.getElementById('instance-list');
   el.innerHTML = '';
   instances.forEach(inst => {
-    // Use WS-updated status if available for immediate feedback
     const status = instanceStatuses[inst.title] || inst.status;
     const isWaiting = status === 'ready';
     const statusLabel = isWaiting ? 'waiting' : status;
@@ -527,15 +949,47 @@ function renderList(instances) {
     if (inst.title === selectedTitle) cls += ' active';
     if (isWaiting) cls += ' waiting';
     div.className = cls;
+    div.draggable = true;
+    div.dataset.title = inst.title;
     div.onclick = () => selectInstance(inst.title);
+
+    div.addEventListener('dragstart', (e) => {
+      div.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', inst.title);
+    });
+    div.addEventListener('dragend', () => {
+      div.classList.remove('dragging');
+      el.querySelectorAll('.drag-over').forEach(d => d.classList.remove('drag-over'));
+    });
+    div.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const dragging = el.querySelector('.dragging');
+      if (dragging && dragging !== div) {
+        div.classList.add('drag-over');
+      }
+    });
+    div.addEventListener('dragleave', () => {
+      div.classList.remove('drag-over');
+    });
+    div.addEventListener('drop', (e) => {
+      e.preventDefault();
+      div.classList.remove('drag-over');
+      const fromTitle = e.dataTransfer.getData('text/plain');
+      if (fromTitle && fromTitle !== inst.title) {
+        reorderInstances(el, fromTitle, inst.title);
+      }
+    });
 
     const diffInfo = (inst.diff_added || inst.diff_removed)
       ? `+${inst.diff_added} -${inst.diff_removed}`
       : '';
     const shortPath = inst.work_dir ? inst.work_dir.replace(/^\/Users\/[^/]+/, '~') : '';
     const gitBadge = inst.git_mode ? '<span style="color:var(--orange)">git</span>' : '';
+    const displayName = inst.display_title || inst.title;
     div.innerHTML = `
-      <div class="instance-title">${esc(inst.title)}</div>
+      <div class="instance-title">${esc(displayName)}</div>
       <div class="instance-meta">
         <span class="status-dot ${status}"></span>
         <span class="status-label ${status}">${statusLabel}</span>
@@ -544,129 +998,498 @@ function renderList(instances) {
       </div>
       <div class="instance-path" title="${esc(inst.work_dir || '')}">${esc(shortPath)}</div>
     `;
+
     el.appendChild(div);
   });
 }
 
+function reorderInstances(listEl, fromTitle, toTitle) {
+  const items = Array.from(listEl.querySelectorAll('.instance-item'));
+  const titles = items.map(el => el.dataset.title);
+  const fromIdx = titles.indexOf(fromTitle);
+  const toIdx = titles.indexOf(toTitle);
+  if (fromIdx === -1 || toIdx === -1) return;
+
+  // Move fromTitle to just before toTitle
+  titles.splice(fromIdx, 1);
+  const newToIdx = titles.indexOf(toTitle);
+  titles.splice(newToIdx, 0, fromTitle);
+
+  // Reorder DOM immediately for responsiveness
+  const byTitle = {};
+  items.forEach(el => { byTitle[el.dataset.title] = el; });
+  titles.forEach(t => listEl.appendChild(byTitle[t]));
+
+  // Persist to server
+  api('/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ order: titles }),
+  }).catch(e => console.error('Failed to save order:', e));
+}
+
 function selectInstance(title) {
   selectedTitle = title;
+  hideSessions();
+  diffGeneration++;
+  rulesGeneration++;
+  plansGeneration++;
   document.getElementById('empty-state').style.display = 'none';
-  document.getElementById('active-view').style.display = 'flex';
+  document.getElementById('active-view').classList.add('visible');
   refreshList();
+  updatePausedState();
+  updateToolbarTitle();
+
+  // Load input history for this instance
+  loadInputHistory(title);
+
   if (activeTab === 'diff') {
     loadDiff();
   } else {
     activeTab = 'terminal';
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'terminal'));
-    connectWS(title);
+    convLog.connect(title);
   }
-  // Auto-focus the prompt input
   setTimeout(() => document.getElementById('prompt-input').focus(), 50);
+}
+
+async function loadInputHistory(title) {
+  try {
+    const data = await api(`/${encodeURIComponent(title)}/input-history`);
+    if (data && data.history) {
+      inputHistory.loadHistory(data.history);
+    }
+  } catch (e) {
+    // Ignore - input history is a nice-to-have
+  }
 }
 
 // --- Tabs ---
 function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+
   const output = document.getElementById('output-area');
-  output.className = tab === 'diff' ? 'diff' : '';
+  const rulesEditor = document.getElementById('rules-editor');
+  const plansEditor = document.getElementById('plans-editor');
+  const inputArea = document.getElementById('input-area');
+
+  // Hide both editors by default
+  rulesEditor.classList.remove('visible');
+  plansEditor.classList.remove('visible');
 
   if (tab === 'terminal') {
-    connectWS(selectedTitle);
+    output.style.display = '';
+    output.className = '';
+    inputArea.style.display = 'flex';
+    convLog.connect(selectedTitle);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
-    closeWS();
+    output.style.display = '';
+    output.className = 'diff';
+    inputArea.style.display = 'flex';
+    convLog.disconnect();
     loadDiff();
+  } else if (tab === 'rules') {
+    output.style.display = 'none';
+    rulesEditor.classList.add('visible');
+    inputArea.style.display = 'none';
+    convLog.disconnect();
+    loadRules();
+  } else if (tab === 'plans') {
+    output.style.display = 'none';
+    plansEditor.classList.add('visible');
+    inputArea.style.display = 'none';
+    convLog.disconnect();
+    loadPlans();
   }
 }
 
-// --- WebSocket ---
-let historyLoaded = false;
+// --- Tab click handlers ---
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => switchTab(t.dataset.tab));
+});
 
-function connectWS(title) {
-  closeWS();
-  if (!title) return;
+// --- Rules (multi-file config editor) ---
+let rulesFiles = [];       // array of {name, path, content, exists, writable}
+let rulesActiveIdx = 0;    // index of currently selected file
+let rulesSavedContent = '';
+let rulesUnsaved = false;
+let rulesGeneration = 0;
 
-  const output = document.getElementById('output-area');
-  output.innerHTML = '';
-  historyLoaded = false;
+async function loadRules() {
+  if (!selectedTitle) return;
+  rulesGeneration++;
+  const gen = rulesGeneration;
+  const titleAtRequest = selectedTitle;
 
-  // Load full scrollback history, then overlay live pane on top
-  loadHistoryThenStream(title, output);
-}
+  const statusEl = document.getElementById('rules-status');
+  const pathEl = document.getElementById('rules-path');
+  const textarea = document.getElementById('rules-textarea');
+  const saveBtn = document.getElementById('rules-save-btn');
+  const tabsEl = document.getElementById('rules-file-tabs');
 
-async function loadHistoryThenStream(title, output) {
-  // Fetch full history
+  statusEl.textContent = 'Loading...';
+  statusEl.className = '';
+  textarea.value = '';
+  tabsEl.innerHTML = '';
+
   try {
-    const data = await api(`/${encodeURIComponent(title)}/history`);
-    if (data && data.content) {
-      // Render history safely into an iframe-like isolated container
-      const historyDiv = document.createElement('div');
-      historyDiv.id = 'output-history';
-      historyDiv.innerHTML = ansiToHtml(data.content);
-      const liveDiv = document.createElement('div');
-      liveDiv.id = 'output-live';
-      output.textContent = '';
-      output.appendChild(historyDiv);
-      output.appendChild(liveDiv);
-      historyLoaded = true;
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/rules`);
+    if (gen !== rulesGeneration) return;
+
+    rulesFiles = data.files || [];
+    rulesActiveIdx = 0;
+
+    // Render file tabs
+    renderRulesFileTabs();
+
+    // Select first file
+    if (rulesFiles.length > 0) {
+      selectRulesFile(0);
     }
   } catch (e) {
-    // Ignore history errors, WS will still work
+    if (gen !== rulesGeneration) return;
+    statusEl.textContent = 'Error loading';
+    statusEl.className = 'unsaved';
+    textarea.value = '';
+    pathEl.textContent = '';
+  }
+}
+
+function renderRulesFileTabs() {
+  const tabsEl = document.getElementById('rules-file-tabs');
+  tabsEl.innerHTML = '';
+  rulesFiles.forEach((f, idx) => {
+    const tab = document.createElement('div');
+    tab.className = 'rules-file-tab' + (idx === rulesActiveIdx ? ' active' : '');
+    tab.innerHTML = `<span class="file-exists ${f.exists ? 'yes' : 'no'}"></span>${esc(f.name)}`;
+    tab.addEventListener('click', () => {
+      // Save check before switching
+      if (rulesUnsaved) {
+        if (!confirm('You have unsaved changes. Discard?')) return;
+      }
+      selectRulesFile(idx);
+    });
+    tabsEl.appendChild(tab);
+  });
+}
+
+function selectRulesFile(idx) {
+  rulesActiveIdx = idx;
+  const f = rulesFiles[idx];
+  const statusEl = document.getElementById('rules-status');
+  const pathEl = document.getElementById('rules-path');
+  const textarea = document.getElementById('rules-textarea');
+  const saveBtn = document.getElementById('rules-save-btn');
+
+  rulesSavedContent = f.content || '';
+  textarea.value = rulesSavedContent;
+  pathEl.textContent = f.path || f.name;
+  rulesUnsaved = false;
+  saveBtn.disabled = true;
+
+  if (f.exists) {
+    statusEl.textContent = '';
+    statusEl.className = '';
+  } else {
+    statusEl.textContent = 'New file (will be created on save)';
+    statusEl.className = 'unsaved';
   }
 
-  if (!historyLoaded) {
-    output.innerHTML = '';
+  // Update active tab styling
+  document.querySelectorAll('.rules-file-tab').forEach((tab, i) => {
+    tab.classList.toggle('active', i === idx);
+  });
+
+  textarea.focus();
+}
+
+function onRulesEdit() {
+  const textarea = document.getElementById('rules-textarea');
+  const statusEl = document.getElementById('rules-status');
+  const saveBtn = document.getElementById('rules-save-btn');
+  const changed = textarea.value !== rulesSavedContent;
+  rulesUnsaved = changed;
+  saveBtn.disabled = !changed;
+  if (changed) {
+    statusEl.textContent = 'Unsaved changes';
+    statusEl.className = 'unsaved';
+  } else {
+    statusEl.textContent = '';
+    statusEl.className = '';
   }
+}
 
-  output.scrollTop = output.scrollHeight;
+async function saveRules() {
+  if (!selectedTitle || !rulesUnsaved) return;
+  const f = rulesFiles[rulesActiveIdx];
+  if (!f) return;
 
-  // Connect WS for live updates
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
-  ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'output') {
-      const wasAtBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
+  const textarea = document.getElementById('rules-textarea');
+  const statusEl = document.getElementById('rules-status');
+  const saveBtn = document.getElementById('rules-save-btn');
 
-      if (historyLoaded) {
-        const live = document.getElementById('output-live');
-        if (live) live.innerHTML = ansiToHtml(msg.content);
-      } else {
-        output.innerHTML = ansiToHtml(msg.content);
+  saveBtn.disabled = true;
+  statusEl.textContent = 'Saving...';
+  statusEl.className = '';
+
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/rules`, {
+      method: 'PUT',
+      body: JSON.stringify({ path: f.path, content: textarea.value }),
+    });
+    rulesSavedContent = textarea.value;
+    f.content = textarea.value;
+    f.exists = true;
+    rulesUnsaved = false;
+    statusEl.textContent = 'Saved';
+    statusEl.className = 'saved';
+    // Update the file tab dot
+    renderRulesFileTabs();
+    setTimeout(() => {
+      if (!rulesUnsaved) {
+        statusEl.textContent = '';
+        statusEl.className = '';
       }
+    }, 2000);
+  } catch (e) {
+    statusEl.textContent = 'Save failed';
+    statusEl.className = 'unsaved';
+    saveBtn.disabled = false;
+  }
+}
 
-      if (wasAtBottom) output.scrollTop = output.scrollHeight;
+document.getElementById('rules-textarea').addEventListener('input', onRulesEdit);
+document.getElementById('rules-save-btn').addEventListener('click', saveRules);
 
-      // Immediately update status in sidebar
-      if (msg.status && title) {
-        const prev = instanceStatuses[title];
-        instanceStatuses[title] = msg.status;
-        if (prev !== msg.status) refreshList();
-      }
+// --- Plans (plan file editor) ---
+let plansFiles = [];       // array of {name, path, content}
+let plansActiveIdx = 0;
+let plansSavedContent = '';
+let plansUnsaved = false;
+let plansGeneration = 0;
 
-      // Detect mode from terminal output
-      detectMode(msg.content);
+async function loadPlans() {
+  if (!selectedTitle) return;
+  plansGeneration++;
+  const gen = plansGeneration;
+  const titleAtRequest = selectedTitle;
+
+  const statusEl = document.getElementById('plans-status');
+  const pathEl = document.getElementById('plans-path');
+  const textarea = document.getElementById('plans-textarea');
+  const saveBtn = document.getElementById('plans-save-btn');
+  const tabsEl = document.getElementById('plans-file-tabs');
+  const emptyEl = document.getElementById('plans-empty');
+
+  statusEl.textContent = 'Loading...';
+  statusEl.className = '';
+  textarea.value = '';
+  tabsEl.innerHTML = '';
+
+  try {
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/plans`);
+    if (gen !== plansGeneration) return;
+
+    plansFiles = data.files || [];
+    plansActiveIdx = 0;
+
+    if (plansFiles.length > 0) {
+      emptyEl.style.display = 'none';
+      textarea.style.display = '';
+      renderPlansFileTabs();
+      selectPlansFile(0);
+    } else {
+      emptyEl.style.display = 'flex';
+      textarea.style.display = 'none';
+      statusEl.textContent = '';
+      pathEl.textContent = '';
+      saveBtn.disabled = true;
     }
-  };
-  ws.onerror = () => {};
-  ws.onclose = () => { ws = null; };
+  } catch (e) {
+    if (gen !== plansGeneration) return;
+    statusEl.textContent = 'Error loading';
+    statusEl.className = 'unsaved';
+    textarea.value = '';
+    pathEl.textContent = '';
+  }
 }
 
-function closeWS() {
-  if (ws) { ws.close(); ws = null; }
+function renderPlansFileTabs() {
+  const tabsEl = document.getElementById('plans-file-tabs');
+  tabsEl.innerHTML = '';
+  plansFiles.forEach((f, idx) => {
+    const tab = document.createElement('div');
+    tab.className = 'plans-file-tab' + (idx === plansActiveIdx ? ' active' : '');
+    tab.textContent = f.name.replace(/\.md$/, '');
+    tab.addEventListener('click', () => {
+      if (plansUnsaved) {
+        if (!confirm('You have unsaved changes. Discard?')) return;
+      }
+      selectPlansFile(idx);
+    });
+    tabsEl.appendChild(tab);
+  });
 }
+
+function selectPlansFile(idx) {
+  plansActiveIdx = idx;
+  const f = plansFiles[idx];
+  const statusEl = document.getElementById('plans-status');
+  const pathEl = document.getElementById('plans-path');
+  const textarea = document.getElementById('plans-textarea');
+  const saveBtn = document.getElementById('plans-save-btn');
+
+  plansSavedContent = f.content || '';
+  textarea.value = plansSavedContent;
+  pathEl.textContent = f.name;
+  plansUnsaved = false;
+  saveBtn.disabled = true;
+  statusEl.textContent = '';
+  statusEl.className = '';
+
+  document.querySelectorAll('.plans-file-tab').forEach((tab, i) => {
+    tab.classList.toggle('active', i === idx);
+  });
+
+  textarea.focus();
+}
+
+function onPlansEdit() {
+  const textarea = document.getElementById('plans-textarea');
+  const statusEl = document.getElementById('plans-status');
+  const saveBtn = document.getElementById('plans-save-btn');
+  const changed = textarea.value !== plansSavedContent;
+  plansUnsaved = changed;
+  saveBtn.disabled = !changed;
+  if (changed) {
+    statusEl.textContent = 'Unsaved changes';
+    statusEl.className = 'unsaved';
+  } else {
+    statusEl.textContent = '';
+    statusEl.className = '';
+  }
+}
+
+async function savePlans() {
+  if (!selectedTitle || !plansUnsaved) return;
+  const f = plansFiles[plansActiveIdx];
+  if (!f) return;
+
+  const textarea = document.getElementById('plans-textarea');
+  const statusEl = document.getElementById('plans-status');
+  const saveBtn = document.getElementById('plans-save-btn');
+
+  saveBtn.disabled = true;
+  statusEl.textContent = 'Saving...';
+  statusEl.className = '';
+
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/plans`, {
+      method: 'PUT',
+      body: JSON.stringify({ path: f.path, content: textarea.value }),
+    });
+    plansSavedContent = textarea.value;
+    f.content = textarea.value;
+    plansUnsaved = false;
+    statusEl.textContent = 'Saved';
+    statusEl.className = 'saved';
+    setTimeout(() => {
+      if (!plansUnsaved) {
+        statusEl.textContent = '';
+        statusEl.className = '';
+      }
+    }, 2000);
+  } catch (e) {
+    statusEl.textContent = 'Save failed';
+    statusEl.className = 'unsaved';
+    saveBtn.disabled = false;
+  }
+}
+
+document.getElementById('plans-textarea').addEventListener('input', onPlansEdit);
+document.getElementById('plans-save-btn').addEventListener('click', savePlans);
 
 // --- Load diff ---
+let diffGeneration = 0;
+
 async function loadDiff() {
   if (!selectedTitle) return;
+  diffGeneration++;
+  const gen = diffGeneration;
+  const titleAtRequest = selectedTitle;
+  const output = document.getElementById('output-area');
+  output.innerHTML = '<span style="color:var(--muted)">Loading git status...</span>';
+
   try {
-    const data = await api(`/${encodeURIComponent(selectedTitle)}/diff`);
-    const output = document.getElementById('output-area');
-    output.innerHTML = formatDiff(data.content || 'No changes');
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/git-status`);
+    if (gen !== diffGeneration) return;
+
+    if (!data.is_git) {
+      output.innerHTML = '<span style="color:var(--muted)">Not a git repository</span>';
+      return;
+    }
+
+    let html = '';
+    // Branch
+    html += `<div style="margin-bottom:8px"><strong style="color:var(--accent)">Branch:</strong> ${esc(data.branch || '(detached)')}</div>`;
+
+    // Status
+    if (data.status && data.status.trim()) {
+      html += `<div style="margin-bottom:8px"><strong style="color:var(--accent)">Status:</strong></div>`;
+      html += `<pre style="margin:0 0 12px 0;color:var(--fg)">${formatGitStatus(data.status)}</pre>`;
+    } else {
+      html += `<div style="margin-bottom:12px;color:var(--muted)">Working tree clean</div>`;
+    }
+
+    // Show diff button
+    html += `<button id="show-diff-btn" style="background:var(--accent);color:#000;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:13px">Show Diff</button>`;
+    html += `<div id="diff-output" style="margin-top:12px"></div>`;
+
+    output.innerHTML = html;
+
+    document.getElementById('show-diff-btn').addEventListener('click', () => loadFullDiff(gen, titleAtRequest));
   } catch (e) {
-    document.getElementById('output-area').textContent = 'Error: ' + e.message;
+    if (gen !== diffGeneration) return;
+    output.textContent = 'Error: ' + e.message;
   }
+}
+
+async function loadFullDiff(gen, title) {
+  if (gen !== diffGeneration) return;
+  const btn = document.getElementById('show-diff-btn');
+  const diffOutput = document.getElementById('diff-output');
+  if (btn) btn.disabled = true;
+  if (btn) btn.textContent = 'Loading...';
+
+  try {
+    const data = await api(`/${encodeURIComponent(title)}/diff`);
+    if (gen !== diffGeneration) return;
+    if (btn) btn.textContent = 'Refresh Diff';
+    if (btn) btn.disabled = false;
+    diffOutput.innerHTML = `<pre style="margin:0;color:var(--fg)">${formatDiff(data.content || 'No changes (working tree matches HEAD)')}</pre>`;
+  } catch (e) {
+    if (gen !== diffGeneration) return;
+    if (btn) btn.textContent = 'Show Diff';
+    if (btn) btn.disabled = false;
+    diffOutput.textContent = 'Error: ' + e.message;
+  }
+}
+
+function formatGitStatus(text) {
+  if (!text) return '';
+  return text.split('\n').map(line => {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('M ') || trimmed.startsWith('MM'))
+      return `<span style="color:var(--yellow)">${esc(line)}</span>`;
+    if (trimmed.startsWith('A '))
+      return `<span class="diff-add">${esc(line)}</span>`;
+    if (trimmed.startsWith('D '))
+      return `<span class="diff-del">${esc(line)}</span>`;
+    if (trimmed.startsWith('??'))
+      return `<span style="color:var(--muted)">${esc(line)}</span>`;
+    return esc(line);
+  }).join('\n');
 }
 
 function formatDiff(text) {
@@ -683,28 +1506,14 @@ function formatDiff(text) {
 }
 
 // --- Actions ---
-async function sendPrompt() {
-  const input = document.getElementById('prompt-input');
-  const text = input.value.trim();
-  if (!text || !selectedTitle) return;
-  input.value = '';
-  try {
-    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-    });
-  } catch (e) {
-    alert('Failed to send: ' + e.message);
-  }
-}
-
 async function actionPause() {
   if (!selectedTitle) return;
-  if (!confirm(`Pause "${selectedTitle}"?`)) return;
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
-    closeWS();
+    instanceStatuses[selectedTitle] = 'paused';
+    convLog.disconnect();
     refreshList();
+    updatePausedState();
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -712,8 +1521,10 @@ async function actionResume() {
   if (!selectedTitle) return;
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
+    instanceStatuses[selectedTitle] = 'running';
     refreshList();
-    connectWS(selectedTitle);
+    updatePausedState();
+    convLog.connect(selectedTitle);
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -722,13 +1533,26 @@ async function actionKill() {
   if (!confirm(`Kill "${selectedTitle}"? This cannot be undone.`)) return;
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/kill`, { method: 'POST' });
-    closeWS();
+    convLog.disconnect();
     selectedTitle = null;
     document.getElementById('empty-state').style.display = 'flex';
-    document.getElementById('active-view').style.display = 'none';
+    document.getElementById('active-view').classList.remove('visible');
     refreshList();
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+// Toolbar button handlers
+document.getElementById('btn-pause').addEventListener('click', actionPause);
+document.getElementById('btn-resume').addEventListener('click', actionResume);
+document.getElementById('btn-kill').addEventListener('click', actionKill);
+document.getElementById('btn-send').addEventListener('click', () => inputHistory.send());
+document.getElementById('btn-hist-prev').addEventListener('click', () => inputHistory.prev());
+document.getElementById('btn-hist-next').addEventListener('click', () => inputHistory.next());
+
+inputHistory.onNavigate = () => {
+  document.getElementById('btn-hist-prev').disabled = !inputHistory.hasPrev;
+  document.getElementById('btn-hist-next').disabled = !inputHistory.hasNext;
+};
 
 // --- Modal ---
 function showNewModal() {
@@ -771,10 +1595,19 @@ async function createInstance() {
   } catch (e) { alert('Error: ' + e.message); }
 }
 
+document.getElementById('btn-new').addEventListener('click', showNewModal);
+document.getElementById('modal-overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('modal-overlay')) hideModal();
+});
+document.getElementById('modal-cancel').addEventListener('click', hideModal);
+document.getElementById('modal-submit').addEventListener('click', createInstance);
+document.getElementById('modal-title').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('modal-path').focus();
+});
+document.getElementById('modal-gitmode').addEventListener('change', toggleGitOptions);
+
 // --- Mode ---
 function detectMode(content) {
-  // Claude Code shows mode in its status bar / prompt area
-  // Look for plan mode indicators in the raw text
   const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
   if (/plan\s*mode/i.test(plain) || /\bplan\b.*\bmode\b/i.test(plain)) {
     updateModeUI('plan');
@@ -791,7 +1624,6 @@ function updateModeUI(mode) {
 
 async function setMode(mode) {
   if (!selectedTitle) return;
-  // Send the slash command to switch modes
   const cmd = mode === 'plan' ? '/plan' : '/agent';
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/send`, {
@@ -804,13 +1636,333 @@ async function setMode(mode) {
   }
 }
 
-// --- Util ---
-function esc(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+document.getElementById('mode-agent').addEventListener('click', () => setMode('agent'));
+document.getElementById('mode-plan').addEventListener('click', () => setMode('plan'));
+
+// --- Action buttons (interactive prompt detection) ---
+async function sendKeys(keys) {
+  if (!selectedTitle) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/keys`, {
+      method: 'POST',
+      body: JSON.stringify({ keys }),
+    });
+  } catch (e) {
+    console.error('Failed to send keys:', e);
+  }
 }
 
-// --- Poll ---
-setInterval(refreshList, 2000);
+function updateActionButtons(content) {
+  const bar = document.getElementById('action-bar');
+  const container = document.getElementById('action-buttons');
+  if (!bar || !container) return;
+
+  const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  const actions = parseActions(plain);
+
+  if (actions.length === 0) {
+    bar.style.display = 'none';
+    return;
+  }
+
+  bar.style.display = '';
+  container.innerHTML = '';
+  for (const action of actions) {
+    const btn = document.createElement('button');
+    btn.className = 'action-btn' + (action.style ? ' ' + action.style : '');
+    btn.textContent = action.label;
+    if (action.title) btn.title = action.title;
+    btn.addEventListener('click', () => sendKeys(action.keys));
+    container.appendChild(btn);
+  }
+}
+
+function parseActions(plain) {
+  const actions = [];
+
+  // Detect numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
+  // Only treat them as interactive options if preceded by a question (line containing "?")
+  const optionRe = /^\s*[❯>]?\s*(\d+)\.\s+(.+)$/gm;
+  let m;
+  const firstOptionMatch = optionRe.exec(plain);
+  if (firstOptionMatch) {
+    // Check if any line before the first numbered option contains a "?"
+    const textBefore = plain.slice(0, firstOptionMatch.index);
+    const hasQuestion = textBefore.split('\n').some(line => line.includes('?'));
+    if (hasQuestion) {
+      const num = firstOptionMatch[1];
+      const label = firstOptionMatch[2].trim();
+      actions.push({
+        label: `${num}. ${label}`,
+        keys: num,
+        style: num === '1' ? 'action-primary' : '',
+        title: `Send ${num}`,
+      });
+      while ((m = optionRe.exec(plain)) !== null) {
+        const num = m[1];
+        const label = m[2].trim();
+        actions.push({
+          label: `${num}. ${label}`,
+          keys: num,
+          style: num === '1' ? 'action-primary' : '',
+          title: `Send ${num}`,
+        });
+      }
+    }
+  }
+
+  // Detect hint line: "Esc to cancel · Tab to amend · ctrl+e to explain"
+  // Match patterns like "Esc to cancel", "Tab to amend", "ctrl+x to something"
+  const hintRe = /(Esc|Tab|ctrl\+\w)\s+to\s+(\w+)/gi;
+  while ((m = hintRe.exec(plain)) !== null) {
+    const key = m[1];
+    const verb = m[2].toLowerCase();
+    let keys;
+    if (/^esc$/i.test(key)) {
+      keys = '\x1b';
+    } else if (/^tab$/i.test(key)) {
+      keys = '\x1b[Z'; // shift+tab
+    } else if (/^ctrl\+(\w)$/i.test(key)) {
+      const letter = key.match(/^ctrl\+(\w)$/i)[1].toLowerCase();
+      keys = String.fromCharCode(letter.charCodeAt(0) - 96); // ctrl+a=1, ctrl+e=5, etc.
+    }
+    if (keys) {
+      actions.push({
+        label: `${key} (${verb})`,
+        keys,
+        style: verb === 'cancel' ? 'action-danger' : '',
+        title: `${key} to ${verb}`,
+      });
+    }
+  }
+
+  return actions;
+}
+
+// --- Sessions screen ---
+let sessionsVisible = false;
+
+function showSessions() {
+  sessionsVisible = true;
+  selectedTitle = null;
+  convLog.disconnect();
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('active-view').classList.remove('visible');
+  document.getElementById('sessions-view').classList.add('visible');
+  document.getElementById('btn-sessions').classList.add('active');
+  document.querySelectorAll('.instance-item').forEach(el => el.classList.remove('active'));
+  loadSessions();
+}
+
+function hideSessions() {
+  sessionsVisible = false;
+  document.getElementById('sessions-view').classList.remove('visible');
+  document.getElementById('btn-sessions').classList.remove('active');
+}
+
+async function loadSessions() {
+  const list = document.getElementById('sessions-list');
+  const count = document.getElementById('sessions-count');
+  list.innerHTML = '';
+
+  // Fetch both sources in parallel
+  let squadSessions = [];
+  let cliSessions = [];
+  try {
+    const [squadRes, cliRes] = await Promise.all([
+      fetch('/api/sessions', { headers: { 'Content-Type': 'application/json' } }),
+      fetch('/api/cli-sessions', { headers: { 'Content-Type': 'application/json' } }),
+    ]);
+    if (squadRes.ok) squadSessions = await squadRes.json();
+    if (cliRes.ok) cliSessions = await cliRes.json();
+  } catch (e) {
+    list.innerHTML = `<div class="sessions-empty">Failed to load sessions: ${esc(e.message)}</div>`;
+    return;
+  }
+
+  const totalCount = squadSessions.length + cliSessions.length;
+  count.textContent = `${totalCount} session${totalCount !== 1 ? 's' : ''}`;
+
+  if (totalCount === 0) {
+    list.innerHTML = '<div class="sessions-empty">No sessions found</div>';
+    return;
+  }
+
+  // Render Claude Squad sessions
+  if (squadSessions.length > 0) {
+    squadSessions.sort((a, b) => {
+      if (a.active !== b.active) return b.active ? 1 : -1;
+      return new Date(b.updated_at) - new Date(a.updated_at);
+    });
+
+    const header = document.createElement('div');
+    header.className = 'sessions-group-header';
+    header.innerHTML = `<span class="sessions-group-badge squad">SQUAD</span> Claude Squad Sessions <span style="margin-left:auto;font-weight:400;font-size:11px">${squadSessions.length}</span>`;
+    list.appendChild(header);
+
+    squadSessions.forEach(s => {
+      list.appendChild(renderSquadSessionCard(s));
+    });
+  }
+
+  // Render Claude Code CLI sessions
+  if (cliSessions.length > 0) {
+    const header = document.createElement('div');
+    header.className = 'sessions-group-header';
+    header.innerHTML = `<span class="sessions-group-badge cli">CLI</span> Claude Code CLI Sessions <span style="margin-left:auto;font-weight:400;font-size:11px">${cliSessions.length}</span>`;
+    list.appendChild(header);
+
+    cliSessions.forEach(s => {
+      list.appendChild(renderCLISessionCard(s));
+    });
+  }
+}
+
+function renderSquadSessionCard(s) {
+  const card = document.createElement('div');
+  card.className = 'session-card' + (s.active ? ' active-session' : '');
+
+  const statusLabel = s.status === 'ready' ? 'waiting' : s.status;
+  const created = formatRelativeTime(s.created_at);
+  const updated = formatRelativeTime(s.updated_at);
+  const shortPath = (s.path || '').replace(/^\/Users\/[^/]+/, '~');
+  const diffInfo = (s.diff_added || s.diff_removed) ? `+${s.diff_added} -${s.diff_removed}` : '';
+
+  card.innerHTML = `
+    <div class="session-info">
+      <div class="session-title">
+        ${esc(s.title)}
+        ${s.active ? '<span class="session-active-badge">ACTIVE</span>' : ''}
+        <span class="status-dot ${s.status}" style="margin-left:4px"></span>
+        <span class="status-label ${s.status}" style="font-size:11px">${statusLabel}</span>
+      </div>
+      <div class="session-details">
+        ${s.program ? `<span><span class="session-detail-label">program:</span> ${esc(s.program)}</span>` : ''}
+        ${s.git_mode ? `<span style="color:var(--orange)">git mode</span>` : '<span>direct mode</span>'}
+        ${s.branch_name ? `<span><span class="session-detail-label">branch:</span> ${esc(s.branch_name)}</span>` : ''}
+        ${diffInfo ? `<span>${diffInfo}</span>` : ''}
+        <span><span class="session-detail-label">created:</span> ${created}</span>
+        <span><span class="session-detail-label">updated:</span> ${updated}</span>
+      </div>
+      <div class="session-path-row" title="${esc(s.path || '')}">${esc(shortPath)}</div>
+    </div>
+    <div class="session-actions">
+      <button class="session-delete-btn">Delete</button>
+    </div>
+  `;
+  card.querySelector('.session-delete-btn').addEventListener('click', (event) => {
+    event.stopPropagation();
+    deleteSession(s.title);
+  });
+  return card;
+}
+
+function renderCLISessionCard(s) {
+  const card = document.createElement('div');
+  card.className = 'session-card cli-session';
+
+  const created = formatRelativeTime(s.created_at);
+  const updated = formatRelativeTime(s.updated_at);
+  const shortProject = (s.cwd || s.project || '').replace(/^\/Users\/[^/]+/, '~');
+  const sizeKB = s.size_bytes ? Math.round(s.size_bytes / 1024) : 0;
+  const shortId = s.session_id ? s.session_id.slice(0, 8) : '';
+
+  card.innerHTML = `
+    <div class="session-info">
+      <div class="session-title">
+        ${esc(shortProject || 'Unknown project')}
+        <span class="session-id">${esc(shortId)}</span>
+      </div>
+      <div class="session-details">
+        ${s.model ? `<span><span class="session-detail-label">model:</span> ${esc(s.model)}</span>` : ''}
+        ${s.git_branch ? `<span><span class="session-detail-label">branch:</span> ${esc(s.git_branch)}</span>` : ''}
+        ${s.version ? `<span><span class="session-detail-label">v:</span> ${esc(s.version)}</span>` : ''}
+        ${sizeKB ? `<span>${sizeKB}KB</span>` : ''}
+        <span><span class="session-detail-label">created:</span> ${created}</span>
+        <span><span class="session-detail-label">updated:</span> ${updated}</span>
+      </div>
+      <div class="session-path-row" title="${esc(s.cwd || s.project || '')}">${esc(shortProject)}</div>
+    </div>
+  `;
+  return card;
+}
+
+async function deleteSession(title) {
+  if (!confirm(`Delete session "${title}"? This will remove it from storage and clean up resources. This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(title)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    loadSessions();
+    refreshList();
+  } catch (e) {
+    alert('Failed to delete: ' + e.message);
+  }
+}
+
+document.getElementById('btn-sessions').addEventListener('click', showSessions);
+
+function formatRelativeTime(isoString) {
+  if (!isoString) return 'unknown';
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 30) return `${diffDay}d ago`;
+  return date.toLocaleDateString();
+}
+
+// --- Keyboard shortcuts ---
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    if (activeTab === 'rules') { e.preventDefault(); saveRules(); }
+    if (activeTab === 'plans') { e.preventDefault(); savePlans(); }
+  }
+});
+
+// --- Status WebSocket: real-time status updates for all instances ---
+let statusWsConnected = false;
+
+function connectStatusWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const statusWs = new WebSocket(`${proto}//${location.host}/api/statuses/ws`);
+  statusWs.onopen = () => {
+    statusWsConnected = true;
+  };
+  statusWs.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'status_update' && msg.statuses) {
+      let changed = false;
+      for (const [title, status] of Object.entries(msg.statuses)) {
+        if (instanceStatuses[title] !== status) {
+          instanceStatuses[title] = status;
+          changed = true;
+        }
+      }
+      if (changed) {
+        refreshList();
+        updatePausedState();
+      }
+    }
+  };
+  statusWs.onclose = () => {
+    statusWsConnected = false;
+    // Clear cached statuses so stale data doesn't override REST responses
+    instanceStatuses = {};
+    setTimeout(connectStatusWS, 3000);
+  };
+  statusWs.onerror = () => {
+    statusWs.close();
+  };
+}
+connectStatusWS();
+
+// --- Poll (fallback, less frequent since status WS handles real-time) ---
+setInterval(refreshList, 5000);
 refreshList();
 </script>
 </body>

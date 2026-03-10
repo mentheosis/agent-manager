@@ -6,7 +6,11 @@ import (
 	"claude-squad/session"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +25,18 @@ var upgrader = websocket.Upgrader{
 type Server struct {
 	mu        sync.RWMutex
 	instances []*session.Instance
+	convLogs  map[string]*ConversationLog
 	storage   *session.Storage
 	program   string
 	autoYes   bool
+
+	// Tracks tmux scrollback size per instance to enable delta-only capture.
+	lastHistorySize map[string]int
+
+	// Status broadcast: pollMetadata writes, status WS clients read
+	statusMu      sync.Mutex
+	lastStatuses  map[string]string        // title -> last known status string
+	statusClients map[*websocket.Conn]bool // connected status WS clients
 }
 
 func NewServer(program string, autoYes bool) (*Server, error) {
@@ -38,17 +51,27 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 		return nil, fmt.Errorf("failed to load instances: %w", err)
 	}
 
+	convLogs := make(map[string]*ConversationLog)
+	for _, inst := range instances {
+		convLogs[inst.Title] = NewConversationLog()
+	}
+
 	return &Server{
-		instances: instances,
-		storage:   storage,
-		program:   program,
-		autoYes:   autoYes,
+		instances:       instances,
+		convLogs:        convLogs,
+		storage:         storage,
+		program:         program,
+		autoYes:         autoYes,
+		lastHistorySize: make(map[string]int),
+		lastStatuses:    make(map[string]string),
+		statusClients:   make(map[*websocket.Conn]bool),
 	}, nil
 }
 
 type instanceJSON struct {
-	Title       string `json:"title"`
-	Status      string `json:"status"`
+	Title        string `json:"title"`
+	DisplayTitle string `json:"display_title,omitempty"`
+	Status       string `json:"status"`
 	Branch      string `json:"branch"`
 	Program     string `json:"program"`
 	Path        string `json:"path"`
@@ -76,8 +99,9 @@ func statusString(s session.Status) string {
 
 func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 	j := instanceJSON{
-		Title:     inst.Title,
-		Status:    statusString(inst.Status),
+		Title:        inst.Title,
+		DisplayTitle: inst.DisplayTitle,
+		Status:       statusString(inst.Status),
 		Branch:    inst.Branch,
 		Program:   inst.Program,
 		Path:      inst.Path,
@@ -109,31 +133,232 @@ func (s *Server) save() error {
 	return s.storage.SaveInstances(s.instances)
 }
 
+// getOrCreateConvLog returns the ConversationLog for the given title, creating one if needed.
+// Must be called with s.mu held.
+func (s *Server) getOrCreateConvLog(title string) *ConversationLog {
+	cl, ok := s.convLogs[title]
+	if !ok {
+		cl = NewConversationLog()
+		s.convLogs[title] = cl
+	}
+	return cl
+}
+
 // pollMetadata updates status for all instances (like the TUI's tickUpdateMetadataCmd)
+// and broadcasts status changes to all connected status WebSocket clients.
 func (s *Server) pollMetadata() {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for range ticker.C {
 		s.mu.Lock()
+		changed := make(map[string]string) // title -> new status
+		for _, inst := range s.instances {
+			if inst.Started() && !inst.Paused() {
+				inst.CheckAndHandleTrustPrompt()
+				updated, prompt := inst.HasUpdated()
+				if updated {
+					inst.SetStatus(session.Running)
+				} else {
+					if prompt {
+						inst.TapEnter()
+					} else {
+						inst.SetStatus(session.Ready)
+					}
+				}
+				_ = inst.UpdateDiffStats()
+			}
+
+			// Always check for status changes (including paused/loading instances)
+			status := statusString(inst.Status)
+			s.statusMu.Lock()
+			if s.lastStatuses[inst.Title] != status {
+				s.lastStatuses[inst.Title] = status
+				changed[inst.Title] = status
+			}
+			s.statusMu.Unlock()
+		}
+		s.mu.Unlock()
+
+		// Broadcast any changes
+		if len(changed) > 0 {
+			s.broadcastStatuses(changed)
+		}
+	}
+}
+
+// broadcastStatuses sends status updates to all connected status WS clients.
+func (s *Server) broadcastStatuses(changed map[string]string) {
+	msg := map[string]interface{}{
+		"type":     "status_update",
+		"statuses": changed,
+	}
+
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+
+	for conn := range s.statusClients {
+		if err := conn.WriteJSON(msg); err != nil {
+			conn.Close()
+			delete(s.statusClients, conn)
+		}
+	}
+}
+
+// handleStatusWebSocket serves a WebSocket that pushes status changes for all instances.
+func (s *Server) handleStatusWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.ErrorLog.Printf("status websocket upgrade failed: %v", err)
+		return
+	}
+
+	// Collect current statuses, register client, and send initial state all
+	// under statusMu to prevent concurrent writes and missed updates.
+	s.mu.RLock()
+	current := make(map[string]string)
+	for _, inst := range s.instances {
+		current[inst.Title] = statusString(inst.Status)
+	}
+	s.mu.RUnlock()
+
+	s.statusMu.Lock()
+	s.statusClients[conn] = true
+	if len(current) > 0 {
+		if err := conn.WriteJSON(map[string]interface{}{
+			"type":     "status_update",
+			"statuses": current,
+		}); err != nil {
+			delete(s.statusClients, conn)
+			s.statusMu.Unlock()
+			conn.Close()
+			return
+		}
+	}
+	s.statusMu.Unlock()
+
+	// Read (and discard) messages to detect close
+	defer func() {
+		s.statusMu.Lock()
+		delete(s.statusClients, conn)
+		s.statusMu.Unlock()
+		conn.Close()
+	}()
+
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+	}
+}
+
+// pollOutput captures tmux output for all active instances and feeds it to their ConversationLogs.
+// It uses an O(1) history_size metadata query to detect new scrollback, then captures only the
+// delta instead of the entire scrollback buffer every tick.
+func (s *Server) pollOutput() {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.RLock()
 		for _, inst := range s.instances {
 			if !inst.Started() || inst.Paused() {
 				continue
 			}
-			inst.CheckAndHandleTrustPrompt()
-			updated, prompt := inst.HasUpdated()
-			if updated {
-				inst.SetStatus(session.Running)
-			} else {
-				if prompt {
-					inst.TapEnter()
-				} else {
-					inst.SetStatus(session.Ready)
-				}
+			cl := s.convLogs[inst.Title]
+			if cl == nil {
+				continue
 			}
-			_ = inst.UpdateDiffStats()
+
+			paneContent, err := inst.Preview()
+			if err != nil {
+				continue
+			}
+
+			historySize, err := inst.GetHistorySize()
+			if err != nil {
+				continue
+			}
+
+			var newScrollback string
+			lastSize := s.lastHistorySize[inst.Title]
+			if historySize > lastSize {
+				delta := historySize - lastSize
+				newScrollback, err = inst.CaptureScrollback(delta)
+				if err != nil {
+					continue
+				}
+				s.lastHistorySize[inst.Title] = historySize
+				
+				// fmt.Println("=======================")
+				// fmt.Printf("[convlog %s] historySize=%d lastSize=%d delta=%d scrollbackLines=%d",
+				// 	inst.Title, historySize, lastSize, delta, len(strings.Split(newScrollback, "\n")))
+				// fmt.Printf("\n[convlog %s] newScrollback (last lines):\n %s",
+				// 	inst.Title, lastNLines(newScrollback, 5))
+				// fmt.Printf("\n[convlog %s] paneContent (last lines):\n %s",
+				// 	inst.Title, firstNLines(paneContent, 5))
+			}
+
+			cl.Ingest(newScrollback, paneContent)
+			cl.SetStatus(statusString(inst.Status))
 		}
-		s.mu.Unlock()
+		s.mu.RUnlock()
 	}
+}
+
+func lastNLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
+}
+
+func firstNLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n")
+}
+
+func (s *Server) handleReorderInstances(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Order []string `json:"order"` // titles in desired order
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build a map of title -> instance for quick lookup
+	byTitle := make(map[string]*session.Instance, len(s.instances))
+	for _, inst := range s.instances {
+		byTitle[inst.Title] = inst
+	}
+
+	// Reorder: place titles from body.Order first, then any remaining
+	reordered := make([]*session.Instance, 0, len(s.instances))
+	seen := make(map[string]bool)
+	for _, title := range body.Order {
+		if inst, ok := byTitle[title]; ok && !seen[title] {
+			reordered = append(reordered, inst)
+			seen[title] = true
+		}
+	}
+	// Append any instances not in the order list (safety net)
+	for _, inst := range s.instances {
+		if !seen[inst.Title] {
+			reordered = append(reordered, inst)
+		}
+	}
+
+	s.instances = reordered
+	if err := s.save(); err != nil {
+		log.ErrorLog.Printf("failed to save after reorder: %v", err)
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +371,37 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// ensureLocalPlansDir creates a .claude/settings.local.json in the working directory
+// that configures Claude CLI to store plan files locally (colocated with the conversation)
+// rather than in the global ~/.claude/plans/ directory.
+func ensureLocalPlansDir(workDir string) {
+	settingsPath := filepath.Join(workDir, ".claude", "settings.local.json")
+
+	// If settings.local.json already exists, merge plansDirectory into it
+	existing := make(map[string]interface{})
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		json.Unmarshal(data, &existing)
+	}
+	if _, ok := existing["plansDirectory"]; ok {
+		return // already configured
+	}
+
+	existing["plansDirectory"] = "./.claude/plans"
+
+	if err := os.MkdirAll(filepath.Join(workDir, ".claude"), 0755); err != nil {
+		log.ErrorLog.Printf("failed to create .claude dir: %v", err)
+		return
+	}
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		log.ErrorLog.Printf("failed to marshal settings: %v", err)
+		return
+	}
+	if err := os.WriteFile(settingsPath, append(data, '\n'), 0644); err != nil {
+		log.ErrorLog.Printf("failed to write settings.local.json: %v", err)
+	}
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +446,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure .claude/settings.local.json exists with local plans directory
+	ensureLocalPlansDir(inst.Path)
+
 	if err := inst.Start(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -208,6 +467,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.instances = append(s.instances, inst)
+	s.convLogs[body.Title] = NewConversationLog()
 	if err := s.save(); err != nil {
 		log.ErrorLog.Printf("failed to save: %v", err)
 	}
@@ -231,6 +491,57 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 
+	// For send/keys, use minimal locking — only hold the lock to find the
+	// instance and convlog, then release before doing the actual tmux I/O.
+	// This prevents blocking on pollMetadata/pollOutput which hold the lock
+	// while running tmux subprocesses across all instances.
+	if action == "send" || action == "keys" {
+		s.mu.RLock()
+		inst := s.findInstance(title)
+		cl := s.convLogs[title]
+		s.mu.RUnlock()
+
+		if inst == nil {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+
+		if action == "send" {
+			var body struct {
+				Text string `json:"text"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			log.InfoLog.Printf("[send] sending prompt to %q: %q", title, body.Text)
+			if err := inst.SendPrompt(body.Text); err != nil {
+				log.ErrorLog.Printf("[send] error sending to %q: %v", title, err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			log.InfoLog.Printf("[send] successfully sent to %q", title)
+			if cl != nil {
+				cl.AddInput(body.Text)
+				cl.SetLastInput(body.Text)
+			}
+		} else {
+			var body struct {
+				Keys string `json:"keys"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := inst.SendKeys(body.Keys); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -241,19 +552,6 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
-	case "send":
-		var body struct {
-			Text string `json:"text"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := inst.SendPrompt(body.Text); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
 
 	case "pause":
 		if err := inst.Pause(); err != nil {
@@ -268,6 +566,8 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Ensure convLog exists for resumed instance
+		s.getOrCreateConvLog(title)
 		_ = s.save()
 		w.WriteHeader(http.StatusOK)
 
@@ -283,8 +583,28 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+		delete(s.convLogs, title)
+		delete(s.lastHistorySize, title)
+		s.statusMu.Lock()
+		delete(s.lastStatuses, title)
+		s.statusMu.Unlock()
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
+
+	case "rename":
+		var body struct {
+			DisplayTitle string `json:"display_title"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		inst.DisplayTitle = body.DisplayTitle
+		if err := s.save(); err != nil {
+			log.ErrorLog.Printf("failed to save after rename: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.toJSON(inst))
 
 	case "preview":
 		content, err := inst.Preview()
@@ -296,31 +616,228 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"content": content})
 
 	case "history":
-		content, err := inst.PreviewFullHistory()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"content": content})
-
-	case "diff":
-		ds := inst.GetDiffStats()
-		if ds == nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"added": 0, "removed": 0, "content": ""})
-			return
-		}
+		cl := s.getOrCreateConvLog(title)
+		stableLines, stableSeqNo, pane, lastInput := cl.GetState()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"added":   ds.Added,
-			"removed": ds.Removed,
-			"content": ds.Content,
+			"stable_lines":  stableLines,
+			"stable_seq_no": stableSeqNo,
+			"stable_count":  len(stableLines),
+			"pane":          pane,
+			"last_input":    lastInput,
 		})
+
+	case "input-history":
+		cl := s.getOrCreateConvLog(title)
+		history := cl.GetInputHistory()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"history": history,
+		})
+
+	case "diff":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+		// Run git diff in the working directory
+		diffCmd := exec.Command("git", "diff")
+		diffCmd.Dir = workDir
+		diffOutput, _ := diffCmd.Output()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"content": string(diffOutput),
+		})
+
+	case "git-status":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+
+		// Check if this is a git repo
+		checkCmd := exec.Command("git", "rev-parse", "--git-dir")
+		checkCmd.Dir = workDir
+		if err := checkCmd.Run(); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"is_git":  false,
+				"status":  "",
+				"branch":  "",
+			})
+			return
+		}
+
+		// Get branch
+		branchCmd := exec.Command("git", "branch", "--show-current")
+		branchCmd.Dir = workDir
+		branchOutput, _ := branchCmd.Output()
+
+		// Get status
+		statusCmd := exec.Command("git", "status", "--short")
+		statusCmd.Dir = workDir
+		statusOutput, _ := statusCmd.Output()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"is_git":  true,
+			"status":  string(statusOutput),
+			"branch":  strings.TrimSpace(string(branchOutput)),
+		})
+
+	case "plans":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+		plansDir := filepath.Join(workDir, ".claude", "plans")
+
+		if r.Method == http.MethodGet {
+			type planFile struct {
+				Name    string `json:"name"`
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+
+			var result []planFile
+			entries, err := os.ReadDir(plansDir)
+			if err == nil {
+				for _, e := range entries {
+					if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+						continue
+					}
+					p := filepath.Join(plansDir, e.Name())
+					content, err := os.ReadFile(p)
+					if err != nil {
+						continue
+					}
+					result = append(result, planFile{
+						Name:    e.Name(),
+						Path:    p,
+						Content: string(content),
+					})
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"files": result})
+
+		} else if r.Method == http.MethodPut {
+			var body struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			absPath, err := filepath.Abs(body.Path)
+			if err != nil || !strings.HasPrefix(absPath, plansDir) {
+				http.Error(w, "invalid path", http.StatusBadRequest)
+				return
+			}
+
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(absPath, []byte(body.Content), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": absPath})
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+
+	case "rules":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+
+		if r.Method == http.MethodGet {
+			// Return all config files: CLAUDE.md + settings files
+			type configFile struct {
+				Name     string `json:"name"`
+				Path     string `json:"path"`
+				Content  string `json:"content"`
+				Exists   bool   `json:"exists"`
+				Writable bool   `json:"writable"`
+			}
+
+			files := []struct {
+				name     string
+				path     string
+				writable bool
+			}{
+				{"CLAUDE.md", filepath.Join(workDir, "CLAUDE.md"), true},
+				{".claude/settings.json", filepath.Join(workDir, ".claude", "settings.json"), true},
+				{".claude/settings.local.json", filepath.Join(workDir, ".claude", "settings.local.json"), true},
+			}
+
+			var result []configFile
+			for _, f := range files {
+				cf := configFile{Name: f.name, Path: f.path, Writable: f.writable}
+				content, err := os.ReadFile(f.path)
+				if err == nil {
+					cf.Content = string(content)
+					cf.Exists = true
+				}
+				result = append(result, cf)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"files": result})
+
+		} else if r.Method == http.MethodPut {
+			var body struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Validate the path is within the workdir
+			absPath, err := filepath.Abs(body.Path)
+			if err != nil || !strings.HasPrefix(absPath, workDir) {
+				http.Error(w, "invalid path", http.StatusBadRequest)
+				return
+			}
+
+			// Create parent directory if needed
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(absPath, []byte(body.Content), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": absPath})
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 
 	case "ws":
 		s.mu.Unlock() // Release lock for long-lived WebSocket
-		s.handleWebSocket(w, r, inst)
+		s.handleWebSocket(w, r, inst, title)
 		s.mu.Lock() // Re-acquire for deferred unlock
 		return
 
@@ -331,7 +848,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *session.Instance) {
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *session.Instance, title string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.ErrorLog.Printf("websocket upgrade failed: %v", err)
@@ -339,33 +856,178 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 	}
 	defer conn.Close()
 
-	// Stream terminal output
+	// Start a goroutine to read (and discard) client messages to detect close
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	s.mu.RLock()
+	cl := s.convLogs[title]
+	s.mu.RUnlock()
+	if cl == nil {
+		return
+	}
+
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	var lastContent string
-	for range ticker.C {
+	var lastStableCount int
+	var lastPaneContent string
+	var lastLastInput string
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+		}
+
+		stableLines, _, pane, lastInput := cl.GetState()
+
 		s.mu.RLock()
-		content, err := inst.Preview()
 		status := statusString(inst.Status)
 		s.mu.RUnlock()
 
-		if err != nil {
-			break
-		}
-
-		if content != lastContent {
-			lastContent = content
-			msg := map[string]string{
-				"type":    "output",
-				"content": content,
-				"status":  status,
+		// Send new stable lines as history_append
+		if len(stableLines) > lastStableCount {
+			newLines := stableLines[lastStableCount:]
+			msg := map[string]interface{}{
+				"type":  "history_append",
+				"lines": newLines,
 			}
 			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+			lastStableCount = len(stableLines)
+		}
+
+		// Send current pane (volatile) - only if changed
+		paneContent := strings.Join(pane, "\n")
+		if paneContent != lastPaneContent || lastInput != lastLastInput {
+			lastPaneContent = paneContent
+			lastLastInput = lastInput
+			msg := map[string]interface{}{
+				"type":       "pane",
+				"content":    paneContent,
+				"status":     status,
+				"last_input": lastInput,
+			}
+			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// sessionJSON is a lightweight representation of a saved session (read directly from state.json)
+type sessionJSON struct {
+	Title       string `json:"title"`
+	Status      string `json:"status"`
+	Branch      string `json:"branch"`
+	Program     string `json:"program"`
+	Path        string `json:"path"`
+	GitMode     bool   `json:"git_mode"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	DiffAdded   int    `json:"diff_added"`
+	DiffRemoved int    `json:"diff_removed"`
+	WorktreeDir string `json:"worktree_dir"`
+	RepoPath    string `json:"repo_path"`
+	BranchName  string `json:"branch_name"`
+	Active      bool   `json:"active"` // true if this session is loaded in the current web server
+}
+
+// handleListSessions reads state.json fresh to list ALL saved sessions, including
+// those created from the terminal TUI that may not be loaded in this web server.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	appState := config.LoadState()
+	rawJSON := appState.GetInstances()
+
+	var sessionsData []session.InstanceData
+	if err := json.Unmarshal(rawJSON, &sessionsData); err != nil {
+		http.Error(w, "failed to read sessions: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.RLock()
+	activeSet := make(map[string]bool)
+	for _, inst := range s.instances {
+		activeSet[inst.Title] = true
+	}
+	s.mu.RUnlock()
+
+	result := make([]sessionJSON, len(sessionsData))
+	for i, data := range sessionsData {
+		result[i] = sessionJSON{
+			Title:       data.Title,
+			Status:      statusString(data.Status),
+			Branch:      data.Branch,
+			Program:     data.Program,
+			Path:        data.Path,
+			GitMode:     data.GitMode,
+			CreatedAt:   data.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:   data.UpdatedAt.Format(time.RFC3339),
+			DiffAdded:   data.DiffStats.Added,
+			DiffRemoved: data.DiffStats.Removed,
+			WorktreeDir: data.Worktree.WorktreePath,
+			RepoPath:    data.Worktree.RepoPath,
+			BranchName:  data.Worktree.BranchName,
+			Active:      activeSet[data.Title],
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleSessionAction handles DELETE /api/sessions/{title} - removes a session from state.json
+func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	title := strings.TrimSuffix(path, "/")
+
+	if title == "" {
+		http.Error(w, "missing session title", http.StatusBadRequest)
+		return
+	}
+
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// If the session is loaded in our server, kill it first
+	inst := s.findInstance(title)
+	if inst != nil {
+		_ = inst.Kill()
+		for i, existing := range s.instances {
+			if existing.Title == title {
+				s.instances = append(s.instances[:i], s.instances[i+1:]...)
 				break
 			}
 		}
 	}
+	delete(s.convLogs, title)
+	delete(s.lastHistorySize, title)
+	s.statusMu.Lock()
+	delete(s.lastStatuses, title)
+	s.statusMu.Unlock()
+
+	// Delete from persistent storage
+	if err := s.storage.DeleteInstance(title); err != nil {
+		http.Error(w, "failed to delete session: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func Run(program string, autoYes bool, port int) error {
@@ -375,10 +1037,22 @@ func Run(program string, autoYes bool, port int) error {
 	}
 
 	go srv.pollMetadata()
+	go srv.pollOutput()
 
 	mux := http.NewServeMux()
 
 	// API routes
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			srv.handleListSessions(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		srv.handleSessionAction(w, r)
+	})
 	mux.HandleFunc("/api/instances", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -389,12 +1063,40 @@ func Run(program string, autoYes bool, port int) error {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
+	mux.HandleFunc("/api/instances/reorder", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		srv.handleReorderInstances(w, r)
+	})
 	mux.HandleFunc("/api/instances/", func(w http.ResponseWriter, r *http.Request) {
 		srv.handleInstanceAction(w, r)
 	})
+	mux.HandleFunc("/api/statuses/ws", func(w http.ResponseWriter, r *http.Request) {
+		srv.handleStatusWebSocket(w, r)
+	})
+	mux.HandleFunc("/api/cli-sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		sessions, err := discoverCLISessions()
+		if err != nil {
+			http.Error(w, "failed to discover CLI sessions: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(sessions)
+	})
 
 	// Static files
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("webserver/static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		http.ServeFile(w, r, "webserver/static/index.html")
 	})
 

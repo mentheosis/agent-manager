@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -223,6 +224,27 @@ func (t *TmuxSession) TapDAndEnter() error {
 
 func (t *TmuxSession) SendKeys(keys string) error {
 	_, err := t.ptmx.Write([]byte(keys))
+	return err
+}
+
+// SendPromptViaTmux sends text followed by Enter as a single atomic tmux
+// send-keys command. The text is passed as one argument (tmux sends
+// unrecognized strings as literal characters) and "Enter" as a recognized
+// key name. Using a single command ensures the Enter keystroke cannot be
+// lost or separated from the text.
+func (t *TmuxSession) SendPromptViaTmux(text string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, text, "Enter")
+	out, err := t.cmdExec.Output(cmd)
+	if err != nil {
+		log.ErrorLog.Printf("tmux send-keys failed for session %s: %v (output: %s)", t.sanitizedName, err, string(out))
+	}
+	return err
+}
+
+// TapEnterViaTmux sends Enter via the tmux send-keys command.
+func (t *TmuxSession) TapEnterViaTmux() error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")
+	_, err := t.cmdExec.Output(cmd)
 	return err
 }
 
@@ -478,6 +500,21 @@ func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, 
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
 	}
 	return string(output), nil
+}
+
+// GetHistorySize returns the number of lines in the scrollback buffer above the
+// visible pane. This is an O(1) metadata query — no content is serialized.
+func (t *TmuxSession) GetHistorySize() (int, error) {
+	cmd := exec.Command("tmux", "display-message", "-p", "-t", t.sanitizedName, "#{history_size}")
+	output, err := t.cmdExec.Output(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("error getting history size: %v", err)
+	}
+	size, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, fmt.Errorf("error parsing history size %q: %v", string(output), err)
+	}
+	return size, nil
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"
