@@ -514,10 +514,13 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			log.InfoLog.Printf("[send] sending prompt to %q: %q", title, body.Text)
 			if err := inst.SendPrompt(body.Text); err != nil {
+				log.ErrorLog.Printf("[send] error sending to %q: %v", title, err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			log.InfoLog.Printf("[send] successfully sent to %q", title)
 			if cl != nil {
 				cl.AddInput(body.Text)
 				cl.SetLastInput(body.Text)

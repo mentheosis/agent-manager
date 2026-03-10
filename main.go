@@ -139,8 +139,7 @@ var (
 		Use:   "serve",
 		Short: "Start the web UI server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log.Initialize(false)
-			defer log.Close()
+			log.InitializeStdout()
 
 			cfg := config.LoadConfig()
 			program := cfg.DefaultProgram

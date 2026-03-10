@@ -228,13 +228,16 @@ func (t *TmuxSession) SendKeys(keys string) error {
 }
 
 // SendPromptViaTmux sends text followed by Enter as a single atomic tmux
-// send-keys command. Using a single command ensures the Enter keystroke
-// cannot be lost or separated from the text by a race condition.
-// The carriage return (0x0D) is appended to the literal text, which the
-// terminal interprets as Enter.
+// send-keys command. The text is passed as one argument (tmux sends
+// unrecognized strings as literal characters) and "Enter" as a recognized
+// key name. Using a single command ensures the Enter keystroke cannot be
+// lost or separated from the text.
 func (t *TmuxSession) SendPromptViaTmux(text string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "-l", text+"\r")
-	_, err := t.cmdExec.Output(cmd)
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, text, "Enter")
+	out, err := t.cmdExec.Output(cmd)
+	if err != nil {
+		log.ErrorLog.Printf("tmux send-keys failed for session %s: %v (output: %s)", t.sanitizedName, err, string(out))
+	}
 	return err
 }
 

@@ -762,13 +762,13 @@
       <div class="tab" data-tab="plans">Plans</div>
     </div>
     <div id="toolbar">
-      <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
-      <div class="toolbar-divider"></div>
       <div class="mode-selector">
         <span>Mode:</span>
         <button class="mode-btn" id="mode-agent">Agent</button>
         <button class="mode-btn" id="mode-plan">Plan</button>
       </div>
+      <div class="toolbar-divider"></div>
+      <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
       <div style="flex:1"></div>
       <button class="toolbar-btn" id="btn-pause">Pause</button>
       <button class="toolbar-btn" id="btn-resume">Resume</button>
@@ -910,12 +910,15 @@ const inputHistory = new InputHistory(
   document.getElementById('prompt-input'),
   async (text) => {
     if (!selectedTitle) return;
+    console.log('[send] firing API call:', selectedTitle, text);
     try {
       await api(`/${encodeURIComponent(selectedTitle)}/send`, {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
+      console.log('[send] API call succeeded');
     } catch (e) {
+      console.error('[send] API call failed:', e);
       alert('Failed to send: ' + e.message);
     }
   }
@@ -1678,17 +1681,34 @@ function parseActions(plain) {
   const actions = [];
 
   // Detect numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
+  // Only treat them as interactive options if preceded by a question (line containing "?")
   const optionRe = /^\s*[❯>]?\s*(\d+)\.\s+(.+)$/gm;
   let m;
-  while ((m = optionRe.exec(plain)) !== null) {
-    const num = m[1];
-    const label = m[2].trim();
-    actions.push({
-      label: `${num}. ${label}`,
-      keys: num,
-      style: num === '1' ? 'action-primary' : '',
-      title: `Send ${num}`,
-    });
+  const firstOptionMatch = optionRe.exec(plain);
+  if (firstOptionMatch) {
+    // Check if any line before the first numbered option contains a "?"
+    const textBefore = plain.slice(0, firstOptionMatch.index);
+    const hasQuestion = textBefore.split('\n').some(line => line.includes('?'));
+    if (hasQuestion) {
+      const num = firstOptionMatch[1];
+      const label = firstOptionMatch[2].trim();
+      actions.push({
+        label: `${num}. ${label}`,
+        keys: num,
+        style: num === '1' ? 'action-primary' : '',
+        title: `Send ${num}`,
+      });
+      while ((m = optionRe.exec(plain)) !== null) {
+        const num = m[1];
+        const label = m[2].trim();
+        actions.push({
+          label: `${num}. ${label}`,
+          keys: num,
+          style: num === '1' ? 'action-primary' : '',
+          title: `Send ${num}`,
+        });
+      }
+    }
   }
 
   // Detect hint line: "Esc to cancel · Tab to amend · ctrl+e to explain"

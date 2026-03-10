@@ -42,6 +42,16 @@ func Initialize(daemon bool) {
 	globalLogFile = f
 }
 
+// InitializeStdout sets up logging to stdout instead of a file.
+// Useful for the webserver which doesn't need a TUI and benefits from
+// visible log output.
+func InitializeStdout() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	InfoLog = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	WarningLog = log.New(os.Stdout, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLog = log.New(os.Stdout, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+}
+
 func Close() {
 	_ = globalLogFile.Close()
 	// TODO: maybe only print if verbose flag is set?
