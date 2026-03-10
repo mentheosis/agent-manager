@@ -9,6 +9,7 @@
 ## Rules
 
 - Never use the `caffeinate` command.
+- After completing a change, always check whether `CLAUDE.md` or `webserver/ARCHITECTURE.md` need updating. New endpoints, design decisions, data flow changes, and architectural patterns must be documented.
 
 ## Web UI
 

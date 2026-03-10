@@ -29,8 +29,10 @@ const (
 
 // Instance is a running instance of claude code.
 type Instance struct {
-	// Title is the title of the instance.
+	// Title is the title of the instance (used as internal identifier).
 	Title string
+	// DisplayTitle is an optional user-facing name shown in the UI.
+	DisplayTitle string
 	// Path is the path to the workspace.
 	Path string
 	// Branch is the branch of the instance.
@@ -72,8 +74,9 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:     i.Title,
-		Path:      i.Path,
+		Title:        i.Title,
+		DisplayTitle: i.DisplayTitle,
+		Path:         i.Path,
 		Branch:    i.Branch,
 		Status:    i.Status,
 		Height:    i.Height,
@@ -111,8 +114,9 @@ func (i *Instance) ToInstanceData() InstanceData {
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
 	instance := &Instance{
-		Title:     data.Title,
-		Path:      data.Path,
+		Title:        data.Title,
+		DisplayTitle: data.DisplayTitle,
+		Path:         data.Path,
 		Branch:    data.Branch,
 		Status:    data.Status,
 		Height:    data.Height,

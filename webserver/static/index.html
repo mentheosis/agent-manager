@@ -98,7 +98,19 @@
     0%, 100% { box-shadow: 0 0 4px rgba(224, 175, 104, 0.05); }
     50% { box-shadow: 0 0 10px rgba(224, 175, 104, 0.2); }
   }
-  .instance-title { font-size: 13px; font-weight: 600; }
+  .instance-title { font-size: 13px; font-weight: 600; cursor: text; }
+  .instance-title-input {
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    padding: 1px 4px;
+    outline: none;
+    width: 100%;
+  }
   .instance-meta {
     font-size: 11px;
     color: var(--text-dim);
@@ -923,8 +935,9 @@ function renderList(instances) {
       : '';
     const shortPath = inst.work_dir ? inst.work_dir.replace(/^\/Users\/[^/]+/, '~') : '';
     const gitBadge = inst.git_mode ? '<span style="color:var(--orange)">git</span>' : '';
+    const displayName = inst.display_title || inst.title;
     div.innerHTML = `
-      <div class="instance-title">${esc(inst.title)}</div>
+      <div class="instance-title">${esc(displayName)}</div>
       <div class="instance-meta">
         <span class="status-dot ${status}"></span>
         <span class="status-label ${status}">${statusLabel}</span>
@@ -933,6 +946,40 @@ function renderList(instances) {
       </div>
       <div class="instance-path" title="${esc(inst.work_dir || '')}">${esc(shortPath)}</div>
     `;
+
+    // Double-click title to rename
+    const titleEl = div.querySelector('.instance-title');
+    titleEl.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'instance-title-input';
+      input.value = displayName;
+      titleEl.replaceWith(input);
+      input.focus();
+      input.select();
+
+      const commit = async () => {
+        const newName = input.value.trim();
+        if (newName && newName !== displayName) {
+          try {
+            await api(`/${encodeURIComponent(inst.title)}/rename`, {
+              method: 'POST',
+              body: JSON.stringify({ display_title: newName }),
+            });
+            inst.display_title = newName;
+          } catch (err) { /* keep old name */ }
+        }
+        refreshList();
+      };
+
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', (ke) => {
+        if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
+        if (ke.key === 'Escape') { input.value = displayName; input.blur(); }
+      });
+    });
+
     el.appendChild(div);
   });
 }

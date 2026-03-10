@@ -69,8 +69,9 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 }
 
 type instanceJSON struct {
-	Title       string `json:"title"`
-	Status      string `json:"status"`
+	Title        string `json:"title"`
+	DisplayTitle string `json:"display_title,omitempty"`
+	Status       string `json:"status"`
 	Branch      string `json:"branch"`
 	Program     string `json:"program"`
 	Path        string `json:"path"`
@@ -98,8 +99,9 @@ func statusString(s session.Status) string {
 
 func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 	j := instanceJSON{
-		Title:     inst.Title,
-		Status:    statusString(inst.Status),
+		Title:        inst.Title,
+		DisplayTitle: inst.DisplayTitle,
+		Status:       statusString(inst.Status),
 		Branch:    inst.Branch,
 		Program:   inst.Program,
 		Path:      inst.Path,
@@ -569,6 +571,21 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		s.statusMu.Unlock()
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
+
+	case "rename":
+		var body struct {
+			DisplayTitle string `json:"display_title"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		inst.DisplayTitle = body.DisplayTitle
+		if err := s.save(); err != nil {
+			log.ErrorLog.Printf("failed to save after rename: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.toJSON(inst))
 
 	case "preview":
 		content, err := inst.Preview()

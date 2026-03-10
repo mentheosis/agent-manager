@@ -93,6 +93,8 @@ These buttons appear in `#action-bar` between the output area and input area. Th
 | `/api/instances/{title}/ws` | GET | WebSocket for live updates |
 | `/api/instances/{title}/diff` | GET | Git diff for instance |
 | `/api/instances/{title}/rules` | GET/PUT | Read/write config files (CLAUDE.md, settings) |
+| `/api/instances/{title}/plans` | GET/PUT | Read/write plan files (.claude/plans/*.md) |
+| `/api/instances/{title}/rename` | POST | Set display_title (UI-only rename) |
 | `/api/instances/reorder` | POST | Reorder instance list (persisted) |
 | `/api/statuses/ws` | GET | WebSocket for status broadcasts |
 | `/api/sessions` | GET | List all saved sessions (from state.json) |
@@ -113,12 +115,16 @@ Every 500ms, checks each active instance for activity:
 
 ## Design Decisions
 
-1. **No persistence for conversation logs**: ConversationLog is purely in-memory. Tmux scrollback is the source of truth. This avoids stale data and keeps the server simple.
+1. **Title is the immutable primary key**: `Instance.Title` is used as the unique identifier everywhere — storage lookups, tmux session names (`claudesquad_{title}`), git worktree branch names, API route paths, WebSocket connections, and all server-side maps (`convLogs`, `lastStatuses`, `lastHistorySize`). It **cannot be renamed** without breaking all of these. To support user-facing renames, a separate `DisplayTitle` field exists that is purely cosmetic — the UI shows `display_title || title` in the sidebar. The internal title remains unchanged. Any new code that needs a unique instance identifier should use `Title`, never `DisplayTitle`.
 
-2. **Scrollback-only promotion**: Lines only move to stable history when they physically scroll off the visible pane. Turn-based promotion (promoting on running→ready transitions) was removed because it caused duplicate lines appearing in both stable and pane.
+2. **Local plan files**: New instances get a `.claude/settings.local.json` with `"plansDirectory": "./.claude/plans"` so that Claude CLI stores plan files colocated with the conversation rather than in the global `~/.claude/plans/`. The Plans tab reads/writes files from this local directory.
 
-3. **Delta scrollback capture**: Instead of capturing the full scrollback buffer every tick, we track `lastHistorySize` and only capture new lines. This is O(delta) instead of O(total).
+3. **No persistence for conversation logs**: ConversationLog is purely in-memory. Tmux scrollback is the source of truth. This avoids stale data and keeps the server simple.
 
-4. **Raw keystroke API**: The `/keys` endpoint sends bytes directly to the PTY, enabling the UI to interact with Claude CLI's interactive prompts (numbered choices, Esc/Tab/ctrl shortcuts) without the server needing to understand the prompt format.
+4. **Scrollback-only promotion**: Lines only move to stable history when they physically scroll off the visible pane. Turn-based promotion (promoting on running→ready transitions) was removed because it caused duplicate lines appearing in both stable and pane.
 
-5. **Single HTML file**: All CSS and main application JS live in `index.html`. Only reusable modules (ConvLogView, InputHistory, API wrapper, ANSI parser) are in separate JS files.
+5. **Delta scrollback capture**: Instead of capturing the full scrollback buffer every tick, we track `lastHistorySize` and only capture new lines. This is O(delta) instead of O(total).
+
+6. **Raw keystroke API**: The `/keys` endpoint sends bytes directly to the PTY, enabling the UI to interact with Claude CLI's interactive prompts (numbered choices, Esc/Tab/ctrl shortcuts) without the server needing to understand the prompt format.
+
+7. **Single HTML file**: All CSS and main application JS live in `index.html`. Only reusable modules (ConvLogView, InputHistory, API wrapper, ANSI parser) are in separate JS files.
