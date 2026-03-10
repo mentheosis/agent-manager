@@ -253,15 +253,6 @@
   }
   .connection-error .retry-btn:hover { border-color: var(--accent); }
 
-  .live-divider {
-    color: var(--text-dim);
-    font-size: 11px;
-    text-align: center;
-    padding: 4px 0;
-    border-top: 1px solid var(--border);
-    margin-top: 4px;
-    user-select: none;
-  }
   .last-input {
     color: var(--yellow);
     font-size: 12px;
@@ -369,6 +360,49 @@
     justify-content: center;
     color: var(--text-dim);
     font-size: 14px;
+  }
+
+  /* Action bar (interactive prompt buttons) */
+  #action-bar {
+    padding: 6px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+  }
+  #action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .action-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .action-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .action-btn.action-primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+  .action-btn.action-primary:hover {
+    opacity: 0.85;
+  }
+  .action-btn.action-danger {
+    color: var(--red);
+    border-color: var(--red);
+  }
+  .action-btn.action-danger:hover {
+    background: var(--red);
+    color: var(--bg);
   }
 
   /* Input area */
@@ -670,6 +704,9 @@
       </div>
       <textarea id="rules-textarea" placeholder="Select a file above to edit..."></textarea>
     </div>
+    <div id="action-bar" style="display:none">
+      <div id="action-buttons"></div>
+    </div>
     <div id="input-area">
       <textarea id="prompt-input" rows="1" placeholder="Send a message..."></textarea>
       <button id="btn-send">Send</button>
@@ -726,6 +763,7 @@ convLog.onStatus = (title, status) => {
 
 convLog.onContent = (content) => {
   detectMode(content);
+  updateActionButtons(content);
 };
 
 const inputHistory = new InputHistory(
@@ -1235,6 +1273,89 @@ async function setMode(mode) {
 
 document.getElementById('mode-agent').addEventListener('click', () => setMode('agent'));
 document.getElementById('mode-plan').addEventListener('click', () => setMode('plan'));
+
+// --- Action buttons (interactive prompt detection) ---
+async function sendKeys(keys) {
+  if (!selectedTitle) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/keys`, {
+      method: 'POST',
+      body: JSON.stringify({ keys }),
+    });
+  } catch (e) {
+    console.error('Failed to send keys:', e);
+  }
+}
+
+function updateActionButtons(content) {
+  const bar = document.getElementById('action-bar');
+  const container = document.getElementById('action-buttons');
+  if (!bar || !container) return;
+
+  const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  const actions = parseActions(plain);
+
+  if (actions.length === 0) {
+    bar.style.display = 'none';
+    return;
+  }
+
+  bar.style.display = '';
+  container.innerHTML = '';
+  for (const action of actions) {
+    const btn = document.createElement('button');
+    btn.className = 'action-btn' + (action.style ? ' ' + action.style : '');
+    btn.textContent = action.label;
+    if (action.title) btn.title = action.title;
+    btn.addEventListener('click', () => sendKeys(action.keys));
+    container.appendChild(btn);
+  }
+}
+
+function parseActions(plain) {
+  const actions = [];
+
+  // Detect numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
+  const optionRe = /^\s*[❯>]?\s*(\d+)\.\s+(.+)$/gm;
+  let m;
+  while ((m = optionRe.exec(plain)) !== null) {
+    const num = m[1];
+    const label = m[2].trim();
+    actions.push({
+      label: `${num}. ${label}`,
+      keys: num,
+      style: num === '1' ? 'action-primary' : '',
+      title: `Send ${num}`,
+    });
+  }
+
+  // Detect hint line: "Esc to cancel · Tab to amend · ctrl+e to explain"
+  // Match patterns like "Esc to cancel", "Tab to amend", "ctrl+x to something"
+  const hintRe = /(Esc|Tab|ctrl\+\w)\s+to\s+(\w+)/gi;
+  while ((m = hintRe.exec(plain)) !== null) {
+    const key = m[1];
+    const verb = m[2].toLowerCase();
+    let keys;
+    if (/^esc$/i.test(key)) {
+      keys = '\x1b';
+    } else if (/^tab$/i.test(key)) {
+      keys = '\x1b[Z'; // shift+tab
+    } else if (/^ctrl\+(\w)$/i.test(key)) {
+      const letter = key.match(/^ctrl\+(\w)$/i)[1].toLowerCase();
+      keys = String.fromCharCode(letter.charCodeAt(0) - 96); // ctrl+a=1, ctrl+e=5, etc.
+    }
+    if (keys) {
+      actions.push({
+        label: `${key} (${verb})`,
+        keys,
+        style: verb === 'cancel' ? 'action-danger' : '',
+        title: `${key} to ${verb}`,
+      });
+    }
+  }
+
+  return actions;
+}
 
 // --- Sessions screen ---
 let sessionsVisible = false;

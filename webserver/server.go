@@ -443,6 +443,20 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusOK)
 
+	case "keys":
+		var body struct {
+			Keys string `json:"keys"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := inst.SendKeys(body.Keys); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+
 	case "pause":
 		if err := inst.Pause(); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

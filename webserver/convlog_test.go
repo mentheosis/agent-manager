@@ -157,14 +157,13 @@ func TestConversationLog_EmptyPane(t *testing.T) {
 	}
 }
 
-func TestConversationLog_TurnBasedPromotion(t *testing.T) {
+func TestConversationLog_SetStatusTracking(t *testing.T) {
 	cl := NewConversationLog()
 
-	// Simulate running state with pane content
+	// SetStatus just tracks status, does not promote pane to stable
 	cl.SetStatus("running")
 	cl.Ingest("", "response line 1\nresponse line 2")
 
-	// Pane should have content, stable should be empty
 	stable, _, pane, _ := cl.GetState()
 	if len(stable) != 0 {
 		t.Errorf("expected 0 stable lines during running, got %d: %v", len(stable), stable)
@@ -173,45 +172,18 @@ func TestConversationLog_TurnBasedPromotion(t *testing.T) {
 		t.Errorf("expected 2 pane lines, got %d: %v", len(pane), pane)
 	}
 
-	// Transition to ready — pane should be promoted to stable
+	// Transition to ready — pane stays in pane (no turn-based promotion)
 	cl.SetStatus("ready")
-	stable, seq, pane, _ := cl.GetState()
-	if len(stable) != 2 {
-		t.Errorf("expected 2 stable lines after ready, got %d: %v", len(stable), stable)
+	stable, _, pane, _ = cl.GetState()
+	if len(stable) != 0 {
+		t.Errorf("expected 0 stable lines after ready, got %d: %v", len(stable), stable)
 	}
-	if seq != 1 {
-		t.Errorf("expected seq 1, got %d", seq)
-	}
-	if stable[0] != "response line 1" || stable[1] != "response line 2" {
-		t.Errorf("unexpected stable content: %v", stable)
-	}
-	if len(pane) != 0 {
-		t.Errorf("expected 0 pane lines after promotion, got %d: %v", len(pane), pane)
+	if len(pane) != 2 {
+		t.Errorf("expected 2 pane lines after ready, got %d: %v", len(pane), pane)
 	}
 }
 
-func TestConversationLog_ReadyIdempotent(t *testing.T) {
-	cl := NewConversationLog()
-
-	cl.SetStatus("running")
-	cl.Ingest("", "line1\nline2")
-	cl.SetStatus("ready")
-
-	stable1, seq1, _, _ := cl.GetState()
-
-	// Repeated ready should not duplicate
-	cl.SetStatus("ready")
-	stable2, seq2, _, _ := cl.GetState()
-
-	if len(stable1) != len(stable2) {
-		t.Errorf("repeated ready changed stable: %d -> %d", len(stable1), len(stable2))
-	}
-	if seq1 != seq2 {
-		t.Errorf("repeated ready bumped seq: %d -> %d", seq1, seq2)
-	}
-}
-
-func TestConversationLog_TimerLinesNotPromoted(t *testing.T) {
+func TestConversationLog_TimerLinesNotInStable(t *testing.T) {
 	cl := NewConversationLog()
 
 	cl.SetStatus("running")
@@ -226,16 +198,16 @@ func TestConversationLog_TimerLinesNotPromoted(t *testing.T) {
 		t.Errorf("expected 0 stable lines during running, got %d: %v", len(stable), stable)
 	}
 
-	// Now transition to ready with actual content
+	// Content only enters stable via scrollback, not status transition
 	cl.Ingest("", "Done! Here is the result.")
 	cl.SetStatus("ready")
 
-	stable, _, _, _ = cl.GetState()
-	if len(stable) != 1 {
-		t.Errorf("expected 1 stable line after ready, got %d: %v", len(stable), stable)
+	stable, _, pane, _ := cl.GetState()
+	if len(stable) != 0 {
+		t.Errorf("expected 0 stable lines (no scrollback), got %d: %v", len(stable), stable)
 	}
-	if len(stable) >= 1 && stable[0] != "Done! Here is the result." {
-		t.Errorf("unexpected stable content: %v", stable)
+	if len(pane) != 1 {
+		t.Errorf("expected 1 pane line, got %d: %v", len(pane), pane)
 	}
 }
 
