@@ -536,6 +536,36 @@
     padding: 48px 16px;
     font-size: 13px;
   }
+  .sessions-group-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 12px 0 8px 0;
+    margin-top: 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sessions-group-header:first-child { margin-top: 0; }
+  .sessions-group-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .sessions-group-badge.squad { background: var(--accent); color: var(--bg); }
+  .sessions-group-badge.cli { background: var(--text-dim); color: var(--bg); }
+  .session-card.cli-session { border-left: 3px solid var(--text-dim); }
+  .session-id {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: inherit;
+    opacity: 0.7;
+  }
 
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
@@ -1056,72 +1086,130 @@ function hideSessions() {
 }
 
 async function loadSessions() {
-  try {
-    const res = await fetch('/api/sessions', { headers: { 'Content-Type': 'application/json' } });
-    if (!res.ok) throw new Error(await res.text());
-    const sessions = await res.json();
-    renderSessions(sessions);
-  } catch (e) {
-    document.getElementById('sessions-list').innerHTML =
-      `<div class="sessions-empty">Failed to load sessions: ${esc(e.message)}</div>`;
-  }
-}
-
-function renderSessions(sessions) {
   const list = document.getElementById('sessions-list');
   const count = document.getElementById('sessions-count');
-  count.textContent = `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`;
+  list.innerHTML = '';
 
-  if (sessions.length === 0) {
-    list.innerHTML = '<div class="sessions-empty">No saved sessions found</div>';
+  // Fetch both sources in parallel
+  let squadSessions = [];
+  let cliSessions = [];
+  try {
+    const [squadRes, cliRes] = await Promise.all([
+      fetch('/api/sessions', { headers: { 'Content-Type': 'application/json' } }),
+      fetch('/api/cli-sessions', { headers: { 'Content-Type': 'application/json' } }),
+    ]);
+    if (squadRes.ok) squadSessions = await squadRes.json();
+    if (cliRes.ok) cliSessions = await cliRes.json();
+  } catch (e) {
+    list.innerHTML = `<div class="sessions-empty">Failed to load sessions: ${esc(e.message)}</div>`;
     return;
   }
 
-  sessions.sort((a, b) => {
-    if (a.active !== b.active) return b.active ? 1 : -1;
-    return new Date(b.updated_at) - new Date(a.updated_at);
-  });
+  const totalCount = squadSessions.length + cliSessions.length;
+  count.textContent = `${totalCount} session${totalCount !== 1 ? 's' : ''}`;
 
-  list.innerHTML = '';
-  sessions.forEach(s => {
-    const card = document.createElement('div');
-    card.className = 'session-card' + (s.active ? ' active-session' : '');
+  if (totalCount === 0) {
+    list.innerHTML = '<div class="sessions-empty">No sessions found</div>';
+    return;
+  }
 
-    const statusLabel = s.status === 'ready' ? 'waiting' : s.status;
-    const created = formatRelativeTime(s.created_at);
-    const updated = formatRelativeTime(s.updated_at);
-    const shortPath = (s.path || '').replace(/^\/Users\/[^/]+/, '~');
-    const diffInfo = (s.diff_added || s.diff_removed) ? `+${s.diff_added} -${s.diff_removed}` : '';
-
-    card.innerHTML = `
-      <div class="session-info">
-        <div class="session-title">
-          ${esc(s.title)}
-          ${s.active ? '<span class="session-active-badge">ACTIVE</span>' : ''}
-          <span class="status-dot ${s.status}" style="margin-left:4px"></span>
-          <span class="status-label ${s.status}" style="font-size:11px">${statusLabel}</span>
-        </div>
-        <div class="session-details">
-          ${s.program ? `<span><span class="session-detail-label">program:</span> ${esc(s.program)}</span>` : ''}
-          ${s.git_mode ? `<span style="color:var(--orange)">git mode</span>` : '<span>direct mode</span>'}
-          ${s.branch_name ? `<span><span class="session-detail-label">branch:</span> ${esc(s.branch_name)}</span>` : ''}
-          ${diffInfo ? `<span>${diffInfo}</span>` : ''}
-          <span><span class="session-detail-label">created:</span> ${created}</span>
-          <span><span class="session-detail-label">updated:</span> ${updated}</span>
-        </div>
-        <div class="session-path-row" title="${esc(s.path || '')}">${esc(shortPath)}</div>
-      </div>
-      <div class="session-actions">
-        <button class="session-delete-btn">Delete</button>
-      </div>
-    `;
-    // Attach delete handler
-    card.querySelector('.session-delete-btn').addEventListener('click', (event) => {
-      event.stopPropagation();
-      deleteSession(s.title);
+  // Render Claude Squad sessions
+  if (squadSessions.length > 0) {
+    squadSessions.sort((a, b) => {
+      if (a.active !== b.active) return b.active ? 1 : -1;
+      return new Date(b.updated_at) - new Date(a.updated_at);
     });
-    list.appendChild(card);
+
+    const header = document.createElement('div');
+    header.className = 'sessions-group-header';
+    header.innerHTML = `<span class="sessions-group-badge squad">SQUAD</span> Claude Squad Sessions <span style="margin-left:auto;font-weight:400;font-size:11px">${squadSessions.length}</span>`;
+    list.appendChild(header);
+
+    squadSessions.forEach(s => {
+      list.appendChild(renderSquadSessionCard(s));
+    });
+  }
+
+  // Render Claude Code CLI sessions
+  if (cliSessions.length > 0) {
+    const header = document.createElement('div');
+    header.className = 'sessions-group-header';
+    header.innerHTML = `<span class="sessions-group-badge cli">CLI</span> Claude Code CLI Sessions <span style="margin-left:auto;font-weight:400;font-size:11px">${cliSessions.length}</span>`;
+    list.appendChild(header);
+
+    cliSessions.forEach(s => {
+      list.appendChild(renderCLISessionCard(s));
+    });
+  }
+}
+
+function renderSquadSessionCard(s) {
+  const card = document.createElement('div');
+  card.className = 'session-card' + (s.active ? ' active-session' : '');
+
+  const statusLabel = s.status === 'ready' ? 'waiting' : s.status;
+  const created = formatRelativeTime(s.created_at);
+  const updated = formatRelativeTime(s.updated_at);
+  const shortPath = (s.path || '').replace(/^\/Users\/[^/]+/, '~');
+  const diffInfo = (s.diff_added || s.diff_removed) ? `+${s.diff_added} -${s.diff_removed}` : '';
+
+  card.innerHTML = `
+    <div class="session-info">
+      <div class="session-title">
+        ${esc(s.title)}
+        ${s.active ? '<span class="session-active-badge">ACTIVE</span>' : ''}
+        <span class="status-dot ${s.status}" style="margin-left:4px"></span>
+        <span class="status-label ${s.status}" style="font-size:11px">${statusLabel}</span>
+      </div>
+      <div class="session-details">
+        ${s.program ? `<span><span class="session-detail-label">program:</span> ${esc(s.program)}</span>` : ''}
+        ${s.git_mode ? `<span style="color:var(--orange)">git mode</span>` : '<span>direct mode</span>'}
+        ${s.branch_name ? `<span><span class="session-detail-label">branch:</span> ${esc(s.branch_name)}</span>` : ''}
+        ${diffInfo ? `<span>${diffInfo}</span>` : ''}
+        <span><span class="session-detail-label">created:</span> ${created}</span>
+        <span><span class="session-detail-label">updated:</span> ${updated}</span>
+      </div>
+      <div class="session-path-row" title="${esc(s.path || '')}">${esc(shortPath)}</div>
+    </div>
+    <div class="session-actions">
+      <button class="session-delete-btn">Delete</button>
+    </div>
+  `;
+  card.querySelector('.session-delete-btn').addEventListener('click', (event) => {
+    event.stopPropagation();
+    deleteSession(s.title);
   });
+  return card;
+}
+
+function renderCLISessionCard(s) {
+  const card = document.createElement('div');
+  card.className = 'session-card cli-session';
+
+  const created = formatRelativeTime(s.created_at);
+  const updated = formatRelativeTime(s.updated_at);
+  const shortProject = (s.cwd || s.project || '').replace(/^\/Users\/[^/]+/, '~');
+  const sizeKB = s.size_bytes ? Math.round(s.size_bytes / 1024) : 0;
+  const shortId = s.session_id ? s.session_id.slice(0, 8) : '';
+
+  card.innerHTML = `
+    <div class="session-info">
+      <div class="session-title">
+        ${esc(shortProject || 'Unknown project')}
+        <span class="session-id">${esc(shortId)}</span>
+      </div>
+      <div class="session-details">
+        ${s.model ? `<span><span class="session-detail-label">model:</span> ${esc(s.model)}</span>` : ''}
+        ${s.git_branch ? `<span><span class="session-detail-label">branch:</span> ${esc(s.git_branch)}</span>` : ''}
+        ${s.version ? `<span><span class="session-detail-label">v:</span> ${esc(s.version)}</span>` : ''}
+        ${sizeKB ? `<span>${sizeKB}KB</span>` : ''}
+        <span><span class="session-detail-label">created:</span> ${created}</span>
+        <span><span class="session-detail-label">updated:</span> ${updated}</span>
+      </div>
+      <div class="session-path-row" title="${esc(s.cwd || s.project || '')}">${esc(shortProject)}</div>
+    </div>
+  `;
+  return card;
 }
 
 async function deleteSession(title) {
@@ -1161,8 +1249,42 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// --- Poll ---
-setInterval(refreshList, 2000);
+// --- Status WebSocket: real-time status updates for all instances ---
+let statusWsConnected = false;
+
+function connectStatusWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const statusWs = new WebSocket(`${proto}//${location.host}/api/statuses/ws`);
+  statusWs.onopen = () => {
+    statusWsConnected = true;
+  };
+  statusWs.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'status_update' && msg.statuses) {
+      let changed = false;
+      for (const [title, status] of Object.entries(msg.statuses)) {
+        if (instanceStatuses[title] !== status) {
+          instanceStatuses[title] = status;
+          changed = true;
+        }
+      }
+      if (changed) refreshList();
+    }
+  };
+  statusWs.onclose = () => {
+    statusWsConnected = false;
+    // Clear cached statuses so stale data doesn't override REST responses
+    instanceStatuses = {};
+    setTimeout(connectStatusWS, 3000);
+  };
+  statusWs.onerror = () => {
+    statusWs.close();
+  };
+}
+connectStatusWS();
+
+// --- Poll (fallback, less frequent since status WS handles real-time) ---
+setInterval(refreshList, 5000);
 refreshList();
 </script>
 </body>

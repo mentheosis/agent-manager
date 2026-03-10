@@ -28,6 +28,11 @@ type Server struct {
 	storage   *session.Storage
 	program   string
 	autoYes   bool
+
+	// Status broadcast: pollMetadata writes, status WS clients read
+	statusMu      sync.Mutex
+	lastStatuses  map[string]string        // title -> last known status string
+	statusClients map[*websocket.Conn]bool // connected status WS clients
 }
 
 func NewServer(program string, autoYes bool) (*Server, error) {
@@ -48,11 +53,13 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 	}
 
 	return &Server{
-		instances: instances,
-		convLogs:  convLogs,
-		storage:   storage,
-		program:   program,
-		autoYes:   autoYes,
+		instances:     instances,
+		convLogs:      convLogs,
+		storage:       storage,
+		program:       program,
+		autoYes:       autoYes,
+		lastStatuses:  make(map[string]string),
+		statusClients: make(map[*websocket.Conn]bool),
 	}, nil
 }
 
@@ -131,29 +138,109 @@ func (s *Server) getOrCreateConvLog(title string) *ConversationLog {
 }
 
 // pollMetadata updates status for all instances (like the TUI's tickUpdateMetadataCmd)
+// and broadcasts status changes to all connected status WebSocket clients.
 func (s *Server) pollMetadata() {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for range ticker.C {
 		s.mu.Lock()
+		changed := make(map[string]string) // title -> new status
 		for _, inst := range s.instances {
-			if !inst.Started() || inst.Paused() {
-				continue
-			}
-			inst.CheckAndHandleTrustPrompt()
-			updated, prompt := inst.HasUpdated()
-			if updated {
-				inst.SetStatus(session.Running)
-			} else {
-				if prompt {
-					inst.TapEnter()
+			if inst.Started() && !inst.Paused() {
+				inst.CheckAndHandleTrustPrompt()
+				updated, prompt := inst.HasUpdated()
+				if updated {
+					inst.SetStatus(session.Running)
 				} else {
-					inst.SetStatus(session.Ready)
+					if prompt {
+						inst.TapEnter()
+					} else {
+						inst.SetStatus(session.Ready)
+					}
 				}
+				_ = inst.UpdateDiffStats()
 			}
-			_ = inst.UpdateDiffStats()
+
+			// Always check for status changes (including paused/loading instances)
+			status := statusString(inst.Status)
+			s.statusMu.Lock()
+			if s.lastStatuses[inst.Title] != status {
+				s.lastStatuses[inst.Title] = status
+				changed[inst.Title] = status
+			}
+			s.statusMu.Unlock()
 		}
 		s.mu.Unlock()
+
+		// Broadcast any changes
+		if len(changed) > 0 {
+			s.broadcastStatuses(changed)
+		}
+	}
+}
+
+// broadcastStatuses sends status updates to all connected status WS clients.
+func (s *Server) broadcastStatuses(changed map[string]string) {
+	msg := map[string]interface{}{
+		"type":     "status_update",
+		"statuses": changed,
+	}
+
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+
+	for conn := range s.statusClients {
+		if err := conn.WriteJSON(msg); err != nil {
+			conn.Close()
+			delete(s.statusClients, conn)
+		}
+	}
+}
+
+// handleStatusWebSocket serves a WebSocket that pushes status changes for all instances.
+func (s *Server) handleStatusWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.ErrorLog.Printf("status websocket upgrade failed: %v", err)
+		return
+	}
+
+	// Collect current statuses, register client, and send initial state all
+	// under statusMu to prevent concurrent writes and missed updates.
+	s.mu.RLock()
+	current := make(map[string]string)
+	for _, inst := range s.instances {
+		current[inst.Title] = statusString(inst.Status)
+	}
+	s.mu.RUnlock()
+
+	s.statusMu.Lock()
+	s.statusClients[conn] = true
+	if len(current) > 0 {
+		if err := conn.WriteJSON(map[string]interface{}{
+			"type":     "status_update",
+			"statuses": current,
+		}); err != nil {
+			delete(s.statusClients, conn)
+			s.statusMu.Unlock()
+			conn.Close()
+			return
+		}
+	}
+	s.statusMu.Unlock()
+
+	// Read (and discard) messages to detect close
+	defer func() {
+		s.statusMu.Lock()
+		delete(s.statusClients, conn)
+		s.statusMu.Unlock()
+		conn.Close()
+	}()
+
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
 	}
 }
 
@@ -171,11 +258,18 @@ func (s *Server) pollOutput() {
 			if cl == nil {
 				continue
 			}
-			content, err := inst.PreviewFullHistory()
+			// Capture visible pane first, then full history.
+			// This ordering means if a line scrolls between captures,
+			// it's in full but not pane — correctly classified as scrollback.
+			paneContent, err := inst.Preview()
 			if err != nil {
 				continue
 			}
-			cl.Ingest(content)
+			fullContent, err := inst.PreviewFullHistory()
+			if err != nil {
+				continue
+			}
+			cl.Ingest(fullContent, paneContent)
 		}
 		s.mu.RUnlock()
 	}
@@ -336,6 +430,9 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		delete(s.convLogs, title)
+		s.statusMu.Lock()
+		delete(s.lastStatuses, title)
+		s.statusMu.Unlock()
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
 
@@ -602,6 +699,9 @@ func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	delete(s.convLogs, title)
+	s.statusMu.Lock()
+	delete(s.lastStatuses, title)
+	s.statusMu.Unlock()
 
 	// Delete from persistent storage
 	if err := s.storage.DeleteInstance(title); err != nil {
@@ -647,6 +747,22 @@ func Run(program string, autoYes bool, port int) error {
 	})
 	mux.HandleFunc("/api/instances/", func(w http.ResponseWriter, r *http.Request) {
 		srv.handleInstanceAction(w, r)
+	})
+	mux.HandleFunc("/api/statuses/ws", func(w http.ResponseWriter, r *http.Request) {
+		srv.handleStatusWebSocket(w, r)
+	})
+	mux.HandleFunc("/api/cli-sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		sessions, err := discoverCLISessions()
+		if err != nil {
+			http.Error(w, "failed to discover CLI sessions: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(sessions)
 	})
 
 	// Static files

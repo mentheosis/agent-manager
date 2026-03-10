@@ -107,22 +107,27 @@ export class ConvLogView {
     const wasAtBottom = this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < 30;
 
     if (msg.type === 'history_append') {
-      // Append new stable lines to historyDiv
+      // Append new stable lines to historyDiv using DOM insertion (not innerHTML +=)
       if (msg.lines && msg.lines.length > 0 && this.historyDiv) {
-        const fragment = document.createElement('div');
-        fragment.innerHTML = safeAnsiToHtml(msg.lines.join('\n'));
-        // Append as a continuation
-        if (this.historyDiv.innerHTML) {
-          this.historyDiv.innerHTML += '\n' + fragment.innerHTML;
-        } else {
-          this.historyDiv.innerHTML = fragment.innerHTML;
+        const newHtml = safeAnsiToHtml(msg.lines.join('\n'));
+        const fragment = document.createElement('span');
+        fragment.innerHTML = newHtml;
+
+        if (this.stableCount > 0) {
+          // Add a newline text node before appending new content
+          this.historyDiv.appendChild(document.createTextNode('\n'));
+        }
+        // Move all child nodes from fragment into historyDiv
+        while (fragment.firstChild) {
+          this.historyDiv.appendChild(fragment.firstChild);
         }
         this.stableCount += msg.lines.length;
       }
     } else if (msg.type === 'pane') {
       // Replace volatile pane content
       if (this.paneDiv) {
-        this.paneDiv.innerHTML = safeAnsiToHtml(msg.content);
+        const newHtml = safeAnsiToHtml(msg.content);
+        this.paneDiv.innerHTML = (this.stableCount > 0 ? '\n' : '') + newHtml;
       }
 
       // Notify about status changes
@@ -145,7 +150,6 @@ export class ConvLogView {
       <div class="error-msg">${esc(message)}</div>
       <button class="retry-btn" onclick="window._convLogRetry && window._convLogRetry()">Retry</button>
     </div>`;
-    // Store retry handler on window for the onclick
     window._convLogRetry = () => this.connect(title);
   }
 }
