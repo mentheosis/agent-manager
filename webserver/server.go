@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -465,17 +466,54 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "diff":
-		ds := inst.GetDiffStats()
-		if ds == nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"added": 0, "removed": 0, "content": ""})
-			return
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
 		}
+		// Run git diff in the working directory
+		diffCmd := exec.Command("git", "diff")
+		diffCmd.Dir = workDir
+		diffOutput, _ := diffCmd.Output()
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"added":   ds.Added,
-			"removed": ds.Removed,
-			"content": ds.Content,
+			"content": string(diffOutput),
+		})
+
+	case "git-status":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+
+		// Check if this is a git repo
+		checkCmd := exec.Command("git", "rev-parse", "--git-dir")
+		checkCmd.Dir = workDir
+		if err := checkCmd.Run(); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"is_git":  false,
+				"status":  "",
+				"branch":  "",
+			})
+			return
+		}
+
+		// Get branch
+		branchCmd := exec.Command("git", "branch", "--show-current")
+		branchCmd.Dir = workDir
+		branchOutput, _ := branchCmd.Output()
+
+		// Get status
+		statusCmd := exec.Command("git", "status", "--short")
+		statusCmd.Dir = workDir
+		statusOutput, _ := statusCmd.Output()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"is_git":  true,
+			"status":  string(statusOutput),
+			"branch":  strings.TrimSpace(string(branchOutput)),
 		})
 
 	case "rules":
@@ -483,23 +521,44 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		if workDir == "" {
 			workDir = inst.Path
 		}
-		rulesPath := filepath.Join(workDir, "CLAUDE.md")
 
 		if r.Method == http.MethodGet {
-			content, err := os.ReadFile(rulesPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]interface{}{"content": "", "exists": false, "path": rulesPath})
-					return
-				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+			// Return all config files: CLAUDE.md + settings files
+			type configFile struct {
+				Name     string `json:"name"`
+				Path     string `json:"path"`
+				Content  string `json:"content"`
+				Exists   bool   `json:"exists"`
+				Writable bool   `json:"writable"`
 			}
+
+			files := []struct {
+				name     string
+				path     string
+				writable bool
+			}{
+				{"CLAUDE.md", filepath.Join(workDir, "CLAUDE.md"), true},
+				{".claude/settings.json", filepath.Join(workDir, ".claude", "settings.json"), true},
+				{".claude/settings.local.json", filepath.Join(workDir, ".claude", "settings.local.json"), true},
+			}
+
+			var result []configFile
+			for _, f := range files {
+				cf := configFile{Name: f.name, Path: f.path, Writable: f.writable}
+				content, err := os.ReadFile(f.path)
+				if err == nil {
+					cf.Content = string(content)
+					cf.Exists = true
+				}
+				result = append(result, cf)
+			}
+
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"content": string(content), "exists": true, "path": rulesPath})
+			json.NewEncoder(w).Encode(map[string]interface{}{"files": result})
+
 		} else if r.Method == http.MethodPut {
 			var body struct {
+				Path    string `json:"path"`
 				Content string `json:"content"`
 			}
 			bodyBytes, err := io.ReadAll(r.Body)
@@ -511,12 +570,25 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := os.WriteFile(rulesPath, []byte(body.Content), 0644); err != nil {
+
+			// Validate the path is within the workdir
+			absPath, err := filepath.Abs(body.Path)
+			if err != nil || !strings.HasPrefix(absPath, workDir) {
+				http.Error(w, "invalid path", http.StatusBadRequest)
+				return
+			}
+
+			// Create parent directory if needed
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(absPath, []byte(body.Content), 0644); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": rulesPath})
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": absPath})
 		} else {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

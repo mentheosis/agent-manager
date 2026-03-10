@@ -261,6 +261,29 @@
     flex-direction: column;
   }
   #rules-editor.visible { display: flex; }
+  #rules-file-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    overflow-x: auto;
+  }
+  .rules-file-tab {
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 2px solid transparent;
+    transition: all 0.1s;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rules-file-tab:hover { color: var(--text); }
+  .rules-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .rules-file-tab .file-exists { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .rules-file-tab .file-exists.yes { background: var(--green); }
+  .rules-file-tab .file-exists.no { background: var(--text-dim); opacity: 0.4; }
   #rules-toolbar {
     display: flex;
     align-items: center;
@@ -613,12 +636,13 @@
     </div>
     <div id="output-area"></div>
     <div id="rules-editor">
+      <div id="rules-file-tabs"></div>
       <div id="rules-toolbar">
         <span id="rules-path"></span>
         <span id="rules-status"></span>
         <button id="rules-save-btn">Save</button>
       </div>
-      <textarea id="rules-textarea" placeholder="# CLAUDE.md&#10;&#10;Add rules and instructions for Claude Code here..."></textarea>
+      <textarea id="rules-textarea" placeholder="Select a file above to edit..."></textarea>
     </div>
     <div id="input-area">
       <input id="prompt-input" type="text" placeholder="Send a message...">
@@ -807,7 +831,9 @@ document.querySelectorAll('.tab').forEach(t => {
   t.addEventListener('click', () => switchTab(t.dataset.tab));
 });
 
-// --- Rules ---
+// --- Rules (multi-file config editor) ---
+let rulesFiles = [];       // array of {name, path, content, exists, writable}
+let rulesActiveIdx = 0;    // index of currently selected file
 let rulesSavedContent = '';
 let rulesUnsaved = false;
 let rulesGeneration = 0;
@@ -822,31 +848,81 @@ async function loadRules() {
   const pathEl = document.getElementById('rules-path');
   const textarea = document.getElementById('rules-textarea');
   const saveBtn = document.getElementById('rules-save-btn');
+  const tabsEl = document.getElementById('rules-file-tabs');
 
   statusEl.textContent = 'Loading...';
   statusEl.className = '';
+  textarea.value = '';
+  tabsEl.innerHTML = '';
 
   try {
     const data = await api(`/${encodeURIComponent(titleAtRequest)}/rules`);
     if (gen !== rulesGeneration) return;
-    rulesSavedContent = data.content || '';
-    textarea.value = rulesSavedContent;
-    pathEl.textContent = data.path || 'CLAUDE.md';
-    rulesUnsaved = false;
-    saveBtn.disabled = true;
-    if (data.exists) {
-      statusEl.textContent = '';
-    } else {
-      statusEl.textContent = 'New file';
-      statusEl.className = 'unsaved';
+
+    rulesFiles = data.files || [];
+    rulesActiveIdx = 0;
+
+    // Render file tabs
+    renderRulesFileTabs();
+
+    // Select first file
+    if (rulesFiles.length > 0) {
+      selectRulesFile(0);
     }
   } catch (e) {
     if (gen !== rulesGeneration) return;
     statusEl.textContent = 'Error loading';
     statusEl.className = 'unsaved';
     textarea.value = '';
-    pathEl.textContent = 'CLAUDE.md';
+    pathEl.textContent = '';
   }
+}
+
+function renderRulesFileTabs() {
+  const tabsEl = document.getElementById('rules-file-tabs');
+  tabsEl.innerHTML = '';
+  rulesFiles.forEach((f, idx) => {
+    const tab = document.createElement('div');
+    tab.className = 'rules-file-tab' + (idx === rulesActiveIdx ? ' active' : '');
+    tab.innerHTML = `<span class="file-exists ${f.exists ? 'yes' : 'no'}"></span>${esc(f.name)}`;
+    tab.addEventListener('click', () => {
+      // Save check before switching
+      if (rulesUnsaved) {
+        if (!confirm('You have unsaved changes. Discard?')) return;
+      }
+      selectRulesFile(idx);
+    });
+    tabsEl.appendChild(tab);
+  });
+}
+
+function selectRulesFile(idx) {
+  rulesActiveIdx = idx;
+  const f = rulesFiles[idx];
+  const statusEl = document.getElementById('rules-status');
+  const pathEl = document.getElementById('rules-path');
+  const textarea = document.getElementById('rules-textarea');
+  const saveBtn = document.getElementById('rules-save-btn');
+
+  rulesSavedContent = f.content || '';
+  textarea.value = rulesSavedContent;
+  pathEl.textContent = f.path || f.name;
+  rulesUnsaved = false;
+  saveBtn.disabled = true;
+
+  if (f.exists) {
+    statusEl.textContent = '';
+    statusEl.className = '';
+  } else {
+    statusEl.textContent = 'New file (will be created on save)';
+    statusEl.className = 'unsaved';
+  }
+
+  // Update active tab styling
+  document.querySelectorAll('.rules-file-tab').forEach((tab, i) => {
+    tab.classList.toggle('active', i === idx);
+  });
+
   textarea.focus();
 }
 
@@ -868,6 +944,9 @@ function onRulesEdit() {
 
 async function saveRules() {
   if (!selectedTitle || !rulesUnsaved) return;
+  const f = rulesFiles[rulesActiveIdx];
+  if (!f) return;
+
   const textarea = document.getElementById('rules-textarea');
   const statusEl = document.getElementById('rules-status');
   const saveBtn = document.getElementById('rules-save-btn');
@@ -879,12 +958,16 @@ async function saveRules() {
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/rules`, {
       method: 'PUT',
-      body: JSON.stringify({ content: textarea.value }),
+      body: JSON.stringify({ path: f.path, content: textarea.value }),
     });
     rulesSavedContent = textarea.value;
+    f.content = textarea.value;
+    f.exists = true;
     rulesUnsaved = false;
     statusEl.textContent = 'Saved';
     statusEl.className = 'saved';
+    // Update the file tab dot
+    renderRulesFileTabs();
     setTimeout(() => {
       if (!rulesUnsaved) {
         statusEl.textContent = '';
@@ -909,15 +992,78 @@ async function loadDiff() {
   diffGeneration++;
   const gen = diffGeneration;
   const titleAtRequest = selectedTitle;
+  const output = document.getElementById('output-area');
+  output.innerHTML = '<span style="color:var(--muted)">Loading git status...</span>';
+
   try {
-    const data = await api(`/${encodeURIComponent(titleAtRequest)}/diff`);
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/git-status`);
     if (gen !== diffGeneration) return;
-    const output = document.getElementById('output-area');
-    output.innerHTML = formatDiff(data.content || 'No changes');
+
+    if (!data.is_git) {
+      output.innerHTML = '<span style="color:var(--muted)">Not a git repository</span>';
+      return;
+    }
+
+    let html = '';
+    // Branch
+    html += `<div style="margin-bottom:8px"><strong style="color:var(--accent)">Branch:</strong> ${esc(data.branch || '(detached)')}</div>`;
+
+    // Status
+    if (data.status && data.status.trim()) {
+      html += `<div style="margin-bottom:8px"><strong style="color:var(--accent)">Status:</strong></div>`;
+      html += `<pre style="margin:0 0 12px 0;color:var(--fg)">${formatGitStatus(data.status)}</pre>`;
+    } else {
+      html += `<div style="margin-bottom:12px;color:var(--muted)">Working tree clean</div>`;
+    }
+
+    // Show diff button
+    html += `<button id="show-diff-btn" style="background:var(--accent);color:#000;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:13px">Show Diff</button>`;
+    html += `<div id="diff-output" style="margin-top:12px"></div>`;
+
+    output.innerHTML = html;
+
+    document.getElementById('show-diff-btn').addEventListener('click', () => loadFullDiff(gen, titleAtRequest));
   } catch (e) {
     if (gen !== diffGeneration) return;
-    document.getElementById('output-area').textContent = 'Error: ' + e.message;
+    output.textContent = 'Error: ' + e.message;
   }
+}
+
+async function loadFullDiff(gen, title) {
+  if (gen !== diffGeneration) return;
+  const btn = document.getElementById('show-diff-btn');
+  const diffOutput = document.getElementById('diff-output');
+  if (btn) btn.disabled = true;
+  if (btn) btn.textContent = 'Loading...';
+
+  try {
+    const data = await api(`/${encodeURIComponent(title)}/diff`);
+    if (gen !== diffGeneration) return;
+    if (btn) btn.textContent = 'Refresh Diff';
+    if (btn) btn.disabled = false;
+    diffOutput.innerHTML = `<pre style="margin:0;color:var(--fg)">${formatDiff(data.content || 'No changes (working tree matches HEAD)')}</pre>`;
+  } catch (e) {
+    if (gen !== diffGeneration) return;
+    if (btn) btn.textContent = 'Show Diff';
+    if (btn) btn.disabled = false;
+    diffOutput.textContent = 'Error: ' + e.message;
+  }
+}
+
+function formatGitStatus(text) {
+  if (!text) return '';
+  return text.split('\n').map(line => {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('M ') || trimmed.startsWith('MM'))
+      return `<span style="color:var(--yellow)">${esc(line)}</span>`;
+    if (trimmed.startsWith('A '))
+      return `<span class="diff-add">${esc(line)}</span>`;
+    if (trimmed.startsWith('D '))
+      return `<span class="diff-del">${esc(line)}</span>`;
+    if (trimmed.startsWith('??'))
+      return `<span style="color:var(--muted)">${esc(line)}</span>`;
+    return esc(line);
+  }).join('\n');
 }
 
 function formatDiff(text) {
