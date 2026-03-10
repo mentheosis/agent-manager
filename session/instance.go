@@ -633,6 +633,24 @@ func (i *Instance) PreviewFullHistory() (string, error) {
 	return i.tmuxSession.CapturePaneContentWithOptions("-", "-")
 }
 
+// GetHistorySize returns the number of scrollback lines above the visible pane.
+func (i *Instance) GetHistorySize() (int, error) {
+	if !i.started || i.Status == Paused {
+		return 0, nil
+	}
+	return i.tmuxSession.GetHistorySize()
+}
+
+// CaptureScrollback captures the most recent lineCount lines from the scrollback
+// buffer (the lines just above the visible pane). Returns them oldest-first.
+func (i *Instance) CaptureScrollback(lineCount int) (string, error) {
+	if !i.started || i.Status == Paused || lineCount <= 0 {
+		return "", nil
+	}
+	start := fmt.Sprintf("-%d", lineCount)
+	return i.tmuxSession.CapturePaneContentWithOptions(start, "-1")
+}
+
 // SetTmuxSession sets the tmux session for testing purposes
 func (i *Instance) SetTmuxSession(session *tmux.TmuxSession) {
 	i.tmuxSession = session

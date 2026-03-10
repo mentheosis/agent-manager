@@ -9,7 +9,7 @@ export class InputHistory {
     this.onNavigate = null; // callback to update button states
 
     this.inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.send();
       }

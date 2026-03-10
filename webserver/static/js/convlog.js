@@ -7,6 +7,8 @@ export class ConvLogView {
   constructor(container) {
     this.container = container;
     this.historyDiv = null;
+    this.dividerDiv = null;
+    this.lastInputDiv = null;
     this.paneDiv = null;
     this.ws = null;
     this.generation = 0;
@@ -26,9 +28,18 @@ export class ConvLogView {
     this.container.className = '';
     this.historyDiv = document.createElement('div');
     this.historyDiv.id = 'output-history';
+    this.dividerDiv = document.createElement('div');
+    this.dividerDiv.className = 'live-divider';
+    this.dividerDiv.textContent = '\u2500\u2500 Live \u2500\u2500';
+    this.dividerDiv.style.display = 'none';
+    this.lastInputDiv = document.createElement('div');
+    this.lastInputDiv.className = 'last-input';
+    this.lastInputDiv.style.display = 'none';
     this.paneDiv = document.createElement('div');
     this.paneDiv.id = 'output-live';
     this.container.appendChild(this.historyDiv);
+    this.container.appendChild(this.dividerDiv);
+    this.container.appendChild(this.lastInputDiv);
     this.container.appendChild(this.paneDiv);
     this.stableCount = 0;
 
@@ -47,6 +58,8 @@ export class ConvLogView {
 
     if (gen !== this.generation) return;
 
+    // console.log('initialState', { initialState, gen, title });
+
     // Render initial stable lines
     if (initialState && initialState.stable_lines && initialState.stable_lines.length > 0) {
       this.historyDiv.innerHTML = safeAnsiToHtml(initialState.stable_lines.join('\n'));
@@ -57,6 +70,12 @@ export class ConvLogView {
     if (initialState && initialState.pane && initialState.pane.length > 0) {
       this.paneDiv.innerHTML = safeAnsiToHtml(initialState.pane.join('\n'));
     }
+
+    // Show divider/last-input if we have pane content
+    this._updateDivider(
+      initialState && initialState.pane ? initialState.pane.join('\n') : '',
+      initialState ? initialState.last_input : ''
+    );
 
     // Scroll to bottom
     this.container.scrollTop = this.container.scrollHeight;
@@ -97,12 +116,28 @@ export class ConvLogView {
   disconnect() {
     if (this.ws) { this.ws.close(); this.ws = null; }
     this.historyDiv = null;
+    this.dividerDiv = null;
+    this.lastInputDiv = null;
     this.paneDiv = null;
     this.stableCount = 0;
   }
 
+  _updateDivider(paneContent, lastInput) {
+    if (!this.dividerDiv || !this.lastInputDiv) return;
+    const hasPane = paneContent && paneContent.trim().length > 0;
+    this.dividerDiv.style.display = hasPane ? '' : 'none';
+    if (lastInput) {
+      this.lastInputDiv.style.display = '';
+      this.lastInputDiv.textContent = '\u276f ' + lastInput;
+    } else {
+      this.lastInputDiv.style.display = 'none';
+    }
+  }
+
   _handleMessage(msg, gen, title) {
     if (gen !== this.generation) return;
+
+    // console.log('msg', msg.type, { msg, gen, title });
 
     const wasAtBottom = this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < 30;
 
@@ -129,6 +164,9 @@ export class ConvLogView {
         const newHtml = safeAnsiToHtml(msg.content);
         this.paneDiv.innerHTML = (this.stableCount > 0 ? '\n' : '') + newHtml;
       }
+
+      // Update divider visibility
+      this._updateDivider(msg.content, msg.last_input);
 
       // Notify about status changes
       if (msg.status && this.onStatus) {

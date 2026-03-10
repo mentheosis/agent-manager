@@ -30,6 +30,9 @@ type Server struct {
 	program   string
 	autoYes   bool
 
+	// Tracks tmux scrollback size per instance to enable delta-only capture.
+	lastHistorySize map[string]int
+
 	// Status broadcast: pollMetadata writes, status WS clients read
 	statusMu      sync.Mutex
 	lastStatuses  map[string]string        // title -> last known status string
@@ -54,13 +57,14 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 	}
 
 	return &Server{
-		instances:     instances,
-		convLogs:      convLogs,
-		storage:       storage,
-		program:       program,
-		autoYes:       autoYes,
-		lastStatuses:  make(map[string]string),
-		statusClients: make(map[*websocket.Conn]bool),
+		instances:       instances,
+		convLogs:        convLogs,
+		storage:         storage,
+		program:         program,
+		autoYes:         autoYes,
+		lastHistorySize: make(map[string]int),
+		lastStatuses:    make(map[string]string),
+		statusClients:   make(map[*websocket.Conn]bool),
 	}, nil
 }
 
@@ -246,6 +250,8 @@ func (s *Server) handleStatusWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 // pollOutput captures tmux output for all active instances and feeds it to their ConversationLogs.
+// It uses an O(1) history_size metadata query to detect new scrollback, then captures only the
+// delta instead of the entire scrollback buffer every tick.
 func (s *Server) pollOutput() {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -259,21 +265,57 @@ func (s *Server) pollOutput() {
 			if cl == nil {
 				continue
 			}
-			// Capture visible pane first, then full history.
-			// This ordering means if a line scrolls between captures,
-			// it's in full but not pane — correctly classified as scrollback.
+
 			paneContent, err := inst.Preview()
 			if err != nil {
 				continue
 			}
-			fullContent, err := inst.PreviewFullHistory()
+
+			historySize, err := inst.GetHistorySize()
 			if err != nil {
 				continue
 			}
-			cl.Ingest(fullContent, paneContent)
+
+			var newScrollback string
+			lastSize := s.lastHistorySize[inst.Title]
+			if historySize > lastSize {
+				delta := historySize - lastSize
+				newScrollback, err = inst.CaptureScrollback(delta)
+				if err != nil {
+					continue
+				}
+				s.lastHistorySize[inst.Title] = historySize
+				
+				// fmt.Println("=======================")
+				// fmt.Printf("[convlog %s] historySize=%d lastSize=%d delta=%d scrollbackLines=%d",
+				// 	inst.Title, historySize, lastSize, delta, len(strings.Split(newScrollback, "\n")))
+				// fmt.Printf("\n[convlog %s] newScrollback (last lines):\n %s",
+				// 	inst.Title, lastNLines(newScrollback, 5))
+				// fmt.Printf("\n[convlog %s] paneContent (last lines):\n %s",
+				// 	inst.Title, firstNLines(paneContent, 5))
+			}
+
+			cl.Ingest(newScrollback, paneContent)
+			cl.SetStatus(statusString(inst.Status))
 		}
 		s.mu.RUnlock()
 	}
+}
+
+func lastNLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
+}
+
+func firstNLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n")
 }
 
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
@@ -394,9 +436,10 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Record in input history
+		// Record in input history and as last input
 		if cl := s.convLogs[title]; cl != nil {
 			cl.AddInput(body.Text)
+			cl.SetLastInput(body.Text)
 		}
 		w.WriteHeader(http.StatusOK)
 
@@ -431,6 +474,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		delete(s.convLogs, title)
+		delete(s.lastHistorySize, title)
 		s.statusMu.Lock()
 		delete(s.lastStatuses, title)
 		s.statusMu.Unlock()
@@ -448,13 +492,14 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 
 	case "history":
 		cl := s.getOrCreateConvLog(title)
-		stableLines, stableSeqNo, pane := cl.GetState()
+		stableLines, stableSeqNo, pane, lastInput := cl.GetState()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"stable_lines":  stableLines,
 			"stable_seq_no": stableSeqNo,
 			"stable_count":  len(stableLines),
 			"pane":          pane,
+			"last_input":    lastInput,
 		})
 
 	case "input-history":
@@ -637,6 +682,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 
 	var lastStableCount int
 	var lastPaneContent string
+	var lastLastInput string
 
 	for {
 		select {
@@ -645,7 +691,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		case <-ticker.C:
 		}
 
-		stableLines, _, pane := cl.GetState()
+		stableLines, _, pane, lastInput := cl.GetState()
 
 		s.mu.RLock()
 		status := statusString(inst.Status)
@@ -666,12 +712,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 
 		// Send current pane (volatile) - only if changed
 		paneContent := strings.Join(pane, "\n")
-		if paneContent != lastPaneContent {
+		if paneContent != lastPaneContent || lastInput != lastLastInput {
 			lastPaneContent = paneContent
+			lastLastInput = lastInput
 			msg := map[string]interface{}{
-				"type":    "pane",
-				"content": paneContent,
-				"status":  status,
+				"type":       "pane",
+				"content":    paneContent,
+				"status":     status,
+				"last_input": lastInput,
 			}
 			if err := conn.WriteJSON(msg); err != nil {
 				return
@@ -771,6 +819,7 @@ func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	delete(s.convLogs, title)
+	delete(s.lastHistorySize, title)
 	s.statusMu.Lock()
 	delete(s.lastStatuses, title)
 	s.statusMu.Unlock()

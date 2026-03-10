@@ -9,19 +9,19 @@ import (
 // (stable, append-only) from the visible pane (volatile, constantly rewritten).
 //
 // Two mechanisms preserve output:
-//  1. Scrollback promotion: lines that scroll off the visible area into tmux
-//     scrollback are appended to stableLines.
-//  2. Overwrite rescue: lines that were in the previous full capture but are
-//     absent from the new full capture were overwritten in-place (e.g. thinking
-//     output replaced by response). These are rescued into stableLines so they
-//     are not lost.
+//  1. Scrollback promotion: the caller detects new scrollback lines (via tmux
+//     history_size metadata) and passes only the delta to Ingest, which appends
+//     them to stableLines.
+//  2. Turn-based promotion: when the instance status transitions to "ready",
+//     all current pane content is promoted to stable history.
 type ConversationLog struct {
-	mu            sync.Mutex
-	stableLines   []string // finalized lines (append-only)
-	lastFullLines []string // previous full capture (for overwrite detection)
-	currentPane   []string // volatile visible pane (replaced each ingest)
-	inputHistory  []string // prompts sent by user
-	stableSeqNo   uint64   // bumped when stableLines grows
+	mu           sync.Mutex
+	stableLines  []string // finalized lines (append-only)
+	currentPane  []string // volatile visible pane (replaced each ingest)
+	inputHistory []string // prompts sent by user
+	stableSeqNo  uint64   // bumped when stableLines grows
+	lastStatus   string   // tracks status for transition detection
+	lastInput    string   // most recent user prompt
 }
 
 // NewConversationLog creates a new empty ConversationLog.
@@ -41,103 +41,53 @@ func splitLines(s string) []string {
 	return lines
 }
 
-// Ingest processes a new pair of tmux captures:
-//   - fullCapture: entire output (scrollback + visible pane), from capture-pane -S - -E -
-//   - paneCapture: just the visible pane, from capture-pane (no -S/-E)
-func (cl *ConversationLog) Ingest(fullCapture string, paneCapture string) {
+// Ingest processes new terminal output:
+//   - newScrollback: lines that have newly scrolled off the visible pane since
+//     the last call (may be empty when nothing has scrolled)
+//   - paneCapture: the current visible pane content
+func (cl *ConversationLog) Ingest(newScrollback string, paneCapture string) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 
-	fullLines := splitLines(fullCapture)
+	newLines := splitLines(newScrollback)
 	paneLines := splitLines(paneCapture)
 
-	if len(fullLines) == 0 {
-		cl.currentPane = nil
-		return
-	}
-
-	// The visible pane is the last N lines of the full capture.
-	// Everything before that is scrollback (stable).
-	scrollbackEnd := len(fullLines) - len(paneLines)
-	if scrollbackEnd < 0 {
-		scrollbackEnd = 0
-	}
-
-	// Step 1: Promote new scrollback lines.
-	if scrollbackEnd > len(cl.stableLines) {
-		cl.stableLines = append(cl.stableLines, fullLines[len(cl.stableLines):scrollbackEnd]...)
+	if len(newLines) > 0 {
+		cl.stableLines = append(cl.stableLines, newLines...)
 		cl.stableSeqNo++
 	}
 
-	// Step 2: Rescue overwritten pane content.
-	// Compare previous full capture with current to find lines that disappeared.
-	// These were overwritten in-place by Claude Code (e.g. thinking → response).
-	if len(cl.lastFullLines) > 0 {
-		rescued := findOverwritten(cl.lastFullLines, fullLines)
-		if len(rescued) > 0 {
-			cl.stableLines = append(cl.stableLines, rescued...)
-			cl.stableSeqNo++
-		}
-	}
-
 	cl.currentPane = paneLines
-	cl.lastFullLines = fullLines
 }
 
-// findOverwritten compares two successive full captures and returns lines from
-// oldFull that are not present in newFull (overwritten content).
-//
-// Algorithm:
-//  1. Find the common prefix (unchanged scrollback).
-//  2. Lines after the prefix form the "tail" of each capture.
-//  3. Use multiset subtraction: lines in oldTail that can't be matched to a
-//     line in newTail were overwritten and should be rescued.
-//
-// This correctly handles scrolling (matched lines), duplicate lines, and
-// in-place rewrites. The prompt line typically appears in both tails and
-// gets matched, so it is NOT rescued.
-func findOverwritten(oldFull, newFull []string) []string {
-	// Find common prefix (unchanged scrollback region)
-	prefixLen := 0
-	maxPrefix := len(oldFull)
-	if len(newFull) < maxPrefix {
-		maxPrefix = len(newFull)
-	}
-	for prefixLen < maxPrefix && oldFull[prefixLen] == newFull[prefixLen] {
-		prefixLen++
-	}
-
-	oldTail := oldFull[prefixLen:]
-	newTail := newFull[prefixLen:]
-
-	if len(oldTail) == 0 {
-		return nil
-	}
-
-	// Build multiset of new tail lines
-	newSet := make(map[string]int, len(newTail))
-	for _, line := range newTail {
-		newSet[line]++
-	}
-
-	// Lines in old tail not matchable in new tail were overwritten
-	var rescued []string
-	for _, line := range oldTail {
-		if newSet[line] > 0 {
-			newSet[line]--
-		} else {
-			// Only rescue lines with actual content
-			if strings.TrimSpace(line) != "" {
-				rescued = append(rescued, line)
-			}
-		}
-	}
-
-	return rescued
+func (cl *ConversationLog) SetStatus(status string) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	// prev := cl.lastStatus
+	cl.lastStatus = status
+	// if status == "ready" && prev != "ready" && prev != "" && len(cl.currentPane) > 0 {
+	// 	cl.stableLines = append(cl.stableLines, cl.currentPane...)
+	// 	cl.stableSeqNo++
+	// 	cl.currentPane = nil
+	// }
 }
 
-// GetState returns the current stable lines, sequence number, and volatile pane.
-func (cl *ConversationLog) GetState() (stableLines []string, stableSeqNo uint64, pane []string) {
+// SetLastInput records the most recent user prompt.
+func (cl *ConversationLog) SetLastInput(text string) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	cl.lastInput = text
+}
+
+// GetLastInput returns the most recent user prompt.
+func (cl *ConversationLog) GetLastInput() string {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	return cl.lastInput
+}
+
+// GetState returns the current stable lines, sequence number, volatile pane, and last input.
+func (cl *ConversationLog) GetState() (stableLines []string, stableSeqNo uint64, pane []string, lastInput string) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 
@@ -147,7 +97,7 @@ func (cl *ConversationLog) GetState() (stableLines []string, stableSeqNo uint64,
 	paneOut := make([]string, len(cl.currentPane))
 	copy(paneOut, cl.currentPane)
 
-	return stable, cl.stableSeqNo, paneOut
+	return stable, cl.stableSeqNo, paneOut, cl.lastInput
 }
 
 // GetStableSince returns stable lines starting from the given index (for delta fetching).

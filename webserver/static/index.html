@@ -253,6 +253,25 @@
   }
   .connection-error .retry-btn:hover { border-color: var(--accent); }
 
+  .live-divider {
+    color: var(--text-dim);
+    font-size: 11px;
+    text-align: center;
+    padding: 4px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+    user-select: none;
+  }
+  .last-input {
+    color: var(--yellow);
+    font-size: 12px;
+    padding: 2px 8px;
+    opacity: 0.8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   /* Rules editor */
   #rules-editor {
     display: none;
@@ -359,6 +378,7 @@
     background: var(--bg-surface);
     display: flex;
     gap: 8px;
+    align-items: flex-end;
   }
   #prompt-input {
     flex: 1;
@@ -370,6 +390,12 @@
     font-family: inherit;
     font-size: 13px;
     outline: none;
+    resize: vertical;
+    min-height: 36px;
+    max-height: 200px;
+    overflow-y: auto;
+    line-height: 1.4;
+    field-sizing: content;
   }
   #prompt-input:focus { border-color: var(--accent); }
   #btn-send {
@@ -645,7 +671,7 @@
       <textarea id="rules-textarea" placeholder="Select a file above to edit..."></textarea>
     </div>
     <div id="input-area">
-      <input id="prompt-input" type="text" placeholder="Send a message...">
+      <textarea id="prompt-input" rows="1" placeholder="Send a message..."></textarea>
       <button id="btn-send">Send</button>
       <button class="history-btn" id="btn-hist-prev" title="Previous prompt" disabled>&#x25B2;</button>
       <button class="history-btn" id="btn-hist-next" title="Next prompt" disabled>&#x25BC;</button>

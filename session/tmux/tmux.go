@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -478,6 +479,21 @@ func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, 
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
 	}
 	return string(output), nil
+}
+
+// GetHistorySize returns the number of lines in the scrollback buffer above the
+// visible pane. This is an O(1) metadata query — no content is serialized.
+func (t *TmuxSession) GetHistorySize() (int, error) {
+	cmd := exec.Command("tmux", "display-message", "-p", "-t", t.sanitizedName, "#{history_size}")
+	output, err := t.cmdExec.Output(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("error getting history size: %v", err)
+	}
+	size, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, fmt.Errorf("error parsing history size %q: %v", string(output), err)
+	}
+	return size, nil
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"
