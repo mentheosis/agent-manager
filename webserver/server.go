@@ -318,6 +318,47 @@ func firstNLines(s string, n int) string {
 	return strings.Join(lines[:n], "\n")
 }
 
+func (s *Server) handleReorderInstances(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Order []string `json:"order"` // titles in desired order
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build a map of title -> instance for quick lookup
+	byTitle := make(map[string]*session.Instance, len(s.instances))
+	for _, inst := range s.instances {
+		byTitle[inst.Title] = inst
+	}
+
+	// Reorder: place titles from body.Order first, then any remaining
+	reordered := make([]*session.Instance, 0, len(s.instances))
+	seen := make(map[string]bool)
+	for _, title := range body.Order {
+		if inst, ok := byTitle[title]; ok && !seen[title] {
+			reordered = append(reordered, inst)
+			seen[title] = true
+		}
+	}
+	// Append any instances not in the order list (safety net)
+	for _, inst := range s.instances {
+		if !seen[inst.Title] {
+			reordered = append(reordered, inst)
+		}
+	}
+
+	s.instances = reordered
+	if err := s.save(); err != nil {
+		log.ErrorLog.Printf("failed to save after reorder: %v", err)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -879,6 +920,13 @@ func Run(program string, autoYes bool, port int) error {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	})
+	mux.HandleFunc("/api/instances/reorder", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		srv.handleReorderInstances(w, r)
 	})
 	mux.HandleFunc("/api/instances/", func(w http.ResponseWriter, r *http.Request) {
 		srv.handleInstanceAction(w, r)

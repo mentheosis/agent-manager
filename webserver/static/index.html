@@ -71,6 +71,8 @@
     border: 1px solid transparent;
   }
   .instance-item:hover { background: var(--bg-highlight); }
+  .instance-item.dragging { opacity: 0.4; }
+  .instance-item.drag-over { border-top: 2px solid var(--accent); }
   .instance-item.active {
     background: var(--bg-highlight);
     border-left: 3px solid var(--accent);
@@ -804,7 +806,38 @@ function renderList(instances) {
     if (inst.title === selectedTitle) cls += ' active';
     if (isWaiting) cls += ' waiting';
     div.className = cls;
+    div.draggable = true;
+    div.dataset.title = inst.title;
     div.onclick = () => selectInstance(inst.title);
+
+    div.addEventListener('dragstart', (e) => {
+      div.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', inst.title);
+    });
+    div.addEventListener('dragend', () => {
+      div.classList.remove('dragging');
+      el.querySelectorAll('.drag-over').forEach(d => d.classList.remove('drag-over'));
+    });
+    div.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const dragging = el.querySelector('.dragging');
+      if (dragging && dragging !== div) {
+        div.classList.add('drag-over');
+      }
+    });
+    div.addEventListener('dragleave', () => {
+      div.classList.remove('drag-over');
+    });
+    div.addEventListener('drop', (e) => {
+      e.preventDefault();
+      div.classList.remove('drag-over');
+      const fromTitle = e.dataTransfer.getData('text/plain');
+      if (fromTitle && fromTitle !== inst.title) {
+        reorderInstances(el, fromTitle, inst.title);
+      }
+    });
 
     const diffInfo = (inst.diff_added || inst.diff_removed)
       ? `+${inst.diff_added} -${inst.diff_removed}`
@@ -823,6 +856,30 @@ function renderList(instances) {
     `;
     el.appendChild(div);
   });
+}
+
+function reorderInstances(listEl, fromTitle, toTitle) {
+  const items = Array.from(listEl.querySelectorAll('.instance-item'));
+  const titles = items.map(el => el.dataset.title);
+  const fromIdx = titles.indexOf(fromTitle);
+  const toIdx = titles.indexOf(toTitle);
+  if (fromIdx === -1 || toIdx === -1) return;
+
+  // Move fromTitle to just before toTitle
+  titles.splice(fromIdx, 1);
+  const newToIdx = titles.indexOf(toTitle);
+  titles.splice(newToIdx, 0, fromTitle);
+
+  // Reorder DOM immediately for responsiveness
+  const byTitle = {};
+  items.forEach(el => { byTitle[el.dataset.title] = el; });
+  titles.forEach(t => listEl.appendChild(byTitle[t]));
+
+  // Persist to server
+  api('/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ order: titles }),
+  }).catch(e => console.error('Failed to save order:', e));
 }
 
 function selectInstance(title) {
