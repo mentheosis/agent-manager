@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Squad</title>
+<title>Agent Manager</title>
 <style>
   :root {
     --bg: #1a1b26;
@@ -498,6 +498,34 @@
   }
   #modal textarea { height: 80px; resize: vertical; }
   #modal input:focus, #modal textarea:focus { border-color: var(--accent); }
+  #modal input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-bottom: 0;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    position: relative;
+  }
+  #modal input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  #modal input[type="checkbox"]:checked::after {
+    content: '✓';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--bg);
+    font-size: 13px;
+    font-weight: 700;
+  }
   #modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
   #modal-actions button {
     padding: 6px 16px;
@@ -662,7 +690,7 @@
 
 <div id="sidebar">
   <div id="sidebar-header">
-    <h1>Claude Squad</h1>
+    <h1>Agent Manager</h1>
     <button id="btn-new">+ New</button>
   </div>
   <div id="instance-list"></div>
@@ -724,7 +752,7 @@
     <input id="modal-title" type="text" placeholder="Instance name">
     <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Working directory</label>
     <input id="modal-path" type="text" placeholder="Absolute path (default: current dir)">
-    <label style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;color:var(--text-dim)">
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:13px;color:var(--text-dim);cursor:pointer">
       <input id="modal-gitmode" type="checkbox"> Use git worktree isolation
     </label>
     <div id="git-options" style="display:none;margin-bottom:12px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg)">

@@ -45,7 +45,7 @@ export class ConvLogView {
     } catch (e) {
       if (gen !== this.generation) return;
       if (e.message && e.message.includes('Failed to fetch')) {
-        this._showError('Cannot connect to Claude Squad server. Is it running?', title);
+        this._showError('Cannot connect to Agent Manager server. Is it running?', title);
         return;
       }
     }
@@ -77,7 +77,7 @@ export class ConvLogView {
       newWs = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
     } catch (e) {
       if (gen !== this.generation) return;
-      this._showError('Cannot connect to Claude Squad server. Is it running?', title);
+      this._showError('Cannot connect to Agent Manager server. Is it running?', title);
       return;
     }
 
