@@ -98,19 +98,7 @@
     0%, 100% { box-shadow: 0 0 4px rgba(224, 175, 104, 0.05); }
     50% { box-shadow: 0 0 10px rgba(224, 175, 104, 0.2); }
   }
-  .instance-title { font-size: 13px; font-weight: 600; cursor: text; }
-  .instance-title-input {
-    font-size: 13px;
-    font-weight: 600;
-    font-family: inherit;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--accent);
-    border-radius: 3px;
-    padding: 1px 4px;
-    outline: none;
-    width: 100%;
-  }
+  .instance-title { font-size: 13px; font-weight: 600; }
   .instance-meta {
     font-size: 11px;
     color: var(--text-dim);
@@ -186,6 +174,7 @@
   /* Toolbar */
   #toolbar {
     display: flex;
+    align-items: center;
     gap: 8px;
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
@@ -215,11 +204,26 @@
   #active-view.paused #output-area { opacity: 0.4; }
   #active-view.paused #input-area { opacity: 0.4; pointer-events: none; }
   .toolbar-separator { width: 1px; background: var(--border); margin: 0 4px; }
+  #toolbar-title {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    outline: none;
+    min-width: 80px;
+    max-width: 200px;
+  }
+  #toolbar-title:hover { border-color: var(--border); }
+  #toolbar-title:focus { border-color: var(--accent); background: var(--bg); }
+  .toolbar-divider { width: 1px; height: 20px; background: var(--border); }
   .mode-selector {
     display: flex;
     align-items: center;
     gap: 4px;
-    margin-right: auto;
     font-size: 11px;
     color: var(--text-dim);
   }
@@ -758,11 +762,14 @@
       <div class="tab" data-tab="plans">Plans</div>
     </div>
     <div id="toolbar">
+      <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
+      <div class="toolbar-divider"></div>
       <div class="mode-selector">
         <span>Mode:</span>
         <button class="mode-btn" id="mode-agent">Agent</button>
         <button class="mode-btn" id="mode-plan">Plan</button>
       </div>
+      <div style="flex:1"></div>
       <button class="toolbar-btn" id="btn-pause">Pause</button>
       <button class="toolbar-btn" id="btn-resume">Resume</button>
       <button class="toolbar-btn danger" id="btn-kill">Kill</button>
@@ -830,6 +837,7 @@ import { api, apiFetch } from '/static/js/api.js';
 import { esc, safeAnsiToHtml } from '/static/js/ansi.js';
 
 let selectedTitle = null;
+let cachedInstances = [];
 let activeTab = 'terminal';
 let currentMode = 'agent';
 let instanceStatuses = {};
@@ -839,6 +847,45 @@ function updatePausedState() {
   const isPaused = status === 'paused';
   document.getElementById('active-view').classList.toggle('paused', isPaused);
   document.getElementById('btn-resume').classList.toggle('highlight', isPaused);
+}
+
+function updateToolbarTitle() {
+  const input = document.getElementById('toolbar-title');
+  if (!selectedTitle) return;
+  const inst = cachedInstances.find(i => i.title === selectedTitle);
+  if (!inst) return;
+  // Only update if the input isn't currently focused (user may be editing)
+  if (document.activeElement !== input) {
+    input.value = inst.display_title || inst.title;
+  }
+}
+
+// Toolbar title rename: commit on blur or Enter
+const toolbarTitleInput = document.getElementById('toolbar-title');
+toolbarTitleInput.addEventListener('blur', commitToolbarRename);
+toolbarTitleInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); toolbarTitleInput.blur(); }
+  if (e.key === 'Escape') { e.preventDefault(); updateToolbarTitle(); toolbarTitleInput.blur(); }
+});
+
+async function commitToolbarRename() {
+  if (!selectedTitle) return;
+  const newName = toolbarTitleInput.value.trim();
+  const inst = cachedInstances.find(i => i.title === selectedTitle);
+  if (!inst) return;
+  const oldName = inst.display_title || inst.title;
+  if (!newName || newName === oldName) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ display_title: newName }),
+    });
+    inst.display_title = newName;
+    refreshList();
+  } catch (err) {
+    // Revert on failure
+    toolbarTitleInput.value = oldName;
+  }
 }
 
 // --- ConvLogView + InputHistory ---
@@ -885,6 +932,8 @@ async function refreshList() {
 }
 
 function renderList(instances) {
+  cachedInstances = instances;
+  updateToolbarTitle();
   const el = document.getElementById('instance-list');
   el.innerHTML = '';
   instances.forEach(inst => {
@@ -947,39 +996,6 @@ function renderList(instances) {
       <div class="instance-path" title="${esc(inst.work_dir || '')}">${esc(shortPath)}</div>
     `;
 
-    // Double-click title to rename
-    const titleEl = div.querySelector('.instance-title');
-    titleEl.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'instance-title-input';
-      input.value = displayName;
-      titleEl.replaceWith(input);
-      input.focus();
-      input.select();
-
-      const commit = async () => {
-        const newName = input.value.trim();
-        if (newName && newName !== displayName) {
-          try {
-            await api(`/${encodeURIComponent(inst.title)}/rename`, {
-              method: 'POST',
-              body: JSON.stringify({ display_title: newName }),
-            });
-            inst.display_title = newName;
-          } catch (err) { /* keep old name */ }
-        }
-        refreshList();
-      };
-
-      input.addEventListener('blur', commit);
-      input.addEventListener('keydown', (ke) => {
-        if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
-        if (ke.key === 'Escape') { input.value = displayName; input.blur(); }
-      });
-    });
-
     el.appendChild(div);
   });
 }
@@ -1018,6 +1034,7 @@ function selectInstance(title) {
   document.getElementById('active-view').classList.add('visible');
   refreshList();
   updatePausedState();
+  updateToolbarTitle();
 
   // Load input history for this instance
   loadInputHistory(title);

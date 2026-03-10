@@ -491,6 +491,54 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 
+	// For send/keys, use minimal locking — only hold the lock to find the
+	// instance and convlog, then release before doing the actual tmux I/O.
+	// This prevents blocking on pollMetadata/pollOutput which hold the lock
+	// while running tmux subprocesses across all instances.
+	if action == "send" || action == "keys" {
+		s.mu.RLock()
+		inst := s.findInstance(title)
+		cl := s.convLogs[title]
+		s.mu.RUnlock()
+
+		if inst == nil {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+
+		if action == "send" {
+			var body struct {
+				Text string `json:"text"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := inst.SendPrompt(body.Text); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if cl != nil {
+				cl.AddInput(body.Text)
+				cl.SetLastInput(body.Text)
+			}
+		} else {
+			var body struct {
+				Keys string `json:"keys"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := inst.SendKeys(body.Keys); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -501,38 +549,6 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
-	case "send":
-		var body struct {
-			Text string `json:"text"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := inst.SendPrompt(body.Text); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Record in input history and as last input
-		if cl := s.convLogs[title]; cl != nil {
-			cl.AddInput(body.Text)
-			cl.SetLastInput(body.Text)
-		}
-		w.WriteHeader(http.StatusOK)
-
-	case "keys":
-		var body struct {
-			Keys string `json:"keys"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := inst.SendKeys(body.Keys); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
 
 	case "pause":
 		if err := inst.Pause(); err != nil {

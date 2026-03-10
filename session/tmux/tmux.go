@@ -227,6 +227,24 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
+// SendPromptViaTmux sends text followed by Enter as a single atomic tmux
+// send-keys command. Using a single command ensures the Enter keystroke
+// cannot be lost or separated from the text by a race condition.
+// The carriage return (0x0D) is appended to the literal text, which the
+// terminal interprets as Enter.
+func (t *TmuxSession) SendPromptViaTmux(text string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "-l", text+"\r")
+	_, err := t.cmdExec.Output(cmd)
+	return err
+}
+
+// TapEnterViaTmux sends Enter via the tmux send-keys command.
+func (t *TmuxSession) TapEnterViaTmux() error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")
+	_, err := t.cmdExec.Output(cmd)
+	return err
+}
+
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {

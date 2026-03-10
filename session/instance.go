@@ -616,14 +616,11 @@ func (i *Instance) SendPrompt(prompt string) error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
-	if err := i.tmuxSession.SendKeys(prompt); err != nil {
-		return fmt.Errorf("error sending keys to tmux session: %w", err)
-	}
-
-	// Brief pause to prevent carriage return from being interpreted as newline
-	time.Sleep(100 * time.Millisecond)
-	if err := i.tmuxSession.TapEnter(); err != nil {
-		return fmt.Errorf("error tapping enter: %w", err)
+	// Send text + Enter as a single atomic tmux send-keys command.
+	// Two separate commands (text then Enter) had a race where the Enter
+	// could be lost, causing the prompt to sit unsent until the next input.
+	if err := i.tmuxSession.SendPromptViaTmux(prompt); err != nil {
+		return fmt.Errorf("error sending prompt to tmux session: %w", err)
 	}
 
 	return nil
