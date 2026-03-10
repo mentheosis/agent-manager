@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent Manager</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <style>
   :root {
     --bg: #1a1b26;
@@ -44,7 +45,8 @@
     justify-content: space-between;
     align-items: center;
   }
-  #sidebar-header h1 { font-size: 14px; color: var(--accent); }
+  #sidebar-header h1 { font-size: 14px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+  #sidebar-header h1 img { width: 28px; height: 28px; }
   #btn-new {
     background: var(--accent);
     color: var(--bg);
@@ -188,7 +190,18 @@
     font-size: 11px;
   }
   .toolbar-btn:hover { border-color: var(--accent); }
+  .toolbar-btn.highlight {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .toolbar-btn.highlight:hover { opacity: 0.85; }
   .toolbar-btn.danger:hover { border-color: var(--red); color: var(--red); }
+
+  /* Paused state */
+  #active-view.paused #output-area { opacity: 0.4; }
+  #active-view.paused #input-area { opacity: 0.4; pointer-events: none; }
   .toolbar-separator { width: 1px; background: var(--border); margin: 0 4px; }
   .mode-selector {
     display: flex;
@@ -273,13 +286,13 @@
     flex-direction: column;
   }
   #rules-editor.visible { display: flex; }
-  #rules-file-tabs {
+  #rules-file-tabs, #plans-file-tabs {
     display: flex;
     border-bottom: 1px solid var(--border);
     background: var(--bg-surface);
     overflow-x: auto;
   }
-  .rules-file-tab {
+  .rules-file-tab, .plans-file-tab {
     padding: 8px 16px;
     cursor: pointer;
     font-size: 11px;
@@ -291,12 +304,12 @@
     align-items: center;
     gap: 6px;
   }
-  .rules-file-tab:hover { color: var(--text); }
-  .rules-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .rules-file-tab:hover, .plans-file-tab:hover { color: var(--text); }
+  .rules-file-tab.active, .plans-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .rules-file-tab .file-exists { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
   .rules-file-tab .file-exists.yes { background: var(--green); }
   .rules-file-tab .file-exists.no { background: var(--text-dim); opacity: 0.4; }
-  #rules-toolbar {
+  #rules-toolbar, #plans-toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -306,8 +319,8 @@
     font-size: 11px;
     color: var(--text-dim);
   }
-  #rules-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #rules-save-btn {
+  #rules-path, #plans-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rules-save-btn, #plans-save-btn {
     background: var(--accent);
     color: var(--bg);
     border: none;
@@ -318,17 +331,17 @@
     font-size: 11px;
     font-weight: 600;
   }
-  #rules-save-btn:hover { opacity: 0.85; }
-  #rules-save-btn:disabled { opacity: 0.4; cursor: default; }
-  #rules-status {
+  #rules-save-btn:hover, #plans-save-btn:hover { opacity: 0.85; }
+  #rules-save-btn:disabled, #plans-save-btn:disabled { opacity: 0.4; cursor: default; }
+  #rules-status, #plans-status {
     font-size: 11px;
     padding: 2px 8px;
     border-radius: 3px;
     transition: opacity 0.3s;
   }
-  #rules-status.saved { color: var(--green); }
-  #rules-status.unsaved { color: var(--yellow); }
-  #rules-textarea {
+  #rules-status.saved, #plans-status.saved { color: var(--green); }
+  #rules-status.unsaved, #plans-status.unsaved { color: var(--yellow); }
+  #rules-textarea, #plans-textarea {
     flex: 1;
     min-height: 0;
     background: var(--bg);
@@ -341,6 +354,23 @@
     resize: none;
     outline: none;
     tab-size: 2;
+  }
+
+  /* Plans editor (shares styling patterns with rules) */
+  #plans-editor {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+  #plans-editor.visible { display: flex; }
+  #plans-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 13px;
   }
 
   #output-area.diff { color: var(--text); }
@@ -690,7 +720,7 @@
 
 <div id="sidebar">
   <div id="sidebar-header">
-    <h1>Agent Manager</h1>
+    <h1><img src="/static/favicon.svg" alt="crab">Agent Manager</h1>
     <button id="btn-new">+ New</button>
   </div>
   <div id="instance-list"></div>
@@ -713,6 +743,7 @@
       <div class="tab active" data-tab="terminal">Terminal</div>
       <div class="tab" data-tab="diff">Diff</div>
       <div class="tab" data-tab="rules">Rules</div>
+      <div class="tab" data-tab="plans">Plans</div>
     </div>
     <div id="toolbar">
       <div class="mode-selector">
@@ -733,6 +764,16 @@
         <button id="rules-save-btn">Save</button>
       </div>
       <textarea id="rules-textarea" placeholder="Select a file above to edit..."></textarea>
+    </div>
+    <div id="plans-editor">
+      <div id="plans-file-tabs"></div>
+      <div id="plans-toolbar">
+        <span id="plans-path"></span>
+        <span id="plans-status"></span>
+        <button id="plans-save-btn">Save</button>
+      </div>
+      <textarea id="plans-textarea" placeholder="No plan files yet. Use /plan mode to generate plans."></textarea>
+      <div id="plans-empty" style="display:none">No plan files found. Use /plan mode to generate plans.</div>
     </div>
     <div id="action-bar" style="display:none">
       <div id="action-buttons"></div>
@@ -781,6 +822,13 @@ let activeTab = 'terminal';
 let currentMode = 'agent';
 let instanceStatuses = {};
 
+function updatePausedState() {
+  const status = selectedTitle ? (instanceStatuses[selectedTitle] || '') : '';
+  const isPaused = status === 'paused';
+  document.getElementById('active-view').classList.toggle('paused', isPaused);
+  document.getElementById('btn-resume').classList.toggle('highlight', isPaused);
+}
+
 // --- ConvLogView + InputHistory ---
 const outputArea = document.getElementById('output-area');
 const convLog = new ConvLogView(outputArea);
@@ -788,7 +836,10 @@ const convLog = new ConvLogView(outputArea);
 convLog.onStatus = (title, status) => {
   const prev = instanceStatuses[title];
   instanceStatuses[title] = status;
-  if (prev !== status) refreshList();
+  if (prev !== status) {
+    refreshList();
+    if (title === selectedTitle) updatePausedState();
+  }
 };
 
 convLog.onContent = (content) => {
@@ -915,9 +966,11 @@ function selectInstance(title) {
   hideSessions();
   diffGeneration++;
   rulesGeneration++;
+  plansGeneration++;
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('active-view').classList.add('visible');
   refreshList();
+  updatePausedState();
 
   // Load input history for this instance
   loadInputHistory(title);
@@ -950,19 +1003,22 @@ function switchTab(tab) {
 
   const output = document.getElementById('output-area');
   const rulesEditor = document.getElementById('rules-editor');
+  const plansEditor = document.getElementById('plans-editor');
   const inputArea = document.getElementById('input-area');
+
+  // Hide both editors by default
+  rulesEditor.classList.remove('visible');
+  plansEditor.classList.remove('visible');
 
   if (tab === 'terminal') {
     output.style.display = '';
     output.className = '';
-    rulesEditor.classList.remove('visible');
     inputArea.style.display = 'flex';
     convLog.connect(selectedTitle);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
     output.style.display = '';
     output.className = 'diff';
-    rulesEditor.classList.remove('visible');
     inputArea.style.display = 'flex';
     convLog.disconnect();
     loadDiff();
@@ -972,6 +1028,12 @@ function switchTab(tab) {
     inputArea.style.display = 'none';
     convLog.disconnect();
     loadRules();
+  } else if (tab === 'plans') {
+    output.style.display = 'none';
+    plansEditor.classList.add('visible');
+    inputArea.style.display = 'none';
+    convLog.disconnect();
+    loadPlans();
   }
 }
 
@@ -1133,6 +1195,154 @@ async function saveRules() {
 document.getElementById('rules-textarea').addEventListener('input', onRulesEdit);
 document.getElementById('rules-save-btn').addEventListener('click', saveRules);
 
+// --- Plans (plan file editor) ---
+let plansFiles = [];       // array of {name, path, content}
+let plansActiveIdx = 0;
+let plansSavedContent = '';
+let plansUnsaved = false;
+let plansGeneration = 0;
+
+async function loadPlans() {
+  if (!selectedTitle) return;
+  plansGeneration++;
+  const gen = plansGeneration;
+  const titleAtRequest = selectedTitle;
+
+  const statusEl = document.getElementById('plans-status');
+  const pathEl = document.getElementById('plans-path');
+  const textarea = document.getElementById('plans-textarea');
+  const saveBtn = document.getElementById('plans-save-btn');
+  const tabsEl = document.getElementById('plans-file-tabs');
+  const emptyEl = document.getElementById('plans-empty');
+
+  statusEl.textContent = 'Loading...';
+  statusEl.className = '';
+  textarea.value = '';
+  tabsEl.innerHTML = '';
+
+  try {
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/plans`);
+    if (gen !== plansGeneration) return;
+
+    plansFiles = data.files || [];
+    plansActiveIdx = 0;
+
+    if (plansFiles.length > 0) {
+      emptyEl.style.display = 'none';
+      textarea.style.display = '';
+      renderPlansFileTabs();
+      selectPlansFile(0);
+    } else {
+      emptyEl.style.display = 'flex';
+      textarea.style.display = 'none';
+      statusEl.textContent = '';
+      pathEl.textContent = '';
+      saveBtn.disabled = true;
+    }
+  } catch (e) {
+    if (gen !== plansGeneration) return;
+    statusEl.textContent = 'Error loading';
+    statusEl.className = 'unsaved';
+    textarea.value = '';
+    pathEl.textContent = '';
+  }
+}
+
+function renderPlansFileTabs() {
+  const tabsEl = document.getElementById('plans-file-tabs');
+  tabsEl.innerHTML = '';
+  plansFiles.forEach((f, idx) => {
+    const tab = document.createElement('div');
+    tab.className = 'plans-file-tab' + (idx === plansActiveIdx ? ' active' : '');
+    tab.textContent = f.name.replace(/\.md$/, '');
+    tab.addEventListener('click', () => {
+      if (plansUnsaved) {
+        if (!confirm('You have unsaved changes. Discard?')) return;
+      }
+      selectPlansFile(idx);
+    });
+    tabsEl.appendChild(tab);
+  });
+}
+
+function selectPlansFile(idx) {
+  plansActiveIdx = idx;
+  const f = plansFiles[idx];
+  const statusEl = document.getElementById('plans-status');
+  const pathEl = document.getElementById('plans-path');
+  const textarea = document.getElementById('plans-textarea');
+  const saveBtn = document.getElementById('plans-save-btn');
+
+  plansSavedContent = f.content || '';
+  textarea.value = plansSavedContent;
+  pathEl.textContent = f.name;
+  plansUnsaved = false;
+  saveBtn.disabled = true;
+  statusEl.textContent = '';
+  statusEl.className = '';
+
+  document.querySelectorAll('.plans-file-tab').forEach((tab, i) => {
+    tab.classList.toggle('active', i === idx);
+  });
+
+  textarea.focus();
+}
+
+function onPlansEdit() {
+  const textarea = document.getElementById('plans-textarea');
+  const statusEl = document.getElementById('plans-status');
+  const saveBtn = document.getElementById('plans-save-btn');
+  const changed = textarea.value !== plansSavedContent;
+  plansUnsaved = changed;
+  saveBtn.disabled = !changed;
+  if (changed) {
+    statusEl.textContent = 'Unsaved changes';
+    statusEl.className = 'unsaved';
+  } else {
+    statusEl.textContent = '';
+    statusEl.className = '';
+  }
+}
+
+async function savePlans() {
+  if (!selectedTitle || !plansUnsaved) return;
+  const f = plansFiles[plansActiveIdx];
+  if (!f) return;
+
+  const textarea = document.getElementById('plans-textarea');
+  const statusEl = document.getElementById('plans-status');
+  const saveBtn = document.getElementById('plans-save-btn');
+
+  saveBtn.disabled = true;
+  statusEl.textContent = 'Saving...';
+  statusEl.className = '';
+
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/plans`, {
+      method: 'PUT',
+      body: JSON.stringify({ path: f.path, content: textarea.value }),
+    });
+    plansSavedContent = textarea.value;
+    f.content = textarea.value;
+    plansUnsaved = false;
+    statusEl.textContent = 'Saved';
+    statusEl.className = 'saved';
+    setTimeout(() => {
+      if (!plansUnsaved) {
+        statusEl.textContent = '';
+        statusEl.className = '';
+      }
+    }, 2000);
+  } catch (e) {
+    statusEl.textContent = 'Save failed';
+    statusEl.className = 'unsaved';
+    saveBtn.disabled = false;
+  }
+}
+
+document.getElementById('plans-textarea').addEventListener('input', onPlansEdit);
+document.getElementById('plans-save-btn').addEventListener('click', savePlans);
+
 // --- Load diff ---
 let diffGeneration = 0;
 
@@ -1231,11 +1441,12 @@ function formatDiff(text) {
 // --- Actions ---
 async function actionPause() {
   if (!selectedTitle) return;
-  if (!confirm(`Pause "${selectedTitle}"?`)) return;
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
+    instanceStatuses[selectedTitle] = 'paused';
     convLog.disconnect();
     refreshList();
+    updatePausedState();
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -1243,7 +1454,9 @@ async function actionResume() {
   if (!selectedTitle) return;
   try {
     await api(`/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
+    instanceStatuses[selectedTitle] = 'running';
     refreshList();
+    updatePausedState();
     convLog.connect(selectedTitle);
   } catch (e) { alert('Error: ' + e.message); }
 }
@@ -1621,9 +1834,9 @@ function formatRelativeTime(isoString) {
 
 // --- Keyboard shortcuts ---
 document.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 's' && activeTab === 'rules') {
-    e.preventDefault();
-    saveRules();
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    if (activeTab === 'rules') { e.preventDefault(); saveRules(); }
+    if (activeTab === 'plans') { e.preventDefault(); savePlans(); }
   }
 });
 
@@ -1646,7 +1859,10 @@ function connectStatusWS() {
           changed = true;
         }
       }
-      if (changed) refreshList();
+      if (changed) {
+        refreshList();
+        updatePausedState();
+      }
     }
   };
   statusWs.onclose = () => {

@@ -371,6 +371,37 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// ensureLocalPlansDir creates a .claude/settings.local.json in the working directory
+// that configures Claude CLI to store plan files locally (colocated with the conversation)
+// rather than in the global ~/.claude/plans/ directory.
+func ensureLocalPlansDir(workDir string) {
+	settingsPath := filepath.Join(workDir, ".claude", "settings.local.json")
+
+	// If settings.local.json already exists, merge plansDirectory into it
+	existing := make(map[string]interface{})
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		json.Unmarshal(data, &existing)
+	}
+	if _, ok := existing["plansDirectory"]; ok {
+		return // already configured
+	}
+
+	existing["plansDirectory"] = "./.claude/plans"
+
+	if err := os.MkdirAll(filepath.Join(workDir, ".claude"), 0755); err != nil {
+		log.ErrorLog.Printf("failed to create .claude dir: %v", err)
+		return
+	}
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		log.ErrorLog.Printf("failed to marshal settings: %v", err)
+		return
+	}
+	if err := os.WriteFile(settingsPath, append(data, '\n'), 0644); err != nil {
+		log.ErrorLog.Printf("failed to write settings.local.json: %v", err)
+	}
+}
+
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title    string `json:"title"`
@@ -412,6 +443,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Ensure .claude/settings.local.json exists with local plans directory
+	ensureLocalPlansDir(inst.Path)
 
 	if err := inst.Start(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -615,6 +649,78 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			"status":  string(statusOutput),
 			"branch":  strings.TrimSpace(string(branchOutput)),
 		})
+
+	case "plans":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+		plansDir := filepath.Join(workDir, ".claude", "plans")
+
+		if r.Method == http.MethodGet {
+			type planFile struct {
+				Name    string `json:"name"`
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+
+			var result []planFile
+			entries, err := os.ReadDir(plansDir)
+			if err == nil {
+				for _, e := range entries {
+					if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+						continue
+					}
+					p := filepath.Join(plansDir, e.Name())
+					content, err := os.ReadFile(p)
+					if err != nil {
+						continue
+					}
+					result = append(result, planFile{
+						Name:    e.Name(),
+						Path:    p,
+						Content: string(content),
+					})
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"files": result})
+
+		} else if r.Method == http.MethodPut {
+			var body struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			absPath, err := filepath.Abs(body.Path)
+			if err != nil || !strings.HasPrefix(absPath, plansDir) {
+				http.Error(w, "invalid path", http.StatusBadRequest)
+				return
+			}
+
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(absPath, []byte(body.Content), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": absPath})
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 
 	case "rules":
 		workDir := inst.GetWorktreePath()
