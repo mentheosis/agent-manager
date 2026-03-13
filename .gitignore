@@ -1,7 +1,9 @@
 .idea
 .aider*
-claude-squad
 **.DS_Store
 cs
 
 .claude/
+bin/
+claude-squad
+claude-squad-orchestrator
