@@ -986,6 +986,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				{"CLAUDE.md", filepath.Join(workDir, "CLAUDE.md"), true},
 				{".claude/settings.json", filepath.Join(workDir, ".claude", "settings.json"), true},
 				{".claude/settings.local.json", filepath.Join(workDir, ".claude", "settings.local.json"), true},
+				{".mcp.json", filepath.Join(workDir, ".mcp.json"), true},
 			}
 
 			var result []configFile
@@ -1035,40 +1036,6 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": absPath})
-		} else {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-
-	case "mcp":
-		workDir := inst.GetWorktreePath()
-		if workDir == "" {
-			workDir = inst.Path
-		}
-		mcpPath := filepath.Join(workDir, ".mcp.json")
-
-		if r.Method == http.MethodGet {
-			content, err := os.ReadFile(mcpPath)
-			exists := err == nil
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"path":    mcpPath,
-				"content": string(content),
-				"exists":  exists,
-			})
-		} else if r.Method == http.MethodPut {
-			var body struct {
-				Content string `json:"content"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if err := os.WriteFile(mcpPath, []byte(body.Content), 0644); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": mcpPath})
 		} else {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

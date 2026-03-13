@@ -432,68 +432,6 @@
     flex-direction: column;
   }
   #memory-editor.visible { display: flex; }
-  #mcp-editor {
-    display: none;
-    flex: 1;
-    min-height: 0;
-    flex-direction: column;
-  }
-  #mcp-editor.visible { display: flex; }
-  #mcp-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-surface);
-    font-size: 11px;
-    color: var(--text-dim);
-  }
-  #mcp-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #mcp-save-btn {
-    background: var(--accent);
-    color: var(--bg);
-    border: none;
-    padding: 4px 14px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 600;
-  }
-  #mcp-save-btn:hover { opacity: 0.85; }
-  #mcp-save-btn:disabled { opacity: 0.4; cursor: default; }
-  #mcp-status {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 3px;
-    transition: opacity 0.3s;
-  }
-  #mcp-status.saved { color: var(--green); }
-  #mcp-status.unsaved { color: var(--yellow); }
-  #mcp-textarea {
-    flex: 1;
-    min-height: 0;
-    background: var(--bg);
-    color: var(--text);
-    border: none;
-    padding: 16px;
-    font-family: inherit;
-    font-size: 13px;
-    line-height: 1.5;
-    resize: none;
-    outline: none;
-    tab-size: 2;
-  }
-  #mcp-empty {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-dim);
-    font-size: 13px;
-  }
-
   #output-area.diff { color: var(--text); }
   .diff-add { color: var(--green); }
   .diff-del { color: var(--red); }
@@ -867,10 +805,9 @@
     <div id="tabs">
       <div class="tab active" data-tab="terminal">Terminal</div>
       <div class="tab" data-tab="diff">Diff</div>
-      <div class="tab" data-tab="rules">Rules</div>
+      <div class="tab" data-tab="rules">Settings</div>
       <div class="tab" data-tab="plans">Plans</div>
       <div class="tab" data-tab="memory">Memory</div>
-      <div class="tab" data-tab="mcp">MCP</div>
     </div>
     <div id="toolbar">
       <div class="mode-selector">
@@ -921,15 +858,6 @@
       </div>
       <textarea id="memory-textarea" placeholder="No memory files yet. Claude will create them as it learns."></textarea>
       <div id="memory-empty" style="display:none">No memory files found. Claude will create them as it learns about your project.</div>
-    </div>
-    <div id="mcp-editor">
-      <div id="mcp-toolbar">
-        <span id="mcp-path"></span>
-        <span id="mcp-status"></span>
-        <button id="mcp-save-btn">Save</button>
-      </div>
-      <textarea id="mcp-textarea" placeholder="No .mcp.json found for this session."></textarea>
-      <div id="mcp-empty" style="display:none">No MCP configuration found. MCP config is auto-generated for orchestrator leader sessions.</div>
     </div>
     <div id="action-bar" style="display:none">
       <div id="action-buttons"></div>
@@ -1301,14 +1229,12 @@ function switchTab(tab) {
   const rulesEditor = document.getElementById('rules-editor');
   const plansEditor = document.getElementById('plans-editor');
   const memoryEditor = document.getElementById('memory-editor');
-  const mcpEditor = document.getElementById('mcp-editor');
   const inputArea = document.getElementById('input-area');
 
   // Hide all editors by default
   rulesEditor.classList.remove('visible');
   plansEditor.classList.remove('visible');
   memoryEditor.classList.remove('visible');
-  mcpEditor.classList.remove('visible');
 
   const actionBar = document.getElementById('action-bar');
 
@@ -1347,13 +1273,6 @@ function switchTab(tab) {
     actionBar.style.display = 'none';
     convLog.disconnect();
     loadMemory();
-  } else if (tab === 'mcp') {
-    output.style.display = 'none';
-    mcpEditor.classList.add('visible');
-    inputArea.style.display = 'none';
-    actionBar.style.display = 'none';
-    convLog.disconnect();
-    loadMcp();
   }
 }
 
@@ -1810,84 +1729,6 @@ async function saveMemory() {
 
 document.getElementById('memory-textarea').addEventListener('input', onMemoryEdit);
 document.getElementById('memory-save-btn').addEventListener('click', saveMemory);
-
-// --- MCP config editor ---
-let mcpSavedContent = '';
-let mcpUnsaved = false;
-
-async function loadMcp() {
-  if (!selectedTitle) return;
-  const statusEl = document.getElementById('mcp-status');
-  const pathEl = document.getElementById('mcp-path');
-  const textarea = document.getElementById('mcp-textarea');
-  const saveBtn = document.getElementById('mcp-save-btn');
-  const emptyEl = document.getElementById('mcp-empty');
-
-  statusEl.textContent = 'Loading...';
-  statusEl.className = '';
-  textarea.value = '';
-
-  try {
-    const data = await api(`/${encodeURIComponent(selectedTitle)}/mcp`);
-    if (data.exists) {
-      emptyEl.style.display = 'none';
-      textarea.style.display = '';
-      mcpSavedContent = data.content || '';
-      textarea.value = mcpSavedContent;
-      pathEl.textContent = data.path;
-      mcpUnsaved = false;
-      saveBtn.disabled = true;
-      statusEl.textContent = '';
-    } else {
-      emptyEl.style.display = 'flex';
-      textarea.style.display = 'none';
-      statusEl.textContent = '';
-      pathEl.textContent = '';
-      saveBtn.disabled = true;
-    }
-  } catch (e) {
-    statusEl.textContent = 'Error loading';
-    statusEl.className = 'unsaved';
-    textarea.value = '';
-    pathEl.textContent = '';
-  }
-}
-
-function onMcpEdit() {
-  const textarea = document.getElementById('mcp-textarea');
-  const statusEl = document.getElementById('mcp-status');
-  const saveBtn = document.getElementById('mcp-save-btn');
-  mcpUnsaved = textarea.value !== mcpSavedContent;
-  statusEl.textContent = mcpUnsaved ? 'Unsaved' : '';
-  statusEl.className = mcpUnsaved ? 'unsaved' : '';
-  saveBtn.disabled = !mcpUnsaved;
-}
-
-async function saveMcp() {
-  if (!selectedTitle) return;
-  const textarea = document.getElementById('mcp-textarea');
-  const statusEl = document.getElementById('mcp-status');
-  const saveBtn = document.getElementById('mcp-save-btn');
-
-  try {
-    await api(`/${encodeURIComponent(selectedTitle)}/mcp`, {
-      method: 'PUT',
-      body: JSON.stringify({ content: textarea.value }),
-    });
-    mcpSavedContent = textarea.value;
-    mcpUnsaved = false;
-    saveBtn.disabled = true;
-    statusEl.textContent = 'Saved';
-    statusEl.className = 'saved';
-    setTimeout(() => { if (!mcpUnsaved) statusEl.textContent = ''; }, 2000);
-  } catch (e) {
-    statusEl.textContent = 'Save failed';
-    statusEl.className = 'unsaved';
-  }
-}
-
-document.getElementById('mcp-textarea').addEventListener('input', onMcpEdit);
-document.getElementById('mcp-save-btn').addEventListener('click', saveMcp);
 
 // --- Load diff ---
 let diffGeneration = 0;
