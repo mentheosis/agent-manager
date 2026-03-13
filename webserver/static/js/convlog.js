@@ -160,8 +160,9 @@ export class ConvLogView {
     } else if (msg.type === 'pane') {
       // Replace volatile pane content
       if (this.paneDiv) {
-        const newHtml = safeAnsiToHtml(msg.content);
-        this.paneDiv.innerHTML = (this.stableCount > 0 ? '\n' : '') + newHtml;
+        const hasContent = msg.content && msg.content.trim();
+        this.paneDiv.innerHTML = hasContent ? safeAnsiToHtml(msg.content) : '';
+        this.paneDiv.style.display = hasContent ? '' : 'none';
       }
 
       this._updateLastInput(msg.last_input);

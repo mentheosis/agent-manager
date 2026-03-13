@@ -2130,24 +2130,42 @@ function parseActions(plain) {
   const actions = [];
 
   // Detect interactive numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
-  // Only treat as interactive options if at least one line has the ❯ cursor,
-  // which is the definitive marker of Claude CLI's interactive selector.
-  // Note: tmux line wrapping can split long option labels across lines,
-  // so we capture only the first ~40 chars of label and trim trailing noise.
+  // Only collect the contiguous group of numbered options around the ❯ cursor,
+  // ignoring unrelated numbered lists elsewhere in the output.
   const lines = plain.split('\n');
-  const options = [];
-  let hasCursor = false;
   const optionLineRe = /^\s*([❯>])?\s*(\d+)\.\s*(.+)/;
-  for (const line of lines) {
-    const m = line.match(optionLineRe);
-    if (!m) continue;
-    if (m[1]) hasCursor = true;
-    // Clean the label: trim, remove trailing column junk (3+ spaces followed by unrelated text)
-    let label = m[3].replace(/\s{3,}.*$/, '').trim();
-    if (label) options.push({ num: m[2], label });
+
+  // First pass: find the line index with the ❯ cursor
+  let cursorIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(optionLineRe);
+    if (m && m[1]) { cursorIdx = i; break; }
   }
-  console.log('[parseActions] hasCursor:', hasCursor, 'options:', options, 'lines:', lines.length);
-  if (hasCursor && options.length > 0) {
+
+  if (cursorIdx >= 0) {
+    // Walk backward from cursor to find first option in this group
+    let start = cursorIdx;
+    for (let i = cursorIdx - 1; i >= 0; i--) {
+      if (optionLineRe.test(lines[i])) { start = i; }
+      else if (lines[i].trim() === '') continue; // skip blank lines (wrapped text)
+      else break;
+    }
+    // Walk forward from cursor to find last option in this group
+    let end = cursorIdx;
+    for (let i = cursorIdx + 1; i < lines.length; i++) {
+      if (optionLineRe.test(lines[i])) { end = i; }
+      else if (lines[i].trim() === '') continue;
+      else break;
+    }
+
+    // Collect options from the group
+    const options = [];
+    for (let i = start; i <= end; i++) {
+      const m = lines[i].match(optionLineRe);
+      if (!m) continue;
+      let label = m[3].replace(/\s{3,}.*$/, '').trim();
+      if (label) options.push({ num: m[2], label });
+    }
     for (const opt of options) {
       actions.push({
         label: `${opt.num}. ${opt.label}`,
