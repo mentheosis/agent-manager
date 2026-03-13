@@ -302,13 +302,13 @@
     flex-direction: column;
   }
   #rules-editor.visible { display: flex; }
-  #rules-file-tabs, #plans-file-tabs {
+  #rules-file-tabs, #plans-file-tabs, #memory-file-tabs {
     display: flex;
     border-bottom: 1px solid var(--border);
     background: var(--bg-surface);
     overflow-x: auto;
   }
-  .rules-file-tab, .plans-file-tab {
+  .rules-file-tab, .plans-file-tab, .memory-file-tab {
     padding: 8px 16px;
     cursor: pointer;
     font-size: 11px;
@@ -320,12 +320,12 @@
     align-items: center;
     gap: 6px;
   }
-  .rules-file-tab:hover, .plans-file-tab:hover { color: var(--text); }
-  .rules-file-tab.active, .plans-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .rules-file-tab:hover, .plans-file-tab:hover, .memory-file-tab:hover { color: var(--text); }
+  .rules-file-tab.active, .plans-file-tab.active, .memory-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .rules-file-tab .file-exists { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
   .rules-file-tab .file-exists.yes { background: var(--green); }
   .rules-file-tab .file-exists.no { background: var(--text-dim); opacity: 0.4; }
-  #rules-toolbar, #plans-toolbar {
+  #rules-toolbar, #plans-toolbar, #memory-toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -335,8 +335,8 @@
     font-size: 11px;
     color: var(--text-dim);
   }
-  #rules-path, #plans-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #rules-save-btn, #plans-save-btn {
+  #rules-path, #plans-path, #memory-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rules-save-btn, #plans-save-btn, #memory-save-btn {
     background: var(--accent);
     color: var(--bg);
     border: none;
@@ -347,17 +347,17 @@
     font-size: 11px;
     font-weight: 600;
   }
-  #rules-save-btn:hover, #plans-save-btn:hover { opacity: 0.85; }
-  #rules-save-btn:disabled, #plans-save-btn:disabled { opacity: 0.4; cursor: default; }
-  #rules-status, #plans-status {
+  #rules-save-btn:hover, #plans-save-btn:hover, #memory-save-btn:hover { opacity: 0.85; }
+  #rules-save-btn:disabled, #plans-save-btn:disabled, #memory-save-btn:disabled { opacity: 0.4; cursor: default; }
+  #rules-status, #plans-status, #memory-status {
     font-size: 11px;
     padding: 2px 8px;
     border-radius: 3px;
     transition: opacity 0.3s;
   }
-  #rules-status.saved, #plans-status.saved { color: var(--green); }
-  #rules-status.unsaved, #plans-status.unsaved { color: var(--yellow); }
-  #rules-textarea, #plans-textarea {
+  #rules-status.saved, #plans-status.saved, #memory-status.saved { color: var(--green); }
+  #rules-status.unsaved, #plans-status.unsaved, #memory-status.unsaved { color: var(--yellow); }
+  #rules-textarea, #plans-textarea, #memory-textarea {
     flex: 1;
     min-height: 0;
     background: var(--bg);
@@ -380,7 +380,7 @@
     flex-direction: column;
   }
   #plans-editor.visible { display: flex; }
-  #plans-empty {
+  #plans-empty, #memory-empty {
     flex: 1;
     display: flex;
     align-items: center;
@@ -388,6 +388,13 @@
     color: var(--text-dim);
     font-size: 13px;
   }
+  #memory-editor {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+  #memory-editor.visible { display: flex; }
 
   #output-area.diff { color: var(--text); }
   .diff-add { color: var(--green); }
@@ -760,6 +767,7 @@
       <div class="tab" data-tab="diff">Diff</div>
       <div class="tab" data-tab="rules">Rules</div>
       <div class="tab" data-tab="plans">Plans</div>
+      <div class="tab" data-tab="memory">Memory</div>
     </div>
     <div id="toolbar">
       <div class="mode-selector">
@@ -793,6 +801,16 @@
       </div>
       <textarea id="plans-textarea" placeholder="No plan files yet. Use /plan mode to generate plans."></textarea>
       <div id="plans-empty" style="display:none">No plan files found. Use /plan mode to generate plans.</div>
+    </div>
+    <div id="memory-editor">
+      <div id="memory-file-tabs"></div>
+      <div id="memory-toolbar">
+        <span id="memory-path"></span>
+        <span id="memory-status"></span>
+        <button id="memory-save-btn">Save</button>
+      </div>
+      <textarea id="memory-textarea" placeholder="No memory files yet. Claude will create them as it learns."></textarea>
+      <div id="memory-empty" style="display:none">No memory files found. Claude will create them as it learns about your project.</div>
     </div>
     <div id="action-bar" style="display:none">
       <div id="action-buttons"></div>
@@ -1042,6 +1060,7 @@ function selectInstance(title) {
   diffGeneration++;
   rulesGeneration++;
   plansGeneration++;
+  memoryGeneration++;
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('active-view').classList.add('visible');
   refreshList();
@@ -1073,11 +1092,13 @@ function switchTab(tab) {
   const output = document.getElementById('output-area');
   const rulesEditor = document.getElementById('rules-editor');
   const plansEditor = document.getElementById('plans-editor');
+  const memoryEditor = document.getElementById('memory-editor');
   const inputArea = document.getElementById('input-area');
 
-  // Hide both editors by default
+  // Hide all editors by default
   rulesEditor.classList.remove('visible');
   plansEditor.classList.remove('visible');
+  memoryEditor.classList.remove('visible');
 
   if (tab === 'terminal') {
     output.style.display = '';
@@ -1103,6 +1124,12 @@ function switchTab(tab) {
     inputArea.style.display = 'none';
     convLog.disconnect();
     loadPlans();
+  } else if (tab === 'memory') {
+    output.style.display = 'none';
+    memoryEditor.classList.add('visible');
+    inputArea.style.display = 'none';
+    convLog.disconnect();
+    loadMemory();
   }
 }
 
@@ -1411,6 +1438,154 @@ async function savePlans() {
 
 document.getElementById('plans-textarea').addEventListener('input', onPlansEdit);
 document.getElementById('plans-save-btn').addEventListener('click', savePlans);
+
+// --- Memory (Claude memory file editor) ---
+let memoryFiles = [];
+let memoryActiveIdx = 0;
+let memorySavedContent = '';
+let memoryUnsaved = false;
+let memoryGeneration = 0;
+
+async function loadMemory() {
+  if (!selectedTitle) return;
+  memoryGeneration++;
+  const gen = memoryGeneration;
+  const titleAtRequest = selectedTitle;
+
+  const statusEl = document.getElementById('memory-status');
+  const pathEl = document.getElementById('memory-path');
+  const textarea = document.getElementById('memory-textarea');
+  const saveBtn = document.getElementById('memory-save-btn');
+  const tabsEl = document.getElementById('memory-file-tabs');
+  const emptyEl = document.getElementById('memory-empty');
+
+  statusEl.textContent = 'Loading...';
+  statusEl.className = '';
+  textarea.value = '';
+  tabsEl.innerHTML = '';
+
+  try {
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/memory`);
+    if (gen !== memoryGeneration) return;
+
+    memoryFiles = data.files || [];
+    memoryActiveIdx = 0;
+
+    if (memoryFiles.length > 0) {
+      emptyEl.style.display = 'none';
+      textarea.style.display = '';
+      renderMemoryFileTabs();
+      selectMemoryFile(0);
+    } else {
+      emptyEl.style.display = 'flex';
+      textarea.style.display = 'none';
+      statusEl.textContent = '';
+      pathEl.textContent = '';
+      saveBtn.disabled = true;
+    }
+  } catch (e) {
+    if (gen !== memoryGeneration) return;
+    statusEl.textContent = 'Error loading';
+    statusEl.className = 'unsaved';
+    textarea.value = '';
+    pathEl.textContent = '';
+  }
+}
+
+function renderMemoryFileTabs() {
+  const tabsEl = document.getElementById('memory-file-tabs');
+  tabsEl.innerHTML = '';
+  memoryFiles.forEach((f, idx) => {
+    const tab = document.createElement('div');
+    tab.className = 'memory-file-tab' + (idx === memoryActiveIdx ? ' active' : '');
+    tab.textContent = f.name.replace(/\.md$/, '');
+    tab.addEventListener('click', () => {
+      if (memoryUnsaved) {
+        if (!confirm('You have unsaved changes. Discard?')) return;
+      }
+      selectMemoryFile(idx);
+    });
+    tabsEl.appendChild(tab);
+  });
+}
+
+function selectMemoryFile(idx) {
+  memoryActiveIdx = idx;
+  const f = memoryFiles[idx];
+  const statusEl = document.getElementById('memory-status');
+  const pathEl = document.getElementById('memory-path');
+  const textarea = document.getElementById('memory-textarea');
+  const saveBtn = document.getElementById('memory-save-btn');
+
+  memorySavedContent = f.content || '';
+  textarea.value = memorySavedContent;
+  pathEl.textContent = f.name;
+  memoryUnsaved = false;
+  saveBtn.disabled = true;
+  statusEl.textContent = '';
+  statusEl.className = '';
+
+  document.querySelectorAll('.memory-file-tab').forEach((tab, i) => {
+    tab.classList.toggle('active', i === idx);
+  });
+
+  textarea.focus();
+}
+
+function onMemoryEdit() {
+  const textarea = document.getElementById('memory-textarea');
+  const statusEl = document.getElementById('memory-status');
+  const saveBtn = document.getElementById('memory-save-btn');
+  const changed = textarea.value !== memorySavedContent;
+  memoryUnsaved = changed;
+  saveBtn.disabled = !changed;
+  if (changed) {
+    statusEl.textContent = 'Unsaved changes';
+    statusEl.className = 'unsaved';
+  } else {
+    statusEl.textContent = '';
+    statusEl.className = '';
+  }
+}
+
+async function saveMemory() {
+  if (!selectedTitle || !memoryUnsaved) return;
+  const f = memoryFiles[memoryActiveIdx];
+  if (!f) return;
+
+  const textarea = document.getElementById('memory-textarea');
+  const statusEl = document.getElementById('memory-status');
+  const saveBtn = document.getElementById('memory-save-btn');
+
+  saveBtn.disabled = true;
+  statusEl.textContent = 'Saving...';
+  statusEl.className = '';
+
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/memory`, {
+      method: 'PUT',
+      body: JSON.stringify({ path: f.path, content: textarea.value }),
+    });
+    memorySavedContent = textarea.value;
+    f.content = textarea.value;
+    memoryUnsaved = false;
+    statusEl.textContent = 'Saved';
+    statusEl.className = 'saved';
+    setTimeout(() => {
+      if (!memoryUnsaved) {
+        statusEl.textContent = '';
+        statusEl.className = '';
+      }
+    }, 2000);
+  } catch (e) {
+    statusEl.textContent = 'Save failed';
+    statusEl.className = 'unsaved';
+    saveBtn.disabled = false;
+  }
+}
+
+document.getElementById('memory-textarea').addEventListener('input', onMemoryEdit);
+document.getElementById('memory-save-btn').addEventListener('click', saveMemory);
 
 // --- Load diff ---
 let diffGeneration = 0;
@@ -1914,6 +2089,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     if (activeTab === 'rules') { e.preventDefault(); saveRules(); }
     if (activeTab === 'plans') { e.preventDefault(); savePlans(); }
+    if (activeTab === 'memory') { e.preventDefault(); saveMemory(); }
   }
 });
 

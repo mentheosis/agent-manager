@@ -686,6 +686,84 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			"branch":  strings.TrimSpace(string(branchOutput)),
 		})
 
+	case "memory":
+		// Claude CLI stores memory at ~/.claude/projects/{encoded-path}/memory/
+		// where encoded-path is the original repo path with "/" replaced by "-"
+		// Always use inst.Path (the original repo), not the worktree path,
+		// because Claude CLI keys memory on the original working directory.
+		stripped := strings.TrimPrefix(inst.Path, "/")
+		stripped = strings.ReplaceAll(stripped, "/", "-")
+		stripped = strings.ReplaceAll(stripped, "_", "-")
+		encodedPath := "-" + stripped
+		homeDir, _ := os.UserHomeDir()
+		memoryDir := filepath.Join(homeDir, ".claude", "projects", encodedPath, "memory")
+		log.InfoLog.Printf("memory lookup: inst.Path=%s memoryDir=%s", inst.Path, memoryDir)
+
+		if r.Method == http.MethodGet {
+			type memoryFile struct {
+				Name    string `json:"name"`
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+
+			var result []memoryFile
+			entries, err := os.ReadDir(memoryDir)
+			if err == nil {
+				for _, e := range entries {
+					if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+						continue
+					}
+					p := filepath.Join(memoryDir, e.Name())
+					content, err := os.ReadFile(p)
+					if err != nil {
+						continue
+					}
+					result = append(result, memoryFile{
+						Name:    e.Name(),
+						Path:    p,
+						Content: string(content),
+					})
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"files": result, "directory": memoryDir})
+
+		} else if r.Method == http.MethodPut {
+			var body struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			absPath, err := filepath.Abs(body.Path)
+			if err != nil || !strings.HasPrefix(absPath, memoryDir) {
+				http.Error(w, "invalid path", http.StatusBadRequest)
+				return
+			}
+
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(absPath, []byte(body.Content), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": absPath})
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+
 	case "plans":
 		workDir := inst.GetWorktreePath()
 		if workDir == "" {
