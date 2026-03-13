@@ -291,25 +291,25 @@ func (s *Server) pollOutput() {
 
 			var newScrollback string
 			lastSize := s.lastHistorySize[inst.Title]
-			if historySize > lastSize {
+
+			// Resize guard: if history_size decreased (e.g. pane grew taller
+			// or terminal resize caused line rewrapping), lines have returned
+			// from scrollback into the visible pane. Trim them from stable
+			// so they aren't duplicated with the pane content.
+			if historySize < lastSize {
+				returned := lastSize - historySize
+				cl.TrimStable(returned)
+				s.lastHistorySize[inst.Title] = historySize
+			} else if historySize > lastSize {
 				delta := historySize - lastSize
 				newScrollback, err = inst.CaptureScrollback(delta)
 				if err != nil {
 					continue
 				}
 				s.lastHistorySize[inst.Title] = historySize
-				
-				// fmt.Println("=======================")
-				// fmt.Printf("[convlog %s] historySize=%d lastSize=%d delta=%d scrollbackLines=%d",
-				// 	inst.Title, historySize, lastSize, delta, len(strings.Split(newScrollback, "\n")))
-				// fmt.Printf("\n[convlog %s] newScrollback (last lines):\n %s",
-				// 	inst.Title, lastNLines(newScrollback, 5))
-				// fmt.Printf("\n[convlog %s] paneContent (last lines):\n %s",
-				// 	inst.Title, firstNLines(paneContent, 5))
 			}
 
 			cl.Ingest(newScrollback, paneContent)
-			cl.SetStatus(statusString(inst.Status))
 		}
 		s.mu.RUnlock()
 	}
@@ -508,6 +508,12 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			program += fmt.Sprintf(" --task '%s'", escapedTask)
 		}
 		log.ErrorLog.Printf("[Orchestrator] Creating loop instance %q with binary: %s", body.Title, orchBin)
+	}
+
+	// Ensure the working directory exists
+	if err := os.MkdirAll(body.Path, 0755); err != nil {
+		http.Error(w, fmt.Sprintf("failed to create working directory: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	inst, err := session.NewInstance(session.InstanceOptions{
@@ -1078,11 +1084,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	// Seed from current raw stable count so the WS only sends lines added
-	// after the client fetched /history. We use the raw (untrimmed) count
-	// so that overlap fluctuations between stable and pane don't cause
-	// previously-sent lines to be re-sent as "new" history_append.
-	lastRawStableCount := cl.GetRawStableCount()
+	// Seed from current stable count so the WS only sends lines added
+	// after the client fetched /history.
+	lastStableCount := cl.GetStableCount()
 	var lastPaneContent string
 	var lastLastInput string
 
@@ -1093,21 +1097,34 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		case <-ticker.C:
 		}
 
-		// Use raw stable count to detect genuinely new lines (immune to overlap changes)
-		rawStableCount := cl.GetRawStableCount()
+		// Check for new stable lines (scrollback delta only, no overlap possible)
+		stableCount := cl.GetStableCount()
 		_, _, pane, lastInput := cl.GetState()
 
 		s.mu.RLock()
 		status := statusString(inst.Status)
 		s.mu.RUnlock()
 
+		// Handle stable line trim (resize caused lines to return to pane).
+		// Tell the client to remove trailing history lines that are now in the pane.
+		if stableCount < lastStableCount {
+			trimmed := lastStableCount - stableCount
+			lastStableCount = stableCount
+			msg := map[string]interface{}{
+				"type":  "history_trim",
+				"count": trimmed,
+			}
+			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+		}
+
 		// Send new stable lines as history_append.
-		// New scrollback lines have already left the pane by the time they appear
-		// in stable, so no overlap filtering is needed here. The pane message
-		// (sent below) replaces the volatile content independently.
-		if rawStableCount > lastRawStableCount {
-			newLines := cl.GetStableSince(lastRawStableCount)
-			lastRawStableCount = rawStableCount
+		// Scrollback lines have already left the pane before entering stable,
+		// so no overlap filtering is needed.
+		if stableCount > lastStableCount {
+			newLines := cl.GetStableSince(lastStableCount)
+			lastStableCount = stableCount
 			if len(newLines) > 0 {
 				msg := map[string]interface{}{
 					"type":  "history_append",

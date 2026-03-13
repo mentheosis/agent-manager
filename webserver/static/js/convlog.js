@@ -157,6 +157,16 @@ export class ConvLogView {
         }
         this.stableCount += msg.lines.length;
       }
+    } else if (msg.type === 'history_trim') {
+      // Resize caused lines to return from scrollback to the visible pane.
+      // Remove trailing nodes from historyDiv to avoid duplication with pane.
+      if (msg.count > 0 && this.historyDiv) {
+        // The simplest correct approach: re-render history from server state.
+        // Since trims are rare (only on resize), the cost is acceptable.
+        this.stableCount = Math.max(0, this.stableCount - msg.count);
+        // Re-fetch full state to get clean history
+        this._refetchHistory(gen, title);
+      }
     } else if (msg.type === 'pane') {
       // Replace volatile pane content
       if (this.paneDiv) {
@@ -179,6 +189,20 @@ export class ConvLogView {
     }
 
     if (wasAtBottom) this.container.scrollTop = this.container.scrollHeight;
+  }
+
+  async _refetchHistory(gen, title) {
+    try {
+      const state = await api(`/${encodeURIComponent(title)}/history`);
+      if (gen !== this.generation) return;
+      if (this.historyDiv && state && state.stable_lines) {
+        this.historyDiv.innerHTML = state.stable_lines.length > 0
+          ? safeAnsiToHtml(state.stable_lines.join('\n')) : '';
+        this.stableCount = state.stable_lines.length;
+      }
+    } catch (e) {
+      // Non-critical — next pane update will show correct content regardless
+    }
   }
 
   _showError(message, title) {

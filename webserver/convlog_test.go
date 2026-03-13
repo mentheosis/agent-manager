@@ -147,9 +147,10 @@ func TestConversationLog_EmptyPane(t *testing.T) {
 	}
 }
 
-func TestConversationLog_ReadyPromotionDeduplicatedAtRead(t *testing.T) {
+func TestConversationLog_SetStatusDoesNotPromote(t *testing.T) {
 	cl := NewConversationLog()
 
+	// Simulate: agent produces output, then goes ready
 	cl.SetStatus("running")
 	cl.Ingest("", "response line 1\nresponse line 2")
 
@@ -162,41 +163,48 @@ func TestConversationLog_ReadyPromotionDeduplicatedAtRead(t *testing.T) {
 		t.Errorf("expected 2 pane lines, got %d: %v", len(pane), pane)
 	}
 
-	// Transition to ready: pane promoted to stable internally
+	// Transition to ready: pane should NOT be promoted to stable
 	cl.SetStatus("ready")
 
-	// GetState deduplicates: stable tail matches pane, so stable is trimmed
-	// Pane is always returned as-is
-	stable, _, pane, _ = cl.GetState()
-	if len(pane) != 2 {
-		t.Errorf("expected 2 pane lines (always real pane), got %d: %v", len(pane), pane)
-	}
-	// Stable should have the promoted content trimmed (it overlaps with pane)
+	stable, seq, pane, _ := cl.GetState()
 	if len(stable) != 0 {
-		t.Errorf("expected 0 stable lines (overlap trimmed), got %d: %v", len(stable), stable)
+		t.Errorf("expected 0 stable lines after ready (no promotion), got %d: %v", len(stable), stable)
 	}
-
-	// Next tick: same pane recaptured — still deduplicated
-	cl.Ingest("", "response line 1\nresponse line 2")
-	stable, _, pane, _ = cl.GetState()
+	if seq != 0 {
+		t.Errorf("expected seq 0 (no promotion), got %d", seq)
+	}
 	if len(pane) != 2 {
 		t.Errorf("expected 2 pane lines, got %d: %v", len(pane), pane)
 	}
+}
+
+func TestConversationLog_ShortResponseInPane(t *testing.T) {
+	cl := NewConversationLog()
+
+	// Short response that never scrolls off
+	cl.SetStatus("running")
+	cl.Ingest("", "Done!")
+	cl.SetStatus("ready")
+
+	// Response stays in pane only — not in stable
+	stable, _, pane, _ := cl.GetState()
 	if len(stable) != 0 {
-		t.Errorf("expected 0 stable (still overlapping), got %d: %v", len(stable), stable)
+		t.Errorf("expected 0 stable lines (short response stays in pane), got %d: %v", len(stable), stable)
+	}
+	if len(pane) != 1 || pane[0] != "Done!" {
+		t.Errorf("expected pane=['Done!'], got %v", pane)
 	}
 
-	// Pane content changes (new turn starts) — promoted lines now appear in stable
-	cl.Ingest("", "new output from agent")
+	// New turn starts: user sends prompt, new output appears
+	// The old response scrolls off via scrollback delta
+	cl.Ingest("Done!", "new output from agent")
+
 	stable, _, pane, _ = cl.GetState()
-	if len(pane) != 1 {
-		t.Errorf("expected 1 pane line, got %d: %v", len(pane), pane)
+	if len(stable) != 1 || stable[0] != "Done!" {
+		t.Errorf("expected stable=['Done!'] from scrollback, got %v", stable)
 	}
-	if len(stable) != 2 {
-		t.Errorf("expected 2 stable lines (promoted, no longer overlapping), got %d: %v", len(stable), stable)
-	}
-	if len(stable) >= 2 && (stable[0] != "response line 1" || stable[1] != "response line 2") {
-		t.Errorf("unexpected stable: %v", stable)
+	if len(pane) != 1 || pane[0] != "new output from agent" {
+		t.Errorf("expected pane=['new output from agent'], got %v", pane)
 	}
 }
 
@@ -209,7 +217,7 @@ func TestConversationLog_ReadyIdempotent(t *testing.T) {
 
 	stable1, seq1, _, _ := cl.GetState()
 
-	// Repeated ready should not duplicate
+	// Repeated ready should not change anything
 	cl.SetStatus("ready")
 	stable2, seq2, _, _ := cl.GetState()
 
@@ -221,78 +229,44 @@ func TestConversationLog_ReadyIdempotent(t *testing.T) {
 	}
 }
 
-func TestConversationLog_TimerLinesNotPromoted(t *testing.T) {
+func TestConversationLog_ScrollbackThenReady(t *testing.T) {
+	// Simulates the scenario that previously caused duplication:
+	// lines scroll off, then status goes ready. With scrollback-only model,
+	// there's no promotion so no duplication.
 	cl := NewConversationLog()
 
-	cl.SetStatus("running")
-
-	cl.Ingest("", "⠋ Working (3s)")
-	cl.Ingest("", "⠙ Working (4s)")
-	cl.Ingest("", "⠹ Working (5s)")
-
-	stable, _, _, _ := cl.GetState()
-	if len(stable) != 0 {
-		t.Errorf("expected 0 stable lines during running, got %d: %v", len(stable), stable)
-	}
-
-	// Transition to ready with result — promoted internally, but pane still shows it
-	cl.Ingest("", "Done! Here is the result.")
-	cl.SetStatus("ready")
-
-	stable, _, pane, _ := cl.GetState()
-	// Pane always has real content
-	if len(pane) != 1 {
-		t.Errorf("expected 1 pane line, got %d: %v", len(pane), pane)
-	}
-	// Stable trimmed because it overlaps with pane
-	if len(stable) != 0 {
-		t.Errorf("expected 0 stable (overlap trimmed), got %d: %v", len(stable), stable)
-	}
-
-	// Once pane changes, the promoted line appears in stable
-	cl.Ingest("", "new prompt response")
-	stable, _, pane, _ = cl.GetState()
-	if len(stable) != 1 {
-		t.Errorf("expected 1 stable line, got %d: %v", len(stable), stable)
-	}
-	if len(stable) >= 1 && stable[0] != "Done! Here is the result." {
-		t.Errorf("unexpected stable: %v", stable)
-	}
-	if len(pane) != 1 {
-		t.Errorf("expected 1 pane line, got %d: %v", len(pane), pane)
-	}
-}
-
-func TestConversationLog_PartialOverlap(t *testing.T) {
-	cl := NewConversationLog()
-
-	// Simulate: 5 lines promoted to stable, then pane partially scrolls
 	cl.SetStatus("running")
 	cl.Ingest("", "A\nB\nC\nD\nE")
-	cl.SetStatus("ready")
 
-	// Pane still shows A-E, plus A,B scrolled to scrollback and F,G appeared
+	// Lines A,B scroll off
 	cl.Ingest("A\nB", "C\nD\nE\nF\nG")
+
+	// Status goes ready
+	cl.SetStatus("ready")
 
 	stable, _, pane, _ := cl.GetState()
 
-	// Pane is [C,D,E,F,G]. Stable internally is [A,B,C,D,E,A,B].
-	// The tail of stable [A,B] does NOT match pane head [C,D], so no overlap trim.
-	// But stable also has [C,D,E] from promotion that overlaps pane head.
-	// findOverlap checks: does stable tail match pane head?
-	// stable = [A,B,C,D,E,A,B], pane = [C,D,E,F,G]
-	// overlap=5: [D,E,A,B] != [C,D,E,F,G][:5]... nope
-	// overlap=3: [E,A,B] != [C,D,E]... nope
-	// No overlap detected. This is correct because the lines have genuinely
-	// diverged — the scrollback delta captured A,B at the end.
-
+	// Stable should only have scrollback lines [A,B] — no promotion of pane
+	if len(stable) != 2 {
+		t.Errorf("expected 2 stable lines (scrollback only), got %d: %v", len(stable), stable)
+	}
+	if len(stable) >= 2 && (stable[0] != "A" || stable[1] != "B") {
+		t.Errorf("unexpected stable: %v", stable)
+	}
 	if len(pane) != 5 {
 		t.Errorf("expected 5 pane lines, got %d: %v", len(pane), pane)
 	}
-	// stable = [A,B,C,D,E] (promoted) + [A,B] (scrollback delta) = 7
-	// No overlap with pane head, so all 7 returned
-	if len(stable) != 7 {
-		t.Errorf("expected 7 stable lines, got %d: %v", len(stable), stable)
+
+	// Total lines should have no duplicates
+	allLines := append(stable, pane...)
+	if len(allLines) != 7 {
+		t.Errorf("expected 7 total lines, got %d", len(allLines))
+	}
+	expected := []string{"A", "B", "C", "D", "E", "F", "G"}
+	for i, line := range allLines {
+		if i < len(expected) && line != expected[i] {
+			t.Errorf("line %d: expected %q, got %q", i, expected[i], line)
+		}
 	}
 }
 
@@ -319,28 +293,56 @@ func TestConversationLog_LastInput(t *testing.T) {
 	}
 }
 
-func TestFindOverlap(t *testing.T) {
-	tests := []struct {
-		name    string
-		stable  []string
-		pane    []string
-		want    int
-	}{
-		{"no overlap", []string{"A", "B"}, []string{"C", "D"}, 0},
-		{"full overlap", []string{"A", "B", "C"}, []string{"A", "B", "C"}, 3},
-		{"partial tail-head", []string{"X", "A", "B"}, []string{"A", "B", "C"}, 2},
-		{"single line", []string{"X", "Y", "A"}, []string{"A", "B"}, 1},
-		{"empty stable", []string{}, []string{"A"}, 0},
-		{"empty pane", []string{"A"}, []string{}, 0},
-		{"both empty", []string{}, []string{}, 0},
-		{"no match despite same content exists", []string{"A", "B", "C"}, []string{"B", "C", "D"}, 2},
+func TestConversationLog_TrimStable(t *testing.T) {
+	cl := NewConversationLog()
+
+	// Build up some stable lines
+	cl.Ingest("A\nB\nC\nD\nE", "F\nG")
+
+	if cl.GetStableCount() != 5 {
+		t.Fatalf("expected 5 stable, got %d", cl.GetStableCount())
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := findOverlap(tt.stable, tt.pane)
-			if got != tt.want {
-				t.Errorf("findOverlap(%v, %v) = %d, want %d", tt.stable, tt.pane, got, tt.want)
-			}
-		})
+
+	// Simulate resize: 2 lines return from scrollback to pane
+	cl.TrimStable(2)
+
+	stable, _, _, _ := cl.GetState()
+	if len(stable) != 3 {
+		t.Errorf("expected 3 stable after trim, got %d: %v", len(stable), stable)
+	}
+	if len(stable) >= 3 && (stable[0] != "A" || stable[1] != "B" || stable[2] != "C") {
+		t.Errorf("unexpected stable after trim: %v", stable)
+	}
+
+	// Trim more than available
+	cl.TrimStable(100)
+	stable, _, _, _ = cl.GetState()
+	if len(stable) != 0 {
+		t.Errorf("expected 0 stable after over-trim, got %d: %v", len(stable), stable)
+	}
+
+	// Trim zero does nothing
+	cl.Ingest("X\nY", "Z")
+	cl.TrimStable(0)
+	if cl.GetStableCount() != 2 {
+		t.Errorf("expected 2 stable after trim(0), got %d", cl.GetStableCount())
+	}
+}
+
+func TestConversationLog_GetStableCount(t *testing.T) {
+	cl := NewConversationLog()
+
+	if cl.GetStableCount() != 0 {
+		t.Errorf("expected 0, got %d", cl.GetStableCount())
+	}
+
+	cl.Ingest("a\nb\nc", "d\ne")
+	if cl.GetStableCount() != 3 {
+		t.Errorf("expected 3, got %d", cl.GetStableCount())
+	}
+
+	cl.Ingest("d", "e\nf")
+	if cl.GetStableCount() != 4 {
+		t.Errorf("expected 4, got %d", cl.GetStableCount())
 	}
 }
