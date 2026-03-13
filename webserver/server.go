@@ -1007,7 +1007,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
+	// Client may pass ?offset=N to skip stable lines it already rendered from /history
 	var lastStableCount int
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		fmt.Sscanf(offsetStr, "%d", &lastStableCount)
+	}
 	var lastPaneContent string
 	var lastLastInput string
 

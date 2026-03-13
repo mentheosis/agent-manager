@@ -991,6 +991,7 @@ convLog.onStatus = (title, status) => {
 };
 
 convLog.onContent = (content) => {
+  console.log('[onContent] received, length:', content.length);
   detectMode(content);
   updateActionButtons(content);
 };
@@ -2105,6 +2106,7 @@ function updateActionButtons(content) {
   if (!bar || !container) return;
 
   const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  console.log('[updateActionButtons] plain length:', plain.length, 'has ❯:', plain.includes('❯'));
   const actions = parseActions(plain);
 
   if (actions.length === 0) {
@@ -2130,14 +2132,21 @@ function parseActions(plain) {
   // Detect interactive numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
   // Only treat as interactive options if at least one line has the ❯ cursor,
   // which is the definitive marker of Claude CLI's interactive selector.
-  const optionRe = /^\s*([❯>])?\s*(\d+)\.\s+(.+)$/gm;
-  let m;
+  // Note: tmux line wrapping can split long option labels across lines,
+  // so we capture only the first ~40 chars of label and trim trailing noise.
+  const lines = plain.split('\n');
   const options = [];
   let hasCursor = false;
-  while ((m = optionRe.exec(plain)) !== null) {
+  const optionLineRe = /^\s*([❯>])?\s*(\d+)\.\s*(.+)/;
+  for (const line of lines) {
+    const m = line.match(optionLineRe);
+    if (!m) continue;
     if (m[1]) hasCursor = true;
-    options.push({ num: m[2], label: m[3].trim() });
+    // Clean the label: trim, remove trailing column junk (3+ spaces followed by unrelated text)
+    let label = m[3].replace(/\s{3,}.*$/, '').trim();
+    if (label) options.push({ num: m[2], label });
   }
+  console.log('[parseActions] hasCursor:', hasCursor, 'options:', options, 'lines:', lines.length);
   if (hasCursor && options.length > 0) {
     for (const opt of options) {
       actions.push({
@@ -2152,6 +2161,7 @@ function parseActions(plain) {
   // Detect hint line: "Esc to cancel · Tab to amend · ctrl+e to explain"
   // Match patterns like "Esc to cancel", "Tab to amend", "ctrl+x to something"
   const hintRe = /(Esc|Tab|ctrl\+\w)\s+to\s+(\w+)/gi;
+  let m;
   while ((m = hintRe.exec(plain)) !== null) {
     const key = m[1];
     const verb = m[2].toLowerCase();
