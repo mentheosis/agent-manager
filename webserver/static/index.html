@@ -1202,20 +1202,11 @@ function updateLoopControls() {
   loopControls.style.display = isLoop ? 'flex' : 'none';
 
   if (isLoop) {
-    // Check loop status
-    apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/status`)
-      .then(data => {
-        const state = data && data.state || 'not_running';
-        document.getElementById('btn-loop-start').style.display =
-          (state === 'not_running' || state === 'done') ? 'inline-block' : 'none';
-        document.getElementById('btn-loop-pause').style.display =
-          state === 'running' ? 'inline-block' : 'none';
-        document.getElementById('btn-loop-resume').style.display =
-          state === 'paused' ? 'inline-block' : 'none';
-        document.getElementById('btn-loop-stop').style.display =
-          (state !== 'not_running') ? 'inline-block' : 'none';
-      })
-      .catch(() => {});
+    // Show all loop controls — the orchestrator binary handles idempotency
+    document.getElementById('btn-loop-start').style.display = 'inline-block';
+    document.getElementById('btn-loop-pause').style.display = 'inline-block';
+    document.getElementById('btn-loop-resume').style.display = 'inline-block';
+    document.getElementById('btn-loop-stop').style.display = 'inline-block';
   }
 }
 
@@ -1877,37 +1868,47 @@ document.getElementById('btn-resume').addEventListener('click', actionResume);
 document.getElementById('btn-kill').addEventListener('click', actionKill);
 document.getElementById('btn-esc').addEventListener('click', () => sendKeys('\x1b'));
 
-// Loop control handlers
+// Loop control handlers — send stdin commands to the orchestrator binary via tmux
 document.getElementById('btn-loop-start').addEventListener('click', async () => {
   if (!selectedTitle) return;
   const task = prompt('Task description for the orchestrator (optional):');
+  if (task === null) return; // cancelled
   try {
-    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/start`, {
+    const taskJSON = JSON.stringify(task || '');
+    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
       method: 'POST',
-      body: JSON.stringify({ task: task || '' }),
+      body: JSON.stringify({ text: `__TASK__ ${taskJSON}` }),
     });
-    updateLoopControls();
   } catch (e) { alert('Error starting loop: ' + e.message); }
 });
 document.getElementById('btn-loop-pause').addEventListener('click', async () => {
   if (!selectedTitle) return;
   try {
-    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
-    updateLoopControls();
+    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ text: '__PAUSE__' }),
+    });
   } catch (e) { alert('Error: ' + e.message); }
 });
 document.getElementById('btn-loop-resume').addEventListener('click', async () => {
   if (!selectedTitle) return;
   try {
-    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
-    updateLoopControls();
+    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ text: '__RESUME__' }),
+    });
   } catch (e) { alert('Error: ' + e.message); }
 });
 document.getElementById('btn-loop-stop').addEventListener('click', async () => {
   if (!selectedTitle) return;
+  if (!confirm('Stop the orchestrator loop? This will kill the process.')) return;
   try {
-    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/stop`, { method: 'POST' });
-    updateLoopControls();
+    await api(`/${encodeURIComponent(selectedTitle)}/kill`, { method: 'POST' });
+    convLog.disconnect();
+    selectedTitle = null;
+    document.getElementById('empty-state').style.display = 'flex';
+    document.getElementById('active-view').classList.remove('visible');
+    refreshList();
   } catch (e) { alert('Error: ' + e.message); }
 });
 document.getElementById('btn-send').addEventListener('click', () => inputHistory.send());

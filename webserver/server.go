@@ -3,9 +3,7 @@ package webserver
 import (
 	"claude-squad/config"
 	"claude-squad/log"
-	"claude-squad/orchestrator"
 	"claude-squad/session"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,10 +38,6 @@ type Server struct {
 	lastStatuses  map[string]string        // title -> last known status string
 	statusClients map[*websocket.Conn]bool // connected status WS clients
 
-	// Orchestrator loops indexed by orchestrator instance title
-	loops      map[string]*orchestrator.Loop
-	loopCancel map[string]context.CancelFunc
-
 	// port is the port the web server is running on (set during Run)
 	port int
 }
@@ -74,8 +68,6 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 		lastHistorySize: make(map[string]int),
 		lastStatuses:    make(map[string]string),
 		statusClients:   make(map[*websocket.Conn]bool),
-		loops:           make(map[string]*orchestrator.Loop),
-		loopCancel:      make(map[string]context.CancelFunc),
 	}, nil
 }
 
@@ -455,19 +447,22 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine the program to run: loop instances run the control loop binary,
+	// Determine the program to run: loop instances run the orchestrator binary,
 	// regular instances run the configured CLI program (e.g. claude).
 	program := s.program
 	if body.InstanceType == "loop" {
-		// Use the current binary with the "loop" subcommand
+		// Find the orchestrator binary next to the web server binary
 		selfBin, err := os.Executable()
 		if err != nil {
-			selfBin = "claude-squad"
+			selfBin = "."
 		}
-		// The loop's --orchestrator flag will be the parent title (the loop IS the parent,
-		// so we need the leader/orchestrator child title). We pass the loop's own title
-		// and the loop will discover its children dynamically.
-		program = fmt.Sprintf("%s loop --orchestrator '%s' --port %d", selfBin, body.Title, s.port)
+		orchBin := filepath.Join(filepath.Dir(selfBin), "claude-squad-orchestrator")
+		escaped := strings.ReplaceAll(body.Title, "'", "'\\''")
+		program = fmt.Sprintf("%s --group '%s' --base-url http://localhost:%d", orchBin, escaped, s.port)
+		if body.Prompt != "" {
+			escapedTask := strings.ReplaceAll(body.Prompt, "'", "'\\''")
+			program += fmt.Sprintf(" --task '%s'", escapedTask)
+		}
 	}
 
 	inst, err := session.NewInstance(session.InstanceOptions{
@@ -624,6 +619,29 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	case "kill":
+		// Cascade: if this is a loop/group, kill all children first
+		if len(inst.Children) > 0 {
+			for _, childTitle := range inst.Children {
+				if child := s.findInstance(childTitle); child != nil {
+					if err := child.Kill(); err != nil {
+						log.ErrorLog.Printf("kill child %s (non-fatal): %v", childTitle, err)
+					}
+				}
+				// Remove child from all tracking
+				for i, existing := range s.instances {
+					if existing.Title == childTitle {
+						s.instances = append(s.instances[:i], s.instances[i+1:]...)
+						break
+					}
+				}
+				delete(s.convLogs, childTitle)
+				delete(s.lastHistorySize, childTitle)
+				s.statusMu.Lock()
+				delete(s.lastStatuses, childTitle)
+				s.statusMu.Unlock()
+				_ = s.storage.DeleteInstance(childTitle)
+			}
+		}
 		// Best-effort kill — continue with removal even if tmux session is already gone
 		if err := inst.Kill(); err != nil {
 			log.ErrorLog.Printf("kill %s (non-fatal): %v", title, err)
@@ -1030,35 +1048,22 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		status := statusString(inst.Status)
 		s.mu.RUnlock()
 
-		// Send new stable lines as history_append
-		// Use the trimmed stableLines for content but raw count for tracking position.
+		// Send new stable lines as history_append.
+		// New scrollback lines have already left the pane by the time they appear
+		// in stable, so no overlap filtering is needed here. The pane message
+		// (sent below) replaces the volatile content independently.
 		if rawStableCount > lastRawStableCount {
-			// The new lines are at the end of the trimmed stableLines.
-			// Number of genuinely new lines = rawStableCount - lastRawStableCount
-			newCount := rawStableCount - lastRawStableCount
-			// But we can only take from the trimmed stable lines (which exclude overlap).
-			// The new lines are the last newCount lines of the full internal stable,
-			// which may or may not appear in the trimmed output (some may be hidden by overlap).
-			// Use GetStableSince to get the raw new lines directly.
 			newLines := cl.GetStableSince(lastRawStableCount)
 			lastRawStableCount = rawStableCount
 			if len(newLines) > 0 {
-				// Filter out lines that overlap with current pane to prevent duplication
-				overlap := findOverlap(newLines, pane)
-				if overlap > 0 {
-					newLines = newLines[:len(newLines)-overlap]
+				msg := map[string]interface{}{
+					"type":  "history_append",
+					"lines": newLines,
 				}
-				if len(newLines) > 0 {
-					msg := map[string]interface{}{
-						"type":  "history_append",
-						"lines": newLines,
-					}
-					if err := conn.WriteJSON(msg); err != nil {
-						return
-					}
+				if err := conn.WriteJSON(msg); err != nil {
+					return
 				}
 			}
-			_ = newCount // used implicitly via GetStableSince
 		}
 
 		// Send current pane (volatile) - only if changed
@@ -1245,11 +1250,6 @@ func Run(program string, autoYes bool, port int) error {
 		json.NewEncoder(w).Encode(sessions)
 	})
 
-	// Orchestrator routes
-	mux.HandleFunc("/api/orchestrate/", func(w http.ResponseWriter, r *http.Request) {
-		srv.handleOrchestrateAction(w, r)
-	})
-
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("webserver/static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -1265,184 +1265,3 @@ func Run(program string, autoYes bool, port int) error {
 	return http.ListenAndServe(addr, mux)
 }
 
-// handleOrchestrateAction handles orchestrator loop management.
-// Routes:
-//   POST /api/orchestrate/{title}/start   — start the control loop
-//   POST /api/orchestrate/{title}/stop    — stop the control loop
-//   POST /api/orchestrate/{title}/pause   — pause the control loop
-//   POST /api/orchestrate/{title}/resume  — resume the control loop
-//   POST /api/orchestrate/{title}/restart — restart with optional new task
-//   GET  /api/orchestrate/{title}/status  — get loop state
-func (s *Server) handleOrchestrateAction(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/orchestrate/")
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 2 {
-		http.Error(w, "missing action", http.StatusBadRequest)
-		return
-	}
-	title := parts[0]
-	action := parts[1]
-
-	switch action {
-	case "start":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var body struct {
-			Task string `json:"task"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			// Task is optional
-			body.Task = ""
-		}
-
-		s.mu.Lock()
-		if _, exists := s.loops[title]; exists {
-			s.mu.Unlock()
-			http.Error(w, "loop already running for this orchestrator", http.StatusConflict)
-			return
-		}
-
-		cfg := orchestrator.DefaultConfig()
-		cfg.BaseURL = fmt.Sprintf("http://localhost:%d", s.port)
-		loop := orchestrator.NewLoop(cfg, title)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		s.loops[title] = loop
-		s.loopCancel[title] = cancel
-		s.mu.Unlock()
-
-		// Run the loop in a goroutine
-		go func() {
-			if err := loop.Run(ctx, body.Task); err != nil && err != context.Canceled {
-				log.ErrorLog.Printf("orchestrator loop %s error: %v", title, err)
-			}
-			s.mu.Lock()
-			delete(s.loops, title)
-			delete(s.loopCancel, title)
-			s.mu.Unlock()
-		}()
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-
-	case "stop":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.mu.Lock()
-		cancel, exists := s.loopCancel[title]
-		if exists {
-			cancel()
-			delete(s.loops, title)
-			delete(s.loopCancel, title)
-		}
-		s.mu.Unlock()
-
-		if !exists {
-			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
-
-	case "pause":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.mu.RLock()
-		loop, exists := s.loops[title]
-		s.mu.RUnlock()
-		if !exists {
-			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
-			return
-		}
-		loop.Pause()
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "paused"})
-
-	case "resume":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.mu.RLock()
-		loop, exists := s.loops[title]
-		s.mu.RUnlock()
-		if !exists {
-			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
-			return
-		}
-		loop.Resume()
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "resumed"})
-
-	case "restart":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var body struct {
-			Task string `json:"task"`
-		}
-		json.NewDecoder(r.Body).Decode(&body)
-
-		s.mu.RLock()
-		loop, exists := s.loops[title]
-		s.mu.RUnlock()
-		if !exists {
-			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
-			return
-		}
-		loop.Restart(body.Task)
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "restarting"})
-
-	case "status":
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.mu.RLock()
-		loop, exists := s.loops[title]
-		s.mu.RUnlock()
-
-		state := "not_running"
-		if exists {
-			state = loop.State().String()
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"state": state})
-
-	case "logs":
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.mu.RLock()
-		loop, exists := s.loops[title]
-		s.mu.RUnlock()
-
-		if !exists {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"lines": []string{}, "offset": 0})
-			return
-		}
-
-		// Parse offset from query params
-		offset := 0
-		if o := r.URL.Query().Get("offset"); o != "" {
-			fmt.Sscanf(o, "%d", &offset)
-		}
-
-		lines, newOffset := loop.GetLogLines(offset)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"lines": lines, "offset": newOffset})
-
-	default:
-		http.Error(w, "unknown action: "+action, http.StatusBadRequest)
-	}
-}

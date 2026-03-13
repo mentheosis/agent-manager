@@ -5,21 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 )
 
-// MCPServer implements a stdio-based MCP server that provides orchestration
-// tools to the orchestrator Claude session.
+// MCPServer implements an MCP server that provides orchestration
+// tools to the leader Claude session.
 type MCPServer struct {
-	client            *Client
-	orchestratorTitle string
+	client     *Client
+	groupTitle string
 }
 
 // NewMCPServer creates a new MCP server backed by the claude-squad API.
-func NewMCPServer(baseURL, orchestratorTitle string) *MCPServer {
+func NewMCPServer(baseURL, groupTitle string) *MCPServer {
 	return &MCPServer{
-		client:            NewClient(baseURL),
-		orchestratorTitle: orchestratorTitle,
+		client:     NewClient(baseURL),
+		groupTitle: groupTitle,
 	}
 }
 
@@ -111,8 +112,38 @@ var tools = []toolDef{
 
 // Run starts the MCP server, reading from stdin and writing to stdout.
 func (s *MCPServer) Run() error {
-	reader := bufio.NewReader(os.Stdin)
-	writer := os.Stdout
+	return s.serve(os.Stdin, os.Stdout)
+}
+
+// RunOnSocket starts the MCP server on a Unix domain socket.
+// It removes any stale socket file, listens for a single connection,
+// and serves the MCP protocol over it.
+func (s *MCPServer) RunOnSocket(socketPath string) error {
+	// Clean up stale socket from a previous crash
+	os.Remove(socketPath)
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", socketPath, err)
+	}
+	defer listener.Close()
+	defer os.Remove(socketPath)
+
+	// Accept connections in a loop (one at a time — MCP is single-client)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return fmt.Errorf("accept error: %w", err)
+		}
+		// Serve this connection, then accept the next one if it disconnects
+		s.serve(conn, conn)
+		conn.Close()
+	}
+}
+
+// serve handles the JSON-RPC protocol on the given reader/writer.
+func (s *MCPServer) serve(r io.Reader, w io.Writer) error {
+	reader := bufio.NewReader(r)
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -135,7 +166,7 @@ func (s *MCPServer) Run() error {
 				continue
 			}
 			out = append(out, '\n')
-			writer.Write(out)
+			w.Write(out)
 		}
 	}
 }
@@ -250,7 +281,7 @@ func (s *MCPServer) toolListAgents() (string, error) {
 
 	var agents []map[string]string
 	for _, inst := range instances {
-		if inst.Parent == s.orchestratorTitle && inst.Title != s.orchestratorTitle {
+		if inst.Parent == s.groupTitle && inst.Title != s.groupTitle {
 			agents = append(agents, map[string]string{
 				"name":   inst.Title,
 				"status": inst.Status,

@@ -130,51 +130,6 @@ func (c *Client) GetInstanceHistory(title string) (*HistoryResponse, error) {
 	return &history, nil
 }
 
-// GetLoopStatus returns the state of the orchestrator loop for a given group title.
-func (c *Client) GetLoopStatus(groupTitle string) (string, error) {
-	resp, err := c.httpClient.Get(c.baseURL + "/api/orchestrate/" + groupTitle + "/status")
-	if err != nil {
-		return "", fmt.Errorf("failed to get loop status: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("get loop status returned %d: %s", resp.StatusCode, body)
-	}
-
-	var result struct {
-		State string `json:"state"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode loop status: %w", err)
-	}
-	return result.State, nil
-}
-
-// GetLoopLogs returns new log lines from the orchestrator loop since the given offset.
-func (c *Client) GetLoopLogs(groupTitle string, offset int) ([]string, int, error) {
-	resp, err := c.httpClient.Get(fmt.Sprintf("%s/api/orchestrate/%s/logs?offset=%d", c.baseURL, groupTitle, offset))
-	if err != nil {
-		return nil, offset, fmt.Errorf("failed to get loop logs: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, offset, fmt.Errorf("get loop logs returned %d: %s", resp.StatusCode, body)
-	}
-
-	var result struct {
-		Lines  []string `json:"lines"`
-		Offset int      `json:"offset"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, offset, fmt.Errorf("failed to decode loop logs: %w", err)
-	}
-	return result.Lines, result.Offset, nil
-}
-
 // GetInstancePreview returns the current visible pane content for an instance.
 func (c *Client) GetInstancePreview(title string) (string, error) {
 	resp, err := c.httpClient.Get(c.baseURL + "/api/instances/" + title + "/preview")

@@ -57,10 +57,6 @@ type Loop struct {
 	// logFunc is called for each log line. Defaults to fmt.Println.
 	logFunc func(string)
 
-	// logLines stores recent log lines for retrieval by external consumers.
-	logLines []string
-	logMu    sync.Mutex
-
 	// pauseCh is used to signal pause/resume.
 	pauseCh chan struct{}
 	// restartCh is used to signal a restart from idle/done state.
@@ -130,31 +126,7 @@ func (l *Loop) Restart(taskPrompt string) {
 func (l *Loop) log(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
-	line := fmt.Sprintf("[%s] %s", timestamp, msg)
-	l.logFunc(line)
-
-	l.logMu.Lock()
-	l.logLines = append(l.logLines, line)
-	// Keep last 1000 lines
-	if len(l.logLines) > 1000 {
-		l.logLines = l.logLines[len(l.logLines)-1000:]
-	}
-	l.logMu.Unlock()
-}
-
-// GetLogLines returns all log lines since the given offset and the new offset.
-func (l *Loop) GetLogLines(offset int) ([]string, int) {
-	l.logMu.Lock()
-	defer l.logMu.Unlock()
-	if offset >= len(l.logLines) {
-		return nil, len(l.logLines)
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	lines := make([]string, len(l.logLines)-offset)
-	copy(lines, l.logLines[offset:])
-	return lines, len(l.logLines)
+	l.logFunc(fmt.Sprintf("[%s] %s", timestamp, msg))
 }
 
 // Run starts the control loop. It blocks until the context is cancelled.
@@ -163,13 +135,26 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 	l.log("Control loop starting")
 
 	prompt := initialPrompt
+
+	// If no initial task, wait for one via restartCh (sent by __TASK__ stdin command)
+	if prompt == "" {
+		l.setState(LoopStateIdle)
+		l.log("Waiting for task... Send one via the web UI input box.")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case prompt = <-l.restartCh:
+			l.log("Task received")
+		}
+	}
+
 	for {
-		// Discover agents
-		if err := l.discoverAgents(); err != nil {
+		// Discover agents with retry (children may not exist yet)
+		if err := l.discoverAgentsWithRetry(ctx); err != nil {
 			l.log("Error discovering agents: %v", err)
 			return fmt.Errorf("failed to discover agents: %w", err)
 		}
-		l.log("Discovered %d sub-agents: %v", len(l.agentTitles), l.agentTitles)
+		l.log("Discovered leader: %s, %d sub-agents: %v", l.leaderTitle, len(l.agentTitles), l.agentTitles)
 
 		// Initialize status tracking
 		l.lastKnownStatus = make(map[string]string)
@@ -284,6 +269,28 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		done := l.dispatchCommands(response)
 		if done {
 			return true, nil
+		}
+	}
+}
+
+// discoverAgentsWithRetry retries discovery every 2s for up to 60s,
+// since child agents may not be created yet when the loop starts.
+func (l *Loop) discoverAgentsWithRetry(ctx context.Context) error {
+	deadline := time.After(60 * time.Second)
+	for {
+		err := l.discoverAgents()
+		if err == nil {
+			return nil
+		}
+
+		l.log("Waiting for agents to be created... (%v)", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("timed out waiting for agents: %w", err)
+		case <-time.After(2 * time.Second):
+			// retry
 		}
 	}
 }

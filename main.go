@@ -6,7 +6,6 @@ import (
 	"claude-squad/config"
 	"claude-squad/daemon"
 	"claude-squad/log"
-	"claude-squad/orchestrator"
 	"claude-squad/session"
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
@@ -14,11 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -169,71 +164,6 @@ var (
 		},
 	}
 
-	loopOrchestratorFlag string
-	loopPortFlag         int
-	loopCmd              = &cobra.Command{
-		Use:    "loop",
-		Short:  "Run the orchestrator control loop display (used internally by loop instances)",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if loopOrchestratorFlag == "" {
-				return fmt.Errorf("--orchestrator flag is required")
-			}
-
-			// Handle signals for graceful shutdown
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-			baseURL := fmt.Sprintf("http://localhost:%d", loopPortFlag)
-
-			fmt.Println("╔══════════════════════════════════════════╗")
-			fmt.Println("║        Orchestrator Control Loop         ║")
-			fmt.Println("╚══════════════════════════════════════════╝")
-			fmt.Printf("  Group:  %s\n", loopOrchestratorFlag)
-			fmt.Printf("  API:    %s\n", baseURL)
-			fmt.Println("  Status: idle")
-			fmt.Println()
-			fmt.Println("  Use the web UI to start/stop the loop.")
-			fmt.Println("  Loop activity will appear below.")
-			fmt.Println("  ─────────────────────────────────────────")
-
-			// Poll the loop status and logs, display them
-			client := orchestrator.NewClient(baseURL)
-			lastState := ""
-			logOffset := 0
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-sigCh:
-					fmt.Println("\nShutting down...")
-					return nil
-				case <-ticker.C:
-					// Poll loop status
-					state := "not_running"
-					resp, err := client.GetLoopStatus(loopOrchestratorFlag)
-					if err == nil {
-						state = resp
-					}
-					if state != lastState {
-						ts := time.Now().Format("15:04:05")
-						fmt.Printf("  [%s] Loop state: %s\n", ts, state)
-						lastState = state
-					}
-
-					// Poll loop logs
-					lines, newOffset, err := client.GetLoopLogs(loopOrchestratorFlag, logOffset)
-					if err == nil && len(lines) > 0 {
-						for _, line := range lines {
-							fmt.Printf("  %s\n", line)
-						}
-						logOffset = newOffset
-					}
-				}
-			}
-		},
-	}
 )
 
 func init() {
@@ -254,14 +184,10 @@ func init() {
 	serveCmd.Flags().StringVarP(&programFlag, "program", "p", "", "Program to run in new instances")
 	serveCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false, "Auto-accept prompts")
 
-	loopCmd.Flags().StringVar(&loopOrchestratorFlag, "orchestrator", "", "Title of the orchestrator instance")
-	loopCmd.Flags().IntVar(&loopPortFlag, "port", 8080, "Port of the claude-squad web server")
-
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
 	rootCmd.AddCommand(serveCmd)
-	rootCmd.AddCommand(loopCmd)
 }
 
 func main() {
