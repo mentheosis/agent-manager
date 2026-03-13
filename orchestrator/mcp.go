@@ -14,6 +14,7 @@ import (
 type MCPServer struct {
 	client     *Client
 	groupTitle string
+	logFunc    func(string)
 }
 
 // NewMCPServer creates a new MCP server backed by the claude-squad API.
@@ -21,7 +22,18 @@ func NewMCPServer(baseURL, groupTitle string) *MCPServer {
 	return &MCPServer{
 		client:     NewClient(baseURL),
 		groupTitle: groupTitle,
+		logFunc:    func(s string) { fmt.Println(s) },
 	}
+}
+
+// SetLogFunc sets a custom log function.
+func (s *MCPServer) SetLogFunc(f func(string)) {
+	s.logFunc = f
+}
+
+func (s *MCPServer) log(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	s.logFunc(fmt.Sprintf("[MCP] %s", msg))
 }
 
 // JSON-RPC types for MCP protocol
@@ -129,15 +141,18 @@ func (s *MCPServer) RunOnSocket(socketPath string) error {
 	defer listener.Close()
 	defer os.Remove(socketPath)
 
+	s.log("Listening on %s", socketPath)
+
 	// Accept connections in a loop (one at a time — MCP is single-client)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return fmt.Errorf("accept error: %w", err)
 		}
-		// Serve this connection, then accept the next one if it disconnects
+		s.log("Client connected")
 		s.serve(conn, conn)
 		conn.Close()
+		s.log("Client disconnected")
 	}
 }
 
@@ -156,14 +171,19 @@ func (s *MCPServer) serve(r io.Reader, w io.Writer) error {
 
 		var req jsonRPCRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			continue // skip malformed lines
+			s.log("Malformed request: %v", err)
+			continue
 		}
 
+		s.log("Request: %s (id=%v)", req.Method, req.ID)
 		resp := s.handleRequest(&req)
 		if resp != nil {
 			out, err := json.Marshal(resp)
 			if err != nil {
 				continue
+			}
+			if resp.Error != nil {
+				s.log("Response error: %s", resp.Error.Message)
 			}
 			out = append(out, '\n')
 			w.Write(out)
@@ -229,6 +249,8 @@ func (s *MCPServer) handleToolCall(req *jsonRPCRequest) *jsonRPCResponse {
 		}
 	}
 
+	s.log("Tool call: %s", params.Name)
+
 	var result string
 	var toolErr error
 
@@ -250,6 +272,7 @@ func (s *MCPServer) handleToolCall(req *jsonRPCRequest) *jsonRPCResponse {
 	}
 
 	if toolErr != nil {
+		s.log("Tool %s error: %v", params.Name, toolErr)
 		return &jsonRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,

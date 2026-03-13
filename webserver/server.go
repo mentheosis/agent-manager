@@ -415,6 +415,40 @@ func ensureLocalPlansDir(workDir string) {
 	}
 }
 
+// writeMCPConfig writes a .mcp.json in workDir so the Claude CLI connects
+// to the orchestrator's MCP server via a socat stdio-to-Unix-socket bridge.
+func writeMCPConfig(workDir, socketPath string) {
+	mcpPath := filepath.Join(workDir, ".mcp.json")
+
+	config := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"orchestrator": map[string]interface{}{
+				"type":    "stdio",
+				"command": "socat",
+				"args":    []string{"STDIO", "UNIX-CONNECT:" + socketPath},
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		log.ErrorLog.Printf("[MCP] failed to marshal mcp config: %v", err)
+		return
+	}
+	if err := os.WriteFile(mcpPath, append(data, '\n'), 0644); err != nil {
+		log.ErrorLog.Printf("[MCP] failed to write .mcp.json: %v", err)
+		return
+	}
+	log.ErrorLog.Printf("[MCP] Wrote %s → socket %s", mcpPath, socketPath)
+}
+
+// sanitizeForSocket creates a safe filename from a group title.
+// Must match the logic in cmd/orchestrator/main.go.
+func sanitizeForSocket(title string) string {
+	r := strings.NewReplacer(" ", "-", "/", "-", "'", "", "\"", "")
+	return r.Replace(title)
+}
+
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string `json:"title"`
@@ -463,6 +497,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			escapedTask := strings.ReplaceAll(body.Prompt, "'", "'\\''")
 			program += fmt.Sprintf(" --task '%s'", escapedTask)
 		}
+		log.ErrorLog.Printf("[Orchestrator] Creating loop instance %q with binary: %s", body.Title, orchBin)
 	}
 
 	inst, err := session.NewInstance(session.InstanceOptions{
@@ -495,6 +530,14 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure .claude/settings.local.json exists with local plans directory
 	ensureLocalPlansDir(inst.Path)
+
+	// Write .mcp.json for orchestrator leader so it can reach the MCP server
+	if body.AgentPreset == "orchestrator" && body.Parent != "" {
+		socketName := sanitizeForSocket(body.Parent)
+		socketPath := fmt.Sprintf("/tmp/claude-squad-mcp-%s.sock", socketName)
+		log.ErrorLog.Printf("[Orchestrator] Writing MCP config for leader %q → socket %s", body.Title, socketPath)
+		writeMCPConfig(inst.Path, socketPath)
+	}
 
 	if err := inst.Start(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
