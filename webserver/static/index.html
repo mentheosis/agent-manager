@@ -456,6 +456,9 @@
 
   /* Action bar (interactive prompt buttons) */
   #action-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     padding: 6px 16px;
     border-top: 1px solid var(--border);
     background: var(--bg-surface);
@@ -464,6 +467,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    flex: 1;
   }
   .action-btn {
     background: var(--bg-highlight);
@@ -858,6 +862,7 @@
     </div>
     <div id="action-bar" style="display:none">
       <div id="action-buttons"></div>
+      <button class="action-btn action-danger" id="btn-esc" title="Send Escape">Esc</button>
     </div>
     <div id="input-area">
       <textarea id="prompt-input" rows="1" placeholder="Send a message..."></textarea>
@@ -991,7 +996,6 @@ convLog.onStatus = (title, status) => {
 };
 
 convLog.onContent = (content) => {
-  console.log('[onContent] received, length:', content.length);
   detectMode(content);
   updateActionButtons(content);
 };
@@ -1005,17 +1009,14 @@ const inputHistory = new InputHistory(
     // instead of as a text prompt with Enter.
     const actionBar = document.getElementById('action-bar');
     if (/^\d$/.test(text) && actionBar && actionBar.style.display !== 'none') {
-      console.log('[send] sending as raw keystroke:', text);
       await sendKeys(text);
       return;
     }
-    console.log('[send] firing API call:', selectedTitle, text);
     try {
       await api(`/${encodeURIComponent(selectedTitle)}/send`, {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
-      console.log('[send] API call succeeded');
     } catch (e) {
       console.error('[send] API call failed:', e);
       alert('Failed to send: ' + e.message);
@@ -1245,34 +1246,41 @@ function switchTab(tab) {
   plansEditor.classList.remove('visible');
   memoryEditor.classList.remove('visible');
 
+  const actionBar = document.getElementById('action-bar');
+
   if (tab === 'terminal') {
     output.style.display = '';
     output.className = '';
     inputArea.style.display = 'flex';
+    actionBar.style.display = '';
     convLog.connect(selectedTitle);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
     output.style.display = '';
     output.className = 'diff';
     inputArea.style.display = 'flex';
+    actionBar.style.display = 'none';
     convLog.disconnect();
     loadDiff();
   } else if (tab === 'rules') {
     output.style.display = 'none';
     rulesEditor.classList.add('visible');
     inputArea.style.display = 'none';
+    actionBar.style.display = 'none';
     convLog.disconnect();
     loadRules();
   } else if (tab === 'plans') {
     output.style.display = 'none';
     plansEditor.classList.add('visible');
     inputArea.style.display = 'none';
+    actionBar.style.display = 'none';
     convLog.disconnect();
     loadPlans();
   } else if (tab === 'memory') {
     output.style.display = 'none';
     memoryEditor.classList.add('visible');
     inputArea.style.display = 'none';
+    actionBar.style.display = 'none';
     convLog.disconnect();
     loadMemory();
   }
@@ -1867,6 +1875,7 @@ async function actionKill() {
 document.getElementById('btn-pause').addEventListener('click', actionPause);
 document.getElementById('btn-resume').addEventListener('click', actionResume);
 document.getElementById('btn-kill').addEventListener('click', actionKill);
+document.getElementById('btn-esc').addEventListener('click', () => sendKeys('\x1b'));
 
 // Loop control handlers
 document.getElementById('btn-loop-start').addEventListener('click', async () => {
@@ -2106,14 +2115,10 @@ function updateActionButtons(content) {
   if (!bar || !container) return;
 
   const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-  console.log('[updateActionButtons] plain length:', plain.length, 'has ❯:', plain.includes('❯'));
-  const actions = parseActions(plain);
+  // Filter out Esc actions since we have a permanent Esc button
+  const actions = parseActions(plain).filter(a => a.keys !== '\x1b');
 
-  if (actions.length === 0) {
-    bar.style.display = 'none';
-    return;
-  }
-
+  // Always show bar (for permanent Esc button); clear dynamic buttons
   bar.style.display = '';
   container.innerHTML = '';
   for (const action of actions) {
@@ -2130,43 +2135,36 @@ function parseActions(plain) {
   const actions = [];
 
   // Detect interactive numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
-  // Only collect the contiguous group of numbered options around the ❯ cursor,
-  // ignoring unrelated numbered lists elsewhere in the output.
+  // Only collect options in the same group as the ❯ cursor. Options can have
+  // multi-line descriptions between them (wrapped text), so we find all option
+  // lines, identify which one has the cursor, then include all options connected
+  // to it where the gap between consecutive options is ≤ 15 lines.
   const lines = plain.split('\n');
   const optionLineRe = /^\s*([❯>])?\s*(\d+)\.\s*(.+)/;
 
-  // First pass: find the line index with the ❯ cursor
-  let cursorIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
+  // Collect all numbered option lines with their indices
+  const allOptions = [];
+  let cursorOptIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(optionLineRe);
-    if (m && m[1]) { cursorIdx = i; break; }
+    if (!m) continue;
+    let label = m[3].replace(/\s{3,}.*$/, '').trim();
+    if (!label) continue;
+    if (m[1]) cursorOptIdx = allOptions.length;
+    allOptions.push({ num: m[2], label, lineIdx: i });
   }
 
-  if (cursorIdx >= 0) {
-    // Walk backward from cursor to find first option in this group
-    let start = cursorIdx;
-    for (let i = cursorIdx - 1; i >= 0; i--) {
-      if (optionLineRe.test(lines[i])) { start = i; }
-      else if (lines[i].trim() === '') continue; // skip blank lines (wrapped text)
-      else break;
-    }
-    // Walk forward from cursor to find last option in this group
-    let end = cursorIdx;
-    for (let i = cursorIdx + 1; i < lines.length; i++) {
-      if (optionLineRe.test(lines[i])) { end = i; }
-      else if (lines[i].trim() === '') continue;
+  if (cursorOptIdx >= 0) {
+    // The ❯ cursor is on the first option in Claude CLI's selector,
+    // so only walk forward to collect the rest of the group (≤ 15 line gap).
+    let groupEnd = cursorOptIdx;
+    for (let i = cursorOptIdx + 1; i < allOptions.length; i++) {
+      if (allOptions[i].lineIdx - allOptions[i - 1].lineIdx <= 15) groupEnd = i;
       else break;
     }
 
-    // Collect options from the group
-    const options = [];
-    for (let i = start; i <= end; i++) {
-      const m = lines[i].match(optionLineRe);
-      if (!m) continue;
-      let label = m[3].replace(/\s{3,}.*$/, '').trim();
-      if (label) options.push({ num: m[2], label });
-    }
-    for (const opt of options) {
+    for (let i = cursorOptIdx; i <= groupEnd; i++) {
+      const opt = allOptions[i];
       actions.push({
         label: `${opt.num}. ${opt.label}`,
         keys: opt.num,

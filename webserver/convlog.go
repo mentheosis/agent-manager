@@ -140,6 +140,14 @@ func (cl *ConversationLog) GetState() (stableLines []string, stableSeqNo uint64,
 	return stable, cl.stableSeqNo, paneOut, cl.lastInput
 }
 
+// GetRawStableCount returns the internal (untrimmed) stable line count.
+// Used by the WS handler to track position without overlap fluctuations.
+func (cl *ConversationLog) GetRawStableCount() int {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	return len(cl.stableLines)
+}
+
 // GetStableSince returns stable lines starting from the given index (for delta fetching).
 func (cl *ConversationLog) GetStableSince(fromIndex int) []string {
 	cl.mu.Lock()

@@ -1007,11 +1007,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	// Client may pass ?offset=N to skip stable lines it already rendered from /history
-	var lastStableCount int
-	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
-		fmt.Sscanf(offsetStr, "%d", &lastStableCount)
-	}
+	// Seed from current raw stable count so the WS only sends lines added
+	// after the client fetched /history. We use the raw (untrimmed) count
+	// so that overlap fluctuations between stable and pane don't cause
+	// previously-sent lines to be re-sent as "new" history_append.
+	lastRawStableCount := cl.GetRawStableCount()
 	var lastPaneContent string
 	var lastLastInput string
 
@@ -1022,23 +1022,43 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		case <-ticker.C:
 		}
 
-		stableLines, _, pane, lastInput := cl.GetState()
+		// Use raw stable count to detect genuinely new lines (immune to overlap changes)
+		rawStableCount := cl.GetRawStableCount()
+		_, _, pane, lastInput := cl.GetState()
 
 		s.mu.RLock()
 		status := statusString(inst.Status)
 		s.mu.RUnlock()
 
 		// Send new stable lines as history_append
-		if len(stableLines) > lastStableCount {
-			newLines := stableLines[lastStableCount:]
-			msg := map[string]interface{}{
-				"type":  "history_append",
-				"lines": newLines,
+		// Use the trimmed stableLines for content but raw count for tracking position.
+		if rawStableCount > lastRawStableCount {
+			// The new lines are at the end of the trimmed stableLines.
+			// Number of genuinely new lines = rawStableCount - lastRawStableCount
+			newCount := rawStableCount - lastRawStableCount
+			// But we can only take from the trimmed stable lines (which exclude overlap).
+			// The new lines are the last newCount lines of the full internal stable,
+			// which may or may not appear in the trimmed output (some may be hidden by overlap).
+			// Use GetStableSince to get the raw new lines directly.
+			newLines := cl.GetStableSince(lastRawStableCount)
+			lastRawStableCount = rawStableCount
+			if len(newLines) > 0 {
+				// Filter out lines that overlap with current pane to prevent duplication
+				overlap := findOverlap(newLines, pane)
+				if overlap > 0 {
+					newLines = newLines[:len(newLines)-overlap]
+				}
+				if len(newLines) > 0 {
+					msg := map[string]interface{}{
+						"type":  "history_append",
+						"lines": newLines,
+					}
+					if err := conn.WriteJSON(msg); err != nil {
+						return
+					}
+				}
 			}
-			if err := conn.WriteJSON(msg); err != nil {
-				return
-			}
-			lastStableCount = len(stableLines)
+			_ = newCount // used implicitly via GetStableSince
 		}
 
 		// Send current pane (volatile) - only if changed

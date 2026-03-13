@@ -82,11 +82,11 @@ export class ConvLogView {
     // Scroll to bottom
     this.container.scrollTop = this.container.scrollHeight;
 
-    // Open WebSocket, passing stable line count so server skips already-rendered history
+    // Open WebSocket — server seeds from current raw stable count automatically
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let newWs;
     try {
-      newWs = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws?offset=${this.stableCount}`);
+      newWs = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
     } catch (e) {
       if (gen !== this.generation) return;
       this._showError('Cannot connect to Agent Manager server. Is it running?', title);
