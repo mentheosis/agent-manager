@@ -59,6 +59,15 @@ type Instance struct {
 	// RepoPath is the git repo to branch from (git mode only). If empty, Path is used.
 	RepoPath string
 
+	// Parent is the title of the parent orchestrator group (empty if standalone).
+	Parent string
+	// Children are the titles of child agent instances (only set on orchestrator groups).
+	Children []string
+	// InstanceType is "claude" for normal sessions or "loop" for the control loop process.
+	InstanceType string
+	// AgentPreset is the agent's permission preset: "coder", "researcher", or "orchestrator".
+	AgentPreset string
+
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
 
@@ -77,15 +86,19 @@ func (i *Instance) ToInstanceData() InstanceData {
 		Title:        i.Title,
 		DisplayTitle: i.DisplayTitle,
 		Path:         i.Path,
-		Branch:    i.Branch,
-		Status:    i.Status,
-		Height:    i.Height,
-		Width:     i.Width,
-		CreatedAt: i.CreatedAt,
-		UpdatedAt: time.Now(),
-		Program:   i.Program,
-		AutoYes:   i.AutoYes,
-		GitMode:   i.GitMode,
+		Branch:       i.Branch,
+		Status:       i.Status,
+		Height:       i.Height,
+		Width:        i.Width,
+		CreatedAt:    i.CreatedAt,
+		UpdatedAt:    time.Now(),
+		Program:      i.Program,
+		AutoYes:      i.AutoYes,
+		GitMode:      i.GitMode,
+		Parent:       i.Parent,
+		Children:     i.Children,
+		InstanceType: i.InstanceType,
+		AgentPreset:  i.AgentPreset,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -117,14 +130,18 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Title:        data.Title,
 		DisplayTitle: data.DisplayTitle,
 		Path:         data.Path,
-		Branch:    data.Branch,
-		Status:    data.Status,
-		Height:    data.Height,
-		Width:     data.Width,
-		CreatedAt: data.CreatedAt,
-		UpdatedAt: data.UpdatedAt,
-		Program:   data.Program,
-		GitMode:   data.GitMode,
+		Branch:       data.Branch,
+		Status:       data.Status,
+		Height:       data.Height,
+		Width:        data.Width,
+		CreatedAt:    data.CreatedAt,
+		UpdatedAt:    data.UpdatedAt,
+		Program:      data.Program,
+		GitMode:      data.GitMode,
+		Parent:       data.Parent,
+		Children:     data.Children,
+		InstanceType: data.InstanceType,
+		AgentPreset:  data.AgentPreset,
 	}
 
 	// Backward compat: infer GitMode for old instances that have worktree data

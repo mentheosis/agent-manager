@@ -59,6 +59,43 @@
     font-weight: 600;
   }
   #btn-new:hover { opacity: 0.85; }
+
+  /* Orchestrator group nesting */
+  .instance-item.child {
+    margin-left: 16px;
+    border-left: 2px solid var(--border);
+    padding-left: 10px;
+  }
+  .instance-item.orchestrator-group {
+    border-left: 3px solid var(--orange);
+  }
+  .instance-item.orchestrator-group .instance-title::before {
+    content: '\25BC ';
+    font-size: 10px;
+    color: var(--orange);
+  }
+  .orchestrator-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .orchestrator-badge.coder { background: rgba(122,162,247,0.2); color: var(--accent); }
+  .orchestrator-badge.researcher { background: rgba(158,206,106,0.2); color: var(--green); }
+  .orchestrator-badge.orchestrator { background: rgba(255,158,100,0.2); color: var(--orange); }
+  .orchestrator-badge.loop { background: rgba(224,175,104,0.2); color: var(--yellow); }
+
+  /* Type selector in modal */
+  .type-option { background: var(--bg); }
+  .type-option:hover { border-color: var(--text-dim) !important; }
+  .type-option.active { border-color: var(--accent) !important; background: rgba(122,162,247,0.08); }
+
+  /* Loop controls in toolbar */
+  .loop-controls {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
   #instance-list {
     flex: 1;
     overflow-y: auto;
@@ -778,6 +815,13 @@
       <div class="toolbar-divider"></div>
       <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
       <div style="flex:1"></div>
+      <div class="loop-controls" id="loop-controls" style="display:none">
+        <button class="toolbar-btn highlight" id="btn-loop-start">Start Loop</button>
+        <button class="toolbar-btn" id="btn-loop-pause">Pause Loop</button>
+        <button class="toolbar-btn" id="btn-loop-resume">Resume Loop</button>
+        <button class="toolbar-btn danger" id="btn-loop-stop">Stop Loop</button>
+        <div class="toolbar-divider"></div>
+      </div>
       <button class="toolbar-btn" id="btn-pause">Pause</button>
       <button class="toolbar-btn" id="btn-resume">Resume</button>
       <button class="toolbar-btn danger" id="btn-kill">Kill</button>
@@ -826,10 +870,37 @@
 
 <div id="modal-overlay">
   <div id="modal">
-    <h2>New Instance</h2>
+    <h2 id="modal-heading">New Instance</h2>
+    <input type="hidden" id="modal-parent" value="">
+
+    <!-- Type selector (hidden when adding agent to existing orchestrator) -->
+    <div id="type-selector" style="margin-bottom:14px">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div class="type-option active" data-type="agent" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:13px;font-weight:600;margin-bottom:4px">Agent</div>
+          <div style="font-size:10px;color:var(--text-dim)">A standard Claude CLI session. Works independently in a single repository with full tool access.</div>
+        </div>
+        <div class="type-option" data-type="orchestrator" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:13px;font-weight:600;margin-bottom:4px">Orchestrator</div>
+          <div style="font-size:10px;color:var(--text-dim)">A control loop that coordinates multiple agents across repositories. Includes a leader agent that directs the team.</div>
+        </div>
+      </div>
+    </div>
+
     <input id="modal-title" type="text" placeholder="Instance name">
     <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Working directory</label>
     <input id="modal-path" type="text" placeholder="Absolute path (default: current dir)">
+
+    <!-- Preset selector (shown when adding agent to orchestrator) -->
+    <div id="preset-options" style="display:none;margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Agent preset</label>
+      <div style="display:flex;gap:6px">
+        <button class="mode-btn preset-btn active" data-preset="coder">Coder</button>
+        <button class="mode-btn preset-btn" data-preset="researcher">Researcher</button>
+      </div>
+      <p style="font-size:10px;color:var(--text-dim);margin-top:4px" id="preset-desc">Full code editing, testing, and Docker access</p>
+    </div>
+
     <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:13px;color:var(--text-dim);cursor:pointer">
       <input id="modal-gitmode" type="checkbox"> Use git worktree isolation
     </label>
@@ -966,15 +1037,31 @@ function renderList(instances) {
   updateToolbarTitle();
   const el = document.getElementById('instance-list');
   el.innerHTML = '';
+
+  // Build a map of parent -> children and identify top-level instances
+  const childSet = new Set();
+  const childrenOf = {};
   instances.forEach(inst => {
+    if (inst.parent) {
+      childSet.add(inst.title);
+      if (!childrenOf[inst.parent]) childrenOf[inst.parent] = [];
+      childrenOf[inst.parent].push(inst);
+    }
+  });
+
+  function renderItem(inst, isChild) {
     const status = instanceStatuses[inst.title] || inst.status;
     const isWaiting = status === 'ready';
     const statusLabel = isWaiting ? 'waiting' : status;
+    const isLoop = inst.instance_type === 'loop';
+    const hasChildren = childrenOf[inst.title] && childrenOf[inst.title].length > 0;
 
     const div = document.createElement('div');
     let cls = 'instance-item';
     if (inst.title === selectedTitle) cls += ' active';
     if (isWaiting) cls += ' waiting';
+    if (isChild) cls += ' child';
+    if (isLoop || hasChildren) cls += ' orchestrator-group';
     div.className = cls;
     div.draggable = true;
     div.dataset.title = inst.title;
@@ -1015,11 +1102,19 @@ function renderList(instances) {
     const shortPath = inst.work_dir ? inst.work_dir.replace(/^\/Users\/[^/]+/, '~') : '';
     const gitBadge = inst.git_mode ? '<span style="color:var(--orange)">git</span>' : '';
     const displayName = inst.display_title || inst.title;
+
+    // Preset badge
+    let presetBadge = '';
+    if (inst.agent_preset) {
+      presetBadge = `<span class="orchestrator-badge ${inst.agent_preset}">${inst.agent_preset}</span>`;
+    }
+
     div.innerHTML = `
       <div class="instance-title">${esc(displayName)}</div>
       <div class="instance-meta">
         <span class="status-dot ${status}"></span>
         <span class="status-label ${status}">${statusLabel}</span>
+        ${presetBadge}
         ${gitBadge}
         ${diffInfo ? `<span>${diffInfo}</span>` : ''}
       </div>
@@ -1027,6 +1122,30 @@ function renderList(instances) {
     `;
 
     el.appendChild(div);
+
+    // If this is a loop/orchestrator group, render children and "Add Agent" button
+    if (isLoop || hasChildren) {
+      const children = childrenOf[inst.title] || [];
+      children.forEach(child => renderItem(child, true));
+
+      // Add "add agent" button
+      const addBtn = document.createElement('div');
+      addBtn.className = 'instance-item child';
+      addBtn.style.cssText = 'cursor:pointer;color:var(--text-dim);font-size:11px;text-align:center;padding:6px;';
+      addBtn.textContent = '+ Add Agent';
+      addBtn.onclick = (e) => {
+        e.stopPropagation();
+        showNewModal('agent', inst.title);
+      };
+      el.appendChild(addBtn);
+    }
+  }
+
+  // Render top-level instances (those without a parent)
+  instances.forEach(inst => {
+    if (!childSet.has(inst.title)) {
+      renderItem(inst, false);
+    }
   });
 }
 
@@ -1066,11 +1185,36 @@ function selectInstance(title) {
   refreshList();
   updatePausedState();
   updateToolbarTitle();
+  updateLoopControls();
 
   // Load input history for this instance
   loadInputHistory(title);
 
   switchTab(activeTab);
+}
+
+function updateLoopControls() {
+  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+  const isLoop = inst && inst.instance_type === 'loop';
+  const loopControls = document.getElementById('loop-controls');
+  loopControls.style.display = isLoop ? 'flex' : 'none';
+
+  if (isLoop) {
+    // Check loop status
+    apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/status`)
+      .then(data => {
+        const state = data && data.state || 'not_running';
+        document.getElementById('btn-loop-start').style.display =
+          (state === 'not_running' || state === 'done') ? 'inline-block' : 'none';
+        document.getElementById('btn-loop-pause').style.display =
+          state === 'running' ? 'inline-block' : 'none';
+        document.getElementById('btn-loop-resume').style.display =
+          state === 'paused' ? 'inline-block' : 'none';
+        document.getElementById('btn-loop-stop').style.display =
+          (state !== 'not_running') ? 'inline-block' : 'none';
+      })
+      .catch(() => {});
+  }
 }
 
 async function loadInputHistory(title) {
@@ -1722,6 +1866,40 @@ async function actionKill() {
 document.getElementById('btn-pause').addEventListener('click', actionPause);
 document.getElementById('btn-resume').addEventListener('click', actionResume);
 document.getElementById('btn-kill').addEventListener('click', actionKill);
+
+// Loop control handlers
+document.getElementById('btn-loop-start').addEventListener('click', async () => {
+  if (!selectedTitle) return;
+  const task = prompt('Task description for the orchestrator (optional):');
+  try {
+    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/start`, {
+      method: 'POST',
+      body: JSON.stringify({ task: task || '' }),
+    });
+    updateLoopControls();
+  } catch (e) { alert('Error starting loop: ' + e.message); }
+});
+document.getElementById('btn-loop-pause').addEventListener('click', async () => {
+  if (!selectedTitle) return;
+  try {
+    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
+    updateLoopControls();
+  } catch (e) { alert('Error: ' + e.message); }
+});
+document.getElementById('btn-loop-resume').addEventListener('click', async () => {
+  if (!selectedTitle) return;
+  try {
+    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
+    updateLoopControls();
+  } catch (e) { alert('Error: ' + e.message); }
+});
+document.getElementById('btn-loop-stop').addEventListener('click', async () => {
+  if (!selectedTitle) return;
+  try {
+    await apiFetch(`/api/orchestrate/${encodeURIComponent(selectedTitle)}/stop`, { method: 'POST' });
+    updateLoopControls();
+  } catch (e) { alert('Error: ' + e.message); }
+});
 document.getElementById('btn-send').addEventListener('click', () => inputHistory.send());
 document.getElementById('btn-hist-prev').addEventListener('click', () => inputHistory.prev());
 document.getElementById('btn-hist-next').addEventListener('click', () => inputHistory.next());
@@ -1732,7 +1910,10 @@ inputHistory.onNavigate = () => {
 };
 
 // --- Modal ---
-function showNewModal() {
+let modalSelectedType = 'agent';
+
+function showNewModal(mode, parent) {
+  document.getElementById('modal-parent').value = parent || '';
   document.getElementById('modal-overlay').classList.add('visible');
   document.getElementById('modal-title').value = '';
   document.getElementById('modal-path').value = '';
@@ -1741,8 +1922,50 @@ function showNewModal() {
   document.getElementById('modal-branch').value = '';
   document.getElementById('modal-prompt').value = '';
   document.getElementById('git-options').style.display = 'none';
+
+  if (parent) {
+    // Adding agent to existing orchestrator — hide type selector, show preset
+    document.getElementById('modal-heading').textContent = 'Add Agent to Orchestrator';
+    document.getElementById('type-selector').style.display = 'none';
+    document.getElementById('preset-options').style.display = 'block';
+    selectPreset('coder');
+    modalSelectedType = 'agent';
+  } else {
+    // Top-level creation — show type selector, hide preset
+    document.getElementById('modal-heading').textContent = 'New Instance';
+    document.getElementById('type-selector').style.display = 'block';
+    document.getElementById('preset-options').style.display = 'none';
+    selectType(mode || 'agent');
+  }
   setTimeout(() => document.getElementById('modal-title').focus(), 100);
 }
+
+function selectType(type) {
+  modalSelectedType = type;
+  document.querySelectorAll('.type-option').forEach(el => {
+    el.classList.toggle('active', el.dataset.type === type);
+  });
+}
+
+document.querySelectorAll('.type-option').forEach(el => {
+  el.addEventListener('click', () => selectType(el.dataset.type));
+});
+
+function selectPreset(preset) {
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.preset-btn[data-preset="${preset}"]`).classList.add('active');
+  const descs = {
+    coder: 'Full code editing, testing, and Docker access',
+    researcher: 'Read-only research, web search, documentation',
+  };
+  document.getElementById('preset-desc').textContent = descs[preset] || '';
+}
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => selectPreset(btn.dataset.preset));
+});
+
+document.getElementById('btn-new').addEventListener('click', () => showNewModal());
 
 function toggleGitOptions() {
   document.getElementById('git-options').style.display =
@@ -1754,6 +1977,7 @@ function hideModal() {
 }
 
 async function createInstance() {
+  const parent = document.getElementById('modal-parent').value;
   const title = document.getElementById('modal-title').value.trim();
   const path = document.getElementById('modal-path').value.trim();
   const git_mode = document.getElementById('modal-gitmode').checked;
@@ -1762,17 +1986,63 @@ async function createInstance() {
   const prompt = document.getElementById('modal-prompt').value.trim();
   if (!title) { alert('Title is required'); return; }
   hideModal();
+
   try {
-    await api('', {
-      method: 'POST',
-      body: JSON.stringify({ title, prompt, path: path || '', git_mode, repo_path, branch }),
-    });
-    selectInstance(title);
-    refreshList();
+    if (modalSelectedType === 'orchestrator' && !parent) {
+      // Create orchestrator group:
+      // 1. Create the control loop instance (top-level, instance_type=loop)
+      const loopTitle = title;
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: loopTitle,
+          path: path || '',
+          git_mode: false,
+          agent_preset: 'loop',
+          instance_type: 'loop',
+        }),
+      });
+
+      // 2. Create the leader agent as a child of the loop
+      const leaderTitle = title + '-leader';
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: leaderTitle,
+          prompt,
+          path: path || '',
+          git_mode,
+          repo_path,
+          branch,
+          parent: loopTitle,
+          agent_preset: 'orchestrator',
+        }),
+      });
+
+      selectInstance(loopTitle);
+      refreshList();
+    } else {
+      // Create a normal agent, optionally as a child of an orchestrator
+      const activePreset = document.querySelector('.preset-btn.active');
+      const agent_preset = parent && activePreset ? activePreset.dataset.preset : '';
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title,
+          prompt,
+          path: path || '',
+          git_mode,
+          repo_path,
+          branch,
+          parent: parent || undefined,
+          agent_preset: agent_preset || undefined,
+        }),
+      });
+      selectInstance(title);
+      refreshList();
+    }
   } catch (e) { alert('Error: ' + e.message); }
 }
-
-document.getElementById('btn-new').addEventListener('click', showNewModal);
 document.getElementById('modal-overlay').addEventListener('click', (e) => {
   if (e.target === document.getElementById('modal-overlay')) hideModal();
 });

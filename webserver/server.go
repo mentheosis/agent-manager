@@ -3,7 +3,9 @@ package webserver
 import (
 	"claude-squad/config"
 	"claude-squad/log"
+	"claude-squad/orchestrator"
 	"claude-squad/session"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +39,13 @@ type Server struct {
 	statusMu      sync.Mutex
 	lastStatuses  map[string]string        // title -> last known status string
 	statusClients map[*websocket.Conn]bool // connected status WS clients
+
+	// Orchestrator loops indexed by orchestrator instance title
+	loops      map[string]*orchestrator.Loop
+	loopCancel map[string]context.CancelFunc
+
+	// port is the port the web server is running on (set during Run)
+	port int
 }
 
 func NewServer(program string, autoYes bool) (*Server, error) {
@@ -65,21 +74,27 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 		lastHistorySize: make(map[string]int),
 		lastStatuses:    make(map[string]string),
 		statusClients:   make(map[*websocket.Conn]bool),
+		loops:           make(map[string]*orchestrator.Loop),
+		loopCancel:      make(map[string]context.CancelFunc),
 	}, nil
 }
 
 type instanceJSON struct {
-	Title        string `json:"title"`
-	DisplayTitle string `json:"display_title,omitempty"`
-	Status       string `json:"status"`
-	Branch      string `json:"branch"`
-	Program     string `json:"program"`
-	Path        string `json:"path"`
-	WorkDir     string `json:"work_dir"`
-	GitMode     bool   `json:"git_mode"`
-	CreatedAt   string `json:"created_at"`
-	DiffAdded   int    `json:"diff_added"`
-	DiffRemoved int    `json:"diff_removed"`
+	Title        string   `json:"title"`
+	DisplayTitle string   `json:"display_title,omitempty"`
+	Status       string   `json:"status"`
+	Branch       string   `json:"branch"`
+	Program      string   `json:"program"`
+	Path         string   `json:"path"`
+	WorkDir      string   `json:"work_dir"`
+	GitMode      bool     `json:"git_mode"`
+	CreatedAt    string   `json:"created_at"`
+	DiffAdded    int      `json:"diff_added"`
+	DiffRemoved  int      `json:"diff_removed"`
+	Parent       string   `json:"parent,omitempty"`
+	Children     []string `json:"children,omitempty"`
+	InstanceType string   `json:"instance_type,omitempty"`
+	AgentPreset  string   `json:"agent_preset,omitempty"`
 }
 
 func statusString(s session.Status) string {
@@ -117,6 +132,10 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 		j.DiffAdded = ds.Added
 		j.DiffRemoved = ds.Removed
 	}
+	j.Parent = inst.Parent
+	j.Children = inst.Children
+	j.InstanceType = inst.InstanceType
+	j.AgentPreset = inst.AgentPreset
 	return j
 }
 
@@ -406,12 +425,15 @@ func ensureLocalPlansDir(workDir string) {
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title    string `json:"title"`
-		Prompt   string `json:"prompt"`
-		Path     string `json:"path"`
-		GitMode  bool   `json:"git_mode"`
-		RepoPath string `json:"repo_path"`
-		Branch   string `json:"branch"`
+		Title       string `json:"title"`
+		Prompt      string `json:"prompt"`
+		Path        string `json:"path"`
+		GitMode     bool   `json:"git_mode"`
+		RepoPath    string `json:"repo_path"`
+		Branch      string `json:"branch"`
+		Parent       string `json:"parent,omitempty"`
+		AgentPreset  string `json:"agent_preset,omitempty"`
+		InstanceType string `json:"instance_type,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -433,17 +455,47 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine the program to run: loop instances run the control loop binary,
+	// regular instances run the configured CLI program (e.g. claude).
+	program := s.program
+	if body.InstanceType == "loop" {
+		// Use the current binary with the "loop" subcommand
+		selfBin, err := os.Executable()
+		if err != nil {
+			selfBin = "claude-squad"
+		}
+		// The loop's --orchestrator flag will be the parent title (the loop IS the parent,
+		// so we need the leader/orchestrator child title). We pass the loop's own title
+		// and the loop will discover its children dynamically.
+		program = fmt.Sprintf("%s loop --orchestrator '%s' --port %d", selfBin, body.Title, s.port)
+	}
+
 	inst, err := session.NewInstance(session.InstanceOptions{
 		Title:    body.Title,
 		Path:     body.Path,
 		RepoPath: body.RepoPath,
-		Program:  s.program,
+		Program:  program,
 		AutoYes:  s.autoYes,
 		GitMode:  body.GitMode,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Set orchestrator fields if provided
+	if body.AgentPreset != "" {
+		inst.AgentPreset = body.AgentPreset
+	}
+	if body.InstanceType != "" {
+		inst.InstanceType = body.InstanceType
+	}
+	if body.Parent != "" {
+		inst.Parent = body.Parent
+		// Add to parent's children list
+		if parent := s.findInstance(body.Parent); parent != nil {
+			parent.Children = append(parent.Children, body.Title)
+		}
 	}
 
 	// Ensure .claude/settings.local.json exists with local plans directory
@@ -572,9 +624,9 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	case "kill":
+		// Best-effort kill — continue with removal even if tmux session is already gone
 		if err := inst.Kill(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			log.ErrorLog.Printf("kill %s (non-fatal): %v", title, err)
 		}
 		// Remove from list
 		for i, existing := range s.instances {
@@ -1114,6 +1166,7 @@ func Run(program string, autoYes bool, port int) error {
 		return err
 	}
 
+	srv.port = port
 	go srv.pollMetadata()
 	go srv.pollOutput()
 
@@ -1168,6 +1221,11 @@ func Run(program string, autoYes bool, port int) error {
 		json.NewEncoder(w).Encode(sessions)
 	})
 
+	// Orchestrator routes
+	mux.HandleFunc("/api/orchestrate/", func(w http.ResponseWriter, r *http.Request) {
+		srv.handleOrchestrateAction(w, r)
+	})
+
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("webserver/static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -1181,4 +1239,186 @@ func Run(program string, autoYes bool, port int) error {
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Claude Squad Web UI running at http://localhost%s\n", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+// handleOrchestrateAction handles orchestrator loop management.
+// Routes:
+//   POST /api/orchestrate/{title}/start   — start the control loop
+//   POST /api/orchestrate/{title}/stop    — stop the control loop
+//   POST /api/orchestrate/{title}/pause   — pause the control loop
+//   POST /api/orchestrate/{title}/resume  — resume the control loop
+//   POST /api/orchestrate/{title}/restart — restart with optional new task
+//   GET  /api/orchestrate/{title}/status  — get loop state
+func (s *Server) handleOrchestrateAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/orchestrate/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) < 2 {
+		http.Error(w, "missing action", http.StatusBadRequest)
+		return
+	}
+	title := parts[0]
+	action := parts[1]
+
+	switch action {
+	case "start":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Task string `json:"task"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			// Task is optional
+			body.Task = ""
+		}
+
+		s.mu.Lock()
+		if _, exists := s.loops[title]; exists {
+			s.mu.Unlock()
+			http.Error(w, "loop already running for this orchestrator", http.StatusConflict)
+			return
+		}
+
+		cfg := orchestrator.DefaultConfig()
+		cfg.BaseURL = fmt.Sprintf("http://localhost:%d", s.port)
+		loop := orchestrator.NewLoop(cfg, title)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		s.loops[title] = loop
+		s.loopCancel[title] = cancel
+		s.mu.Unlock()
+
+		// Run the loop in a goroutine
+		go func() {
+			if err := loop.Run(ctx, body.Task); err != nil && err != context.Canceled {
+				log.ErrorLog.Printf("orchestrator loop %s error: %v", title, err)
+			}
+			s.mu.Lock()
+			delete(s.loops, title)
+			delete(s.loopCancel, title)
+			s.mu.Unlock()
+		}()
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+
+	case "stop":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.mu.Lock()
+		cancel, exists := s.loopCancel[title]
+		if exists {
+			cancel()
+			delete(s.loops, title)
+			delete(s.loopCancel, title)
+		}
+		s.mu.Unlock()
+
+		if !exists {
+			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+
+	case "pause":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.mu.RLock()
+		loop, exists := s.loops[title]
+		s.mu.RUnlock()
+		if !exists {
+			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
+			return
+		}
+		loop.Pause()
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "paused"})
+
+	case "resume":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.mu.RLock()
+		loop, exists := s.loops[title]
+		s.mu.RUnlock()
+		if !exists {
+			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
+			return
+		}
+		loop.Resume()
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "resumed"})
+
+	case "restart":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Task string `json:"task"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+
+		s.mu.RLock()
+		loop, exists := s.loops[title]
+		s.mu.RUnlock()
+		if !exists {
+			http.Error(w, "no loop running for this orchestrator", http.StatusNotFound)
+			return
+		}
+		loop.Restart(body.Task)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "restarting"})
+
+	case "status":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.mu.RLock()
+		loop, exists := s.loops[title]
+		s.mu.RUnlock()
+
+		state := "not_running"
+		if exists {
+			state = loop.State().String()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"state": state})
+
+	case "logs":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.mu.RLock()
+		loop, exists := s.loops[title]
+		s.mu.RUnlock()
+
+		if !exists {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"lines": []string{}, "offset": 0})
+			return
+		}
+
+		// Parse offset from query params
+		offset := 0
+		if o := r.URL.Query().Get("offset"); o != "" {
+			fmt.Sscanf(o, "%d", &offset)
+		}
+
+		lines, newOffset := loop.GetLogLines(offset)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"lines": lines, "offset": newOffset})
+
+	default:
+		http.Error(w, "unknown action: "+action, http.StatusBadRequest)
+	}
 }
