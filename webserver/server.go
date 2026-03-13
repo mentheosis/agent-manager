@@ -292,13 +292,10 @@ func (s *Server) pollOutput() {
 			var newScrollback string
 			lastSize := s.lastHistorySize[inst.Title]
 
-			// Resize guard: if history_size decreased (e.g. pane grew taller
-			// or terminal resize caused line rewrapping), lines have returned
-			// from scrollback into the visible pane. Trim them from stable
-			// so they aren't duplicated with the pane content.
+			// Resize guard: if history_size decreased (e.g. terminal resize
+			// caused line rewrapping), reset our tracker. The overlap between
+			// stable and pane is handled at read time by findOverlap in GetState.
 			if historySize < lastSize {
-				returned := lastSize - historySize
-				cl.TrimStable(returned)
 				s.lastHistorySize[inst.Title] = historySize
 			} else if historySize > lastSize {
 				delta := historySize - lastSize
@@ -1042,6 +1039,40 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 
+	case "mcp":
+		workDir := inst.GetWorktreePath()
+		if workDir == "" {
+			workDir = inst.Path
+		}
+		mcpPath := filepath.Join(workDir, ".mcp.json")
+
+		if r.Method == http.MethodGet {
+			content, err := os.ReadFile(mcpPath)
+			exists := err == nil
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"path":    mcpPath,
+				"content": string(content),
+				"exists":  exists,
+			})
+		} else if r.Method == http.MethodPut {
+			var body struct {
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := os.WriteFile(mcpPath, []byte(body.Content), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": mcpPath})
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+
 	case "ws":
 		s.mu.Unlock() // Release lock for long-lived WebSocket
 		s.handleWebSocket(w, r, inst, title)
@@ -1084,9 +1115,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	// Seed from current stable count so the WS only sends lines added
-	// after the client fetched /history.
-	lastStableCount := cl.GetStableCount()
+	// Seed from current raw stable count so the WS only sends lines added
+	// after the client fetched /history. We use the raw (untrimmed) count
+	// so that overlap fluctuations between stable and pane don't cause
+	// previously-sent lines to be re-sent as "new" history_append.
+	lastRawStableCount := cl.GetRawStableCount()
 	var lastPaneContent string
 	var lastLastInput string
 
@@ -1097,34 +1130,21 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		case <-ticker.C:
 		}
 
-		// Check for new stable lines (scrollback delta only, no overlap possible)
-		stableCount := cl.GetStableCount()
+		// Use raw stable count to detect genuinely new lines (immune to overlap changes)
+		rawStableCount := cl.GetRawStableCount()
 		_, _, pane, lastInput := cl.GetState()
 
 		s.mu.RLock()
 		status := statusString(inst.Status)
 		s.mu.RUnlock()
 
-		// Handle stable line trim (resize caused lines to return to pane).
-		// Tell the client to remove trailing history lines that are now in the pane.
-		if stableCount < lastStableCount {
-			trimmed := lastStableCount - stableCount
-			lastStableCount = stableCount
-			msg := map[string]interface{}{
-				"type":  "history_trim",
-				"count": trimmed,
-			}
-			if err := conn.WriteJSON(msg); err != nil {
-				return
-			}
-		}
-
 		// Send new stable lines as history_append.
-		// Scrollback lines have already left the pane before entering stable,
-		// so no overlap filtering is needed.
-		if stableCount > lastStableCount {
-			newLines := cl.GetStableSince(lastStableCount)
-			lastStableCount = stableCount
+		// New scrollback lines have already left the pane by the time they appear
+		// in stable, so no overlap filtering is needed here. The pane message
+		// (sent below) replaces the volatile content independently.
+		if rawStableCount > lastRawStableCount {
+			newLines := cl.GetStableSince(lastRawStableCount)
+			lastRawStableCount = rawStableCount
 			if len(newLines) > 0 {
 				msg := map[string]interface{}{
 					"type":  "history_append",

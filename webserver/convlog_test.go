@@ -150,11 +150,9 @@ func TestConversationLog_EmptyPane(t *testing.T) {
 func TestConversationLog_SetStatusDoesNotPromote(t *testing.T) {
 	cl := NewConversationLog()
 
-	// Simulate: agent produces output, then goes ready
 	cl.SetStatus("running")
 	cl.Ingest("", "response line 1\nresponse line 2")
 
-	// During running: pane visible, stable empty
 	stable, _, pane, _ := cl.GetState()
 	if len(stable) != 0 {
 		t.Errorf("expected 0 stable lines during running, got %d: %v", len(stable), stable)
@@ -181,12 +179,10 @@ func TestConversationLog_SetStatusDoesNotPromote(t *testing.T) {
 func TestConversationLog_ShortResponseInPane(t *testing.T) {
 	cl := NewConversationLog()
 
-	// Short response that never scrolls off
 	cl.SetStatus("running")
 	cl.Ingest("", "Done!")
 	cl.SetStatus("ready")
 
-	// Response stays in pane only — not in stable
 	stable, _, pane, _ := cl.GetState()
 	if len(stable) != 0 {
 		t.Errorf("expected 0 stable lines (short response stays in pane), got %d: %v", len(stable), stable)
@@ -195,8 +191,6 @@ func TestConversationLog_ShortResponseInPane(t *testing.T) {
 		t.Errorf("expected pane=['Done!'], got %v", pane)
 	}
 
-	// New turn starts: user sends prompt, new output appears
-	// The old response scrolls off via scrollback delta
 	cl.Ingest("Done!", "new output from agent")
 
 	stable, _, pane, _ = cl.GetState()
@@ -217,7 +211,6 @@ func TestConversationLog_ReadyIdempotent(t *testing.T) {
 
 	stable1, seq1, _, _ := cl.GetState()
 
-	// Repeated ready should not change anything
 	cl.SetStatus("ready")
 	stable2, seq2, _, _ := cl.GetState()
 
@@ -230,23 +223,15 @@ func TestConversationLog_ReadyIdempotent(t *testing.T) {
 }
 
 func TestConversationLog_ScrollbackThenReady(t *testing.T) {
-	// Simulates the scenario that previously caused duplication:
-	// lines scroll off, then status goes ready. With scrollback-only model,
-	// there's no promotion so no duplication.
 	cl := NewConversationLog()
 
 	cl.SetStatus("running")
 	cl.Ingest("", "A\nB\nC\nD\nE")
-
-	// Lines A,B scroll off
 	cl.Ingest("A\nB", "C\nD\nE\nF\nG")
-
-	// Status goes ready
 	cl.SetStatus("ready")
 
 	stable, _, pane, _ := cl.GetState()
 
-	// Stable should only have scrollback lines [A,B] — no promotion of pane
 	if len(stable) != 2 {
 		t.Errorf("expected 2 stable lines (scrollback only), got %d: %v", len(stable), stable)
 	}
@@ -257,7 +242,6 @@ func TestConversationLog_ScrollbackThenReady(t *testing.T) {
 		t.Errorf("expected 5 pane lines, got %d: %v", len(pane), pane)
 	}
 
-	// Total lines should have no duplicates
 	allLines := append(stable, pane...)
 	if len(allLines) != 7 {
 		t.Errorf("expected 7 total lines, got %d", len(allLines))
@@ -267,6 +251,48 @@ func TestConversationLog_ScrollbackThenReady(t *testing.T) {
 		if i < len(expected) && line != expected[i] {
 			t.Errorf("line %d: expected %q, got %q", i, expected[i], line)
 		}
+	}
+}
+
+// TestConversationLog_ResizeOverlap simulates a terminal resize where lines
+// return from scrollback into the visible pane. findOverlap in GetState
+// deduplicates them at read time without mutating stableLines.
+func TestConversationLog_ResizeOverlap(t *testing.T) {
+	cl := NewConversationLog()
+
+	// Lines A-E scroll off, pane shows F-J
+	cl.Ingest("A\nB\nC\nD\nE", "F\nG\nH\nI\nJ")
+
+	stable, _, pane, _ := cl.GetState()
+	if len(stable) != 5 {
+		t.Errorf("expected 5 stable, got %d: %v", len(stable), stable)
+	}
+	if len(pane) != 5 {
+		t.Errorf("expected 5 pane, got %d: %v", len(pane), pane)
+	}
+
+	// Simulate resize: pane grows taller, D and E return to pane head.
+	// Scrollback now has A,B,C and pane shows D,E,F,G,H,I,J.
+	// But stableLines still has [A,B,C,D,E] — D,E are in both.
+	cl.Ingest("", "D\nE\nF\nG\nH\nI\nJ")
+
+	stable, _, pane, _ = cl.GetState()
+
+	// findOverlap detects stable tail [D,E] == pane head [D,E], trims stable
+	if len(stable) != 3 {
+		t.Errorf("expected 3 stable (overlap trimmed), got %d: %v", len(stable), stable)
+	}
+	if len(stable) >= 3 && (stable[0] != "A" || stable[1] != "B" || stable[2] != "C") {
+		t.Errorf("unexpected stable: %v", stable)
+	}
+	if len(pane) != 7 {
+		t.Errorf("expected 7 pane lines, got %d: %v", len(pane), pane)
+	}
+
+	// Total should have no duplicates: A,B,C + D,E,F,G,H,I,J = 10
+	allLines := append(stable, pane...)
+	if len(allLines) != 10 {
+		t.Errorf("expected 10 total lines, got %d", len(allLines))
 	}
 }
 
@@ -293,56 +319,46 @@ func TestConversationLog_LastInput(t *testing.T) {
 	}
 }
 
-func TestConversationLog_TrimStable(t *testing.T) {
+func TestConversationLog_RawStableCountImmune(t *testing.T) {
 	cl := NewConversationLog()
 
-	// Build up some stable lines
-	cl.Ingest("A\nB\nC\nD\nE", "F\nG")
+	// Scrollback lines that overlap with pane
+	cl.Ingest("A\nB\nC", "B\nC\nD")
 
-	if cl.GetStableCount() != 5 {
-		t.Fatalf("expected 5 stable, got %d", cl.GetStableCount())
-	}
-
-	// Simulate resize: 2 lines return from scrollback to pane
-	cl.TrimStable(2)
-
+	// GetState trims overlap, but GetRawStableCount does not
 	stable, _, _, _ := cl.GetState()
-	if len(stable) != 3 {
-		t.Errorf("expected 3 stable after trim, got %d: %v", len(stable), stable)
-	}
-	if len(stable) >= 3 && (stable[0] != "A" || stable[1] != "B" || stable[2] != "C") {
-		t.Errorf("unexpected stable after trim: %v", stable)
-	}
+	rawCount := cl.GetRawStableCount()
 
-	// Trim more than available
-	cl.TrimStable(100)
-	stable, _, _, _ = cl.GetState()
-	if len(stable) != 0 {
-		t.Errorf("expected 0 stable after over-trim, got %d: %v", len(stable), stable)
+	if len(stable) != 1 {
+		t.Errorf("expected 1 stable (overlap trimmed), got %d: %v", len(stable), stable)
 	}
-
-	// Trim zero does nothing
-	cl.Ingest("X\nY", "Z")
-	cl.TrimStable(0)
-	if cl.GetStableCount() != 2 {
-		t.Errorf("expected 2 stable after trim(0), got %d", cl.GetStableCount())
+	if rawCount != 3 {
+		t.Errorf("expected raw count 3, got %d", rawCount)
 	}
 }
 
-func TestConversationLog_GetStableCount(t *testing.T) {
-	cl := NewConversationLog()
-
-	if cl.GetStableCount() != 0 {
-		t.Errorf("expected 0, got %d", cl.GetStableCount())
+func TestFindOverlap(t *testing.T) {
+	tests := []struct {
+		name   string
+		stable []string
+		pane   []string
+		want   int
+	}{
+		{"no overlap", []string{"A", "B"}, []string{"C", "D"}, 0},
+		{"full overlap", []string{"A", "B", "C"}, []string{"A", "B", "C"}, 3},
+		{"partial tail-head", []string{"X", "A", "B"}, []string{"A", "B", "C"}, 2},
+		{"single line", []string{"X", "Y", "A"}, []string{"A", "B"}, 1},
+		{"empty stable", []string{}, []string{"A"}, 0},
+		{"empty pane", []string{"A"}, []string{}, 0},
+		{"both empty", []string{}, []string{}, 0},
+		{"no match despite same content exists", []string{"A", "B", "C"}, []string{"B", "C", "D"}, 2},
 	}
-
-	cl.Ingest("a\nb\nc", "d\ne")
-	if cl.GetStableCount() != 3 {
-		t.Errorf("expected 3, got %d", cl.GetStableCount())
-	}
-
-	cl.Ingest("d", "e\nf")
-	if cl.GetStableCount() != 4 {
-		t.Errorf("expected 4, got %d", cl.GetStableCount())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findOverlap(tt.stable, tt.pane)
+			if got != tt.want {
+				t.Errorf("findOverlap(%v, %v) = %d, want %d", tt.stable, tt.pane, got, tt.want)
+			}
+		})
 	}
 }
