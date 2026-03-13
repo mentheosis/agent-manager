@@ -442,6 +442,11 @@ func writeMCPConfig(workDir, socketPath string) {
 	log.ErrorLog.Printf("[MCP] Wrote %s → socket %s", mcpPath, socketPath)
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // sanitizeForSocket creates a safe filename from a group title.
 // Must match the logic in cmd/orchestrator/main.go.
 func sanitizeForSocket(title string) string {
@@ -485,12 +490,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	// regular instances run the configured CLI program (e.g. claude).
 	program := s.program
 	if body.InstanceType == "loop" {
-		// Find the orchestrator binary next to the web server binary
+		// Find the orchestrator binary: check bin/ next to the server binary first,
+		// then fall back to same directory as the server binary.
 		selfBin, err := os.Executable()
 		if err != nil {
 			selfBin = "."
 		}
-		orchBin := filepath.Join(filepath.Dir(selfBin), "claude-squad-orchestrator")
+		baseDir := filepath.Dir(selfBin)
+		orchBin := filepath.Join(baseDir, "claude-squad-orchestrator")
+		if binPath := filepath.Join(baseDir, "bin", "claude-squad-orchestrator"); fileExists(binPath) {
+			orchBin = binPath
+		}
 		escaped := strings.ReplaceAll(body.Title, "'", "'\\''")
 		program = fmt.Sprintf("%s --group '%s' --base-url http://localhost:%d", orchBin, escaped, s.port)
 		if body.Prompt != "" {
