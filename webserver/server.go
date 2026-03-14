@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -630,16 +631,24 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	// Parse path: /api/instances/{title}/{action}
-	path := strings.TrimPrefix(r.URL.Path, "/api/instances/")
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) == 0 {
+	// Use RawPath to preserve %2F in titles that contain slashes.
+	rawPath := r.URL.RawPath
+	if rawPath == "" {
+		rawPath = r.URL.Path
+	}
+	path := strings.TrimPrefix(rawPath, "/api/instances/")
+	// The action is always the last path segment (kill, send, ws, etc.)
+	var encodedTitle, action string
+	if lastSlash := strings.LastIndex(path, "/"); lastSlash >= 0 {
+		encodedTitle = path[:lastSlash]
+		action = path[lastSlash+1:]
+	} else {
+		encodedTitle = path
+	}
+	title, _ := url.PathUnescape(encodedTitle)
+	if title == "" {
 		http.Error(w, "missing instance title", http.StatusBadRequest)
 		return
-	}
-	title := parts[0]
-	action := ""
-	if len(parts) > 1 {
-		action = parts[1]
 	}
 
 	// For send/keys, use minimal locking — only hold the lock to find the

@@ -39,11 +39,11 @@ type InstanceInfo struct {
 
 // HistoryResponse is the response from the /history endpoint.
 type HistoryResponse struct {
-	StableLines  []string `json:"stable_lines"`
-	StableSeqNo  int      `json:"stable_seq_no"`
-	StableCount  int      `json:"stable_count"`
-	Pane         string   `json:"pane"`
-	LastInput    string   `json:"last_input"`
+	StableLines []string `json:"stable_lines"`
+	StableSeqNo int      `json:"stable_seq_no"`
+	StableCount int      `json:"stable_count"`
+	Pane        []string `json:"pane"`
+	LastInput   string   `json:"last_input"`
 }
 
 // ListInstances returns all instances from the web server.

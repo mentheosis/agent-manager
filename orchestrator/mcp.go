@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 )
 
 // MCPServer implements an MCP server that provides orchestration
@@ -397,13 +398,16 @@ func (s *MCPServer) toolReadAgentOutput(args json.RawMessage) (string, error) {
 		return "", err
 	}
 
-	output := history.Pane
+	s.log("read_agent_output(%s): pane=%d lines, stable=%d lines, last_input=%q",
+		params.Agent, len(history.Pane), len(history.StableLines), history.LastInput)
+
+	output := strings.Join(history.Pane, "\n")
 	if output == "" && len(history.StableLines) > 0 {
 		start := len(history.StableLines) - 50
 		if start < 0 {
 			start = 0
 		}
-		output = fmt.Sprintf("%s", history.StableLines[start:])
+		output = strings.Join(history.StableLines[start:], "\n")
 	}
 	return truncate(output, 4000), nil
 }

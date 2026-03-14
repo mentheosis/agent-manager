@@ -34,8 +34,8 @@ func (s LoopState) String() string {
 }
 
 // Loop is the control loop that drives the orchestrator.
-// It polls sub-agent statuses, batches results, and feeds them
-// to the orchestrator session.
+// It subscribes to agent status changes via websocket and feeds batched
+// results to the orchestrator session.
 type Loop struct {
 	config Config
 	client *Client
@@ -51,8 +51,8 @@ type Loop struct {
 	state LoopState
 	mu    sync.RWMutex
 
-	// lastKnownStatus tracks the last observed status per agent to detect transitions.
-	lastKnownStatus map[string]string
+	// watcher receives status updates from the web server via websocket.
+	watcher *StatusWatcher
 
 	// logFunc is called for each log line. Defaults to fmt.Println.
 	logFunc func(string)
@@ -66,21 +66,23 @@ type Loop struct {
 // NewLoop creates a new control loop. groupTitle is the title of the loop instance
 // (the parent). The leader is discovered dynamically among its children.
 func NewLoop(cfg Config, groupTitle string) *Loop {
+	logFunc := func(s string) { fmt.Println(s) }
 	return &Loop{
-		config:          cfg,
-		client:          NewClient(cfg.BaseURL),
-		groupTitle:      groupTitle,
-		lastKnownStatus: make(map[string]string),
-		logFunc:         func(s string) { fmt.Println(s) },
-		pauseCh:         make(chan struct{}, 1),
-		restartCh:       make(chan string, 1),
-		state:           LoopStateIdle,
+		config:    cfg,
+		client:    NewClient(cfg.BaseURL),
+		groupTitle: groupTitle,
+		watcher:   NewStatusWatcher(cfg.BaseURL, logFunc),
+		logFunc:   logFunc,
+		pauseCh:   make(chan struct{}, 1),
+		restartCh: make(chan string, 1),
+		state:     LoopStateIdle,
 	}
 }
 
 // SetLogFunc sets a custom log function (for capturing output in UI).
 func (l *Loop) SetLogFunc(f func(string)) {
 	l.logFunc = f
+	l.watcher.logFunc = f
 }
 
 // State returns the current loop state.
@@ -134,6 +136,9 @@ func (l *Loop) log(format string, args ...interface{}) {
 func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 	l.log("Control loop starting")
 
+	// Start the status watcher in the background
+	go l.watcher.Run(ctx)
+
 	prompt := initialPrompt
 
 	// If no initial task, wait for one via restartCh (sent by __TASK__ stdin command)
@@ -155,12 +160,6 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 			return fmt.Errorf("failed to discover agents: %w", err)
 		}
 		l.log("Discovered leader: %s, %d sub-agents: %v", l.leaderTitle, len(l.agentTitles), l.agentTitles)
-
-		// Initialize status tracking
-		l.lastKnownStatus = make(map[string]string)
-		for _, title := range l.agentTitles {
-			l.lastKnownStatus[title] = ""
-		}
 
 		// Send initial prompt to orchestrator if provided
 		if prompt != "" {
@@ -201,46 +200,110 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 	}
 }
 
-// runLoop is the inner polling/dispatch loop. Returns (done, error).
+// runLoop is the inner event-driven loop. Returns (done, error).
 // done=true means the orchestrator signaled completion.
 func (l *Loop) runLoop(ctx context.Context) (bool, error) {
+	// Track which agents have become ready since the last dispatch
+	pendingReady := make(map[string]bool)
+	var batchTimer *time.Timer
+	var batchCh <-chan time.Time // nil until batch window starts
+
+	// Run heartbeat in a separate goroutine so it prints even when
+	// the main loop is blocked waiting for the leader.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				l.printHeartbeat()
+			}
+		}
+	}()
+
+	changes := l.watcher.Changes()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		default:
-		}
 
-		// Handle pause
-		if l.State() == LoopStatePaused {
-			l.log("Paused — waiting for resume...")
-			select {
-			case <-ctx.Done():
-				return false, ctx.Err()
-			case <-l.pauseCh:
-				// Resumed
+		case change := <-changes:
+			// Handle pause
+			if l.State() == LoopStatePaused {
+				l.log("Paused — waiting for resume...")
+				select {
+				case <-ctx.Done():
+					return false, ctx.Err()
+				case <-l.pauseCh:
+					// Resumed
+				}
 			}
-		}
 
-		// Sleep for poll interval
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(l.config.PollInterval):
-		}
+			// Update and check if this is a relevant agent transitioning to ready
+			isAgent := false
+			for _, t := range l.agentTitles {
+				if t == change.Title {
+					isAgent = true
+					break
+				}
+			}
+			if !isAgent {
+				continue
+			}
 
-		// Poll all sub-agent statuses
-		newlyReady := l.pollForNewlyReady()
-		if len(newlyReady) == 0 {
-			continue
-		}
+			l.log("Status change: %s → %s", change.Title, change.Status)
 
-		// Batch window: wait a bit for more agents to finish
-		l.log("Agent(s) ready: %v — starting batch window", newlyReady)
-		batchedReady := l.batchWindow(ctx, newlyReady)
+			if change.Status == "ready" && !pendingReady[change.Title] {
+				pendingReady[change.Title] = true
+				l.log("Agent ready: %s", change.Title)
+
+				// Start batch window on first ready agent
+				if batchTimer == nil {
+					batchTimer = time.NewTimer(l.config.BatchWindow)
+					batchCh = batchTimer.C
+				}
+
+				// If all agents are now ready, fire immediately
+				allReady := true
+				for _, t := range l.agentTitles {
+					if !pendingReady[t] {
+						s := l.watcher.GetStatus(t)
+						if s != "ready" && s != "paused" {
+							allReady = false
+							break
+						}
+					}
+				}
+				if allReady {
+					if batchTimer != nil {
+						batchTimer.Stop()
+					}
+					batchTimer = nil
+					batchCh = nil
+					goto dispatch
+				}
+			}
+
+		case <-batchCh:
+			// Batch window expired
+			batchTimer = nil
+			batchCh = nil
+			goto dispatch
+		}
+		continue
+
+	dispatch:
+		readyAgents := make([]string, 0, len(pendingReady))
+		for t := range pendingReady {
+			readyAgents = append(readyAgents, t)
+		}
+		pendingReady = make(map[string]bool)
 
 		// Collect output from all newly-ready agents
-		update := l.collectResults(batchedReady)
+		update := l.collectResults(readyAgents)
 
 		// Send batched update to orchestrator
 		promptText := update.FormatForPrompt()
@@ -344,87 +407,29 @@ func (l *Loop) buildTeamDescription() string {
 	return b.String()
 }
 
-// pollForNewlyReady checks all sub-agents and returns those that have
-// transitioned to "ready" since the last poll.
-func (l *Loop) pollForNewlyReady() []string {
-	var ready []string
+// printHeartbeat prints current agent statuses to stdout.
+func (l *Loop) printHeartbeat() {
+	if len(l.agentTitles) == 0 {
+		return
+	}
+	statuses := l.watcher.GetAll()
+	parts := make([]string, 0, len(l.agentTitles)+2)
+	parts = append(parts, fmt.Sprintf("[%s]", time.Now().Format("15:04:05")))
 	for _, title := range l.agentTitles {
-		status, err := l.client.GetInstanceStatus(title)
-		if err != nil {
-			l.log("Error polling %s: %v", title, err)
-			continue
+		s := statuses[title]
+		if s == "" {
+			s = "unknown"
 		}
-
-		prev := l.lastKnownStatus[title]
-		l.lastKnownStatus[title] = status
-
-		// Detect transition to "ready" (agent finished its work)
-		if status == "ready" && prev != "ready" && prev != "" {
-			ready = append(ready, title)
+		parts = append(parts, fmt.Sprintf("%s:%s", title, s))
+	}
+	if l.leaderTitle != "" {
+		s := statuses[l.leaderTitle]
+		if s == "" {
+			s = "unknown"
 		}
+		parts = append(parts, fmt.Sprintf("%s:%s", l.leaderTitle, s))
 	}
-	return ready
-}
-
-// batchWindow waits for the batch window duration, collecting any additional
-// agents that become ready during that time.
-func (l *Loop) batchWindow(ctx context.Context, initial []string) []string {
-	readySet := make(map[string]bool)
-	for _, t := range initial {
-		readySet[t] = true
-	}
-
-	deadline := time.After(l.config.BatchWindow)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return initial
-		case <-deadline:
-			result := make([]string, 0, len(readySet))
-			for t := range readySet {
-				result = append(result, t)
-			}
-			return result
-		case <-ticker.C:
-			for _, title := range l.agentTitles {
-				if readySet[title] {
-					continue
-				}
-				status, err := l.client.GetInstanceStatus(title)
-				if err != nil {
-					continue
-				}
-				prev := l.lastKnownStatus[title]
-				l.lastKnownStatus[title] = status
-				if status == "ready" && prev != "ready" {
-					readySet[title] = true
-					l.log("Additional agent ready during batch window: %s", title)
-				}
-			}
-
-			// If all agents are ready, no need to wait longer
-			allReady := true
-			for _, title := range l.agentTitles {
-				if !readySet[title] {
-					s, _ := l.client.GetInstanceStatus(title)
-					if s != "ready" && s != "paused" {
-						allReady = false
-						break
-					}
-				}
-			}
-			if allReady {
-				result := make([]string, 0, len(readySet))
-				for t := range readySet {
-					result = append(result, t)
-				}
-				return result
-			}
-		}
-	}
+	fmt.Println(strings.Join(parts, "  "))
 }
 
 // collectResults gathers output from newly-ready agents into a StatusUpdate.
@@ -438,7 +443,7 @@ func (l *Loop) collectResults(readyAgents []string) *StatusUpdate {
 			output = "(error reading output)"
 		} else {
 			// Use the current pane content as the most recent output
-			output = history.Pane
+			output = strings.Join(history.Pane, "\n")
 			if output == "" && len(history.StableLines) > 0 {
 				// Fall back to last N stable lines
 				start := len(history.StableLines) - 50
@@ -459,21 +464,22 @@ func (l *Loop) collectResults(readyAgents []string) *StatusUpdate {
 	return update
 }
 
-// waitForReady polls until the given instance status is "ready".
+// waitForReady waits until the given instance status becomes "ready",
+// checking the watcher's cached status on a short interval.
 func (l *Loop) waitForReady(ctx context.Context, title string) error {
+	if s := l.watcher.GetStatus(title); s == "ready" {
+		return nil
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(l.config.PollInterval):
-		}
-
-		status, err := l.client.GetInstanceStatus(title)
-		if err != nil {
-			return err
-		}
-		if status == "ready" {
-			return nil
+		case <-ticker.C:
+			if s := l.watcher.GetStatus(title); s == "ready" {
+				return nil
+			}
 		}
 	}
 }
@@ -486,7 +492,7 @@ func (l *Loop) readOrchestratorResponse() (*OrchestratorResponse, error) {
 	}
 
 	// The pane content contains the most recent output
-	text := history.Pane
+	text := strings.Join(history.Pane, "\n")
 	if text == "" && len(history.StableLines) > 0 {
 		// Fall back to recent stable lines
 		start := len(history.StableLines) - 100
