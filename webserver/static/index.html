@@ -297,6 +297,212 @@
   #output-area * {
     max-width: 100%;
   }
+
+  /* Output wrapper: side-by-side terminal + team panel */
+  #output-wrapper {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  #output-wrapper > #output-area {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Team configuration panel */
+  #team-panel {
+    display: none;
+    width: 360px;
+    min-width: 360px;
+    border-left: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #team-panel.visible {
+    display: flex;
+  }
+  .team-panel-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .team-panel-header h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .team-panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .team-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-top: 4px;
+  }
+  #team-task {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    resize: vertical;
+    outline: none;
+  }
+  #team-task:focus { border-color: var(--accent); }
+
+  /* Agent cards in the team panel */
+  .team-member-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .team-member-card.is-leader {
+    border-color: var(--accent);
+    opacity: 0.7;
+  }
+  .team-member-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .team-member-header .member-name {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .team-member-header .member-badge {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .team-member-header .member-remove {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    line-height: 1;
+  }
+  .team-member-header .member-remove:hover { color: var(--red); }
+  .team-member-card input,
+  .team-member-card textarea {
+    width: 100%;
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    outline: none;
+  }
+  .team-member-card input:focus,
+  .team-member-card textarea:focus { border-color: var(--accent); }
+  .team-member-card textarea { resize: vertical; min-height: 40px; }
+  .team-member-card label {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .team-member-card .preset-row {
+    display: flex;
+    gap: 4px;
+  }
+  .team-member-card .preset-row button {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-family: inherit;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-surface);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .team-member-card .preset-row button.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .team-member-card .git-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .team-member-card .git-row input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    flex-shrink: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-surface);
+    cursor: pointer;
+    position: relative;
+  }
+  .team-member-card .git-row input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .team-member-card .git-row input[type="checkbox"]:checked::after {
+    content: '✓';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--bg);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  /* Team panel buttons */
+  .team-btn {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .team-btn-secondary {
+    background: var(--bg);
+    color: var(--text-dim);
+  }
+  .team-btn-secondary:hover { color: var(--text); border-color: var(--text-dim); }
+  .team-btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    margin-top: 8px;
+  }
+  .team-btn-primary:hover { opacity: 0.85; }
+  .team-btn-primary:disabled { opacity: 0.4; cursor: default; }
   .connection-error {
     display: flex;
     align-items: center;
@@ -574,9 +780,9 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 24px;
-    width: 400px;
+    width: 520px;
   }
-  #modal h2 { font-size: 14px; margin-bottom: 16px; }
+  #modal h2 { font-size: 16px; margin-bottom: 16px; }
   #modal input, #modal textarea {
     width: 100%;
     background: var(--bg);
@@ -585,11 +791,11 @@
     padding: 8px 12px;
     border-radius: 6px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: 14px;
     outline: none;
     margin-bottom: 12px;
   }
-  #modal textarea { height: 80px; resize: vertical; }
+  #modal textarea { height: 90px; resize: vertical; }
   #modal input:focus, #modal textarea:focus { border-color: var(--accent); }
   #modal input[type="checkbox"] {
     -webkit-appearance: none;
@@ -829,7 +1035,25 @@
       <button class="toolbar-btn" id="btn-resume">Resume</button>
       <button class="toolbar-btn danger" id="btn-kill">Kill</button>
     </div>
-    <div id="output-area"></div>
+    <div id="output-wrapper">
+      <div id="output-area"></div>
+      <div id="team-panel">
+        <div class="team-panel-header">
+          <h3>Team Configuration</h3>
+        </div>
+        <div class="team-panel-body">
+          <label class="team-label">Task Prompt</label>
+          <textarea id="team-task" placeholder="Describe the task for the team..." rows="4"></textarea>
+
+          <label class="team-label">Team Members</label>
+          <div id="team-members"></div>
+
+          <button id="btn-add-agent" class="team-btn team-btn-secondary">+ Add Agent</button>
+
+          <button id="btn-start-orchestration" class="team-btn team-btn-primary">Start Orchestration</button>
+        </div>
+      </div>
+    </div>
     <div id="rules-editor">
       <div id="rules-file-tabs"></div>
       <div id="rules-toolbar">
@@ -880,13 +1104,13 @@
     <!-- Type selector (hidden when adding agent to existing orchestrator) -->
     <div id="type-selector" style="margin-bottom:14px">
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <div class="type-option active" data-type="agent" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
-          <div style="font-size:13px;font-weight:600;margin-bottom:4px">Agent</div>
-          <div style="font-size:10px;color:var(--text-dim)">A standard Claude CLI session. Works independently in a single repository with full tool access.</div>
+        <div class="type-option active" data-type="agent" style="flex:1;padding:14px 16px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:15px;font-weight:600;margin-bottom:6px">Agent</div>
+          <div style="font-size:12px;color:var(--text-dim)">A standard Claude CLI session. Works independently in a single repository with full tool access.</div>
         </div>
-        <div class="type-option" data-type="orchestrator" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
-          <div style="font-size:13px;font-weight:600;margin-bottom:4px">Orchestrator</div>
-          <div style="font-size:10px;color:var(--text-dim)">A control loop that coordinates multiple agents across repositories. Includes a leader agent that directs the team.</div>
+        <div class="type-option" data-type="orchestrator" style="flex:1;padding:14px 16px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:15px;font-weight:600;margin-bottom:6px">Orchestrator</div>
+          <div style="font-size:12px;color:var(--text-dim)">A control loop that coordinates multiple agents across repositories. Includes a leader agent that directs the team.</div>
         </div>
       </div>
     </div>
@@ -1036,6 +1260,16 @@ async function refreshList() {
 function renderList(instances) {
   cachedInstances = instances;
   updateToolbarTitle();
+
+  // Refresh team panel if viewing a loop instance, but skip if user is typing in it
+  const selInst = instances.find(i => i.title === selectedTitle);
+  const teamPanel = document.getElementById('team-panel');
+  if (selInst && selInst.instance_type === 'loop' && teamPanel.classList.contains('visible')) {
+    const active = document.activeElement;
+    if (!active || !teamPanel.contains(active)) {
+      loadTeamPanel();
+    }
+  }
   const el = document.getElementById('instance-list');
   el.innerHTML = '';
 
@@ -1237,6 +1471,15 @@ function switchTab(tab) {
   memoryEditor.classList.remove('visible');
 
   const actionBar = document.getElementById('action-bar');
+
+  // Show team panel only for loop instances on terminal tab
+  const teamPanel = document.getElementById('team-panel');
+  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+  const isLoop = inst && inst.instance_type === 'loop';
+  teamPanel.classList.toggle('visible', tab === 'terminal' && isLoop);
+  if (tab === 'terminal' && isLoop) {
+    loadTeamPanel();
+  }
 
   if (tab === 'terminal') {
     output.style.display = '';
@@ -1918,6 +2161,158 @@ inputHistory.onNavigate = () => {
   document.getElementById('btn-hist-prev').disabled = !inputHistory.hasPrev;
   document.getElementById('btn-hist-next').disabled = !inputHistory.hasNext;
 };
+
+// --- Team Panel ---
+let teamAgents = []; // [{name, path, git_mode, preset, prompt}]
+let teamAgentCounter = 0;
+
+function loadTeamPanel() {
+  if (!selectedTitle) return;
+  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+  if (!inst || inst.instance_type !== 'loop') return;
+
+  // Find existing children of this loop
+  const children = (cachedInstances || []).filter(i => i.parent === selectedTitle);
+  const membersEl = document.getElementById('team-members');
+  membersEl.innerHTML = '';
+
+  // Show existing children (leader + any existing agents) as read-only cards
+  children.forEach(child => {
+    const card = document.createElement('div');
+    card.className = 'team-member-card' + (child.agent_preset === 'orchestrator' ? ' is-leader' : '');
+    const preset = child.agent_preset || 'coder';
+    const badge = child.agent_preset === 'orchestrator' ? 'Leader' : preset;
+    card.innerHTML = `
+      <div class="team-member-header">
+        <span class="member-name">${esc(child.title)}</span>
+        <span class="member-badge">${badge}</span>
+      </div>
+      <label>Path: ${esc(child.path || '.')}</label>
+    `;
+    membersEl.appendChild(card);
+  });
+
+  // Show pending (not yet created) agents
+  teamAgents.forEach((agent, idx) => {
+    membersEl.appendChild(renderAgentCard(agent, idx));
+  });
+}
+
+function renderAgentCard(agent, idx) {
+  const card = document.createElement('div');
+  card.className = 'team-member-card';
+  card.dataset.idx = idx;
+  card.innerHTML = `
+    <div class="team-member-header">
+      <input class="member-name" type="text" value="${esc(agent.name)}" placeholder="Agent name">
+      <button class="member-remove" title="Remove">&times;</button>
+    </div>
+    <label>Working directory</label>
+    <input type="text" class="agent-path" value="${esc(agent.path)}" placeholder="Absolute path">
+    <div class="git-row">
+      <input type="checkbox" class="agent-git" ${agent.git_mode ? 'checked' : ''}>
+      <span>Git worktree isolation</span>
+    </div>
+    <label>Preset</label>
+    <div class="preset-row">
+      <button class="agent-preset-btn ${agent.preset === 'coder' ? 'active' : ''}" data-preset="coder">Coder</button>
+      <button class="agent-preset-btn ${agent.preset === 'researcher' ? 'active' : ''}" data-preset="researcher">Researcher</button>
+    </div>
+    <label>System prompt (optional)</label>
+    <textarea class="agent-prompt" rows="2" placeholder="Optional instructions for this agent...">${esc(agent.prompt || '')}</textarea>
+  `;
+
+  // Wire up events
+  card.querySelector('.member-remove').addEventListener('click', () => {
+    teamAgents.splice(idx, 1);
+    loadTeamPanel();
+  });
+  card.querySelector('.member-name').addEventListener('input', (e) => {
+    agent.name = e.target.value;
+  });
+  card.querySelector('.agent-path').addEventListener('input', (e) => {
+    agent.path = e.target.value;
+  });
+  card.querySelector('.agent-git').addEventListener('change', (e) => {
+    agent.git_mode = e.target.checked;
+  });
+  card.querySelector('.agent-prompt').addEventListener('input', (e) => {
+    agent.prompt = e.target.value;
+  });
+  card.querySelectorAll('.agent-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      agent.preset = btn.dataset.preset;
+      card.querySelectorAll('.agent-preset-btn').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+
+  return card;
+}
+
+document.getElementById('btn-add-agent').addEventListener('click', () => {
+  teamAgentCounter++;
+  teamAgents.push({
+    name: selectedTitle + '-agent-' + teamAgentCounter,
+    path: '',
+    git_mode: false,
+    preset: 'coder',
+    prompt: '',
+  });
+  loadTeamPanel();
+});
+
+document.getElementById('btn-start-orchestration').addEventListener('click', async () => {
+  if (!selectedTitle) return;
+  const task = document.getElementById('team-task').value.trim();
+  if (!task) { alert('Please enter a task prompt'); return; }
+  if (teamAgents.length === 0) { alert('Please add at least one agent'); return; }
+
+  const btn = document.getElementById('btn-start-orchestration');
+  btn.disabled = true;
+  btn.textContent = 'Creating agents...';
+
+  try {
+    // Create each pending agent as a child of the loop
+    for (const agent of teamAgents) {
+      const name = agent.name.trim() || (selectedTitle + '-agent-' + (teamAgents.indexOf(agent) + 1));
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: name,
+          path: agent.path || '',
+          git_mode: agent.git_mode,
+          parent: selectedTitle,
+          agent_preset: agent.preset,
+          prompt: agent.prompt || undefined,
+        }),
+      });
+    }
+
+    // Clear pending agents (they're now real instances)
+    teamAgents = [];
+    teamAgentCounter = 0;
+
+    // Send the task to the loop
+    const taskJSON = JSON.stringify(task);
+    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ text: `__TASK__ ${taskJSON}` }),
+    });
+
+    btn.textContent = 'Orchestration Started';
+    refreshList();
+    loadTeamPanel();
+
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Start Orchestration';
+    }, 3000);
+  } catch (e) {
+    alert('Error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Start Orchestration';
+  }
+});
 
 // --- Modal ---
 let modalSelectedType = 'agent';

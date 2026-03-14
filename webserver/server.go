@@ -3,6 +3,7 @@ package webserver
 import (
 	"claude-squad/config"
 	"claude-squad/log"
+	"claude-squad/orchestrator"
 	"claude-squad/session"
 	"encoding/json"
 	"fmt"
@@ -441,6 +442,42 @@ func writeMCPConfig(workDir, mcpURL string) {
 	log.InfoLog.Printf("[MCP] Wrote %s → %s", mcpPath, mcpURL)
 }
 
+// applyPresetSettings merges the preset's default permissions into settings.local.json.
+func applyPresetSettings(workDir string, preset orchestrator.AgentPreset) {
+	settingsPath := filepath.Join(workDir, ".claude", "settings.local.json")
+
+	// Load existing settings
+	existing := make(map[string]interface{})
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		json.Unmarshal(data, &existing)
+	}
+
+	// Parse preset settings
+	var presetData map[string]interface{}
+	if err := json.Unmarshal([]byte(preset.DefaultSettings()), &presetData); err != nil {
+		log.ErrorLog.Printf("failed to parse preset settings for %s: %v", preset, err)
+		return
+	}
+
+	// Merge preset into existing (preset values override)
+	for k, v := range presetData {
+		existing[k] = v
+	}
+
+	if err := os.MkdirAll(filepath.Join(workDir, ".claude"), 0755); err != nil {
+		log.ErrorLog.Printf("failed to create .claude dir: %v", err)
+		return
+	}
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		log.ErrorLog.Printf("failed to marshal settings: %v", err)
+		return
+	}
+	if err := os.WriteFile(settingsPath, append(data, '\n'), 0644); err != nil {
+		log.ErrorLog.Printf("failed to write settings.local.json: %v", err)
+	}
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -546,6 +583,11 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure .claude/settings.local.json exists with local plans directory
 	ensureLocalPlansDir(inst.Path)
+
+	// Apply preset settings (permissions) to settings.local.json
+	if body.AgentPreset != "" {
+		applyPresetSettings(inst.Path, orchestrator.AgentPreset(body.AgentPreset))
+	}
 
 	// Write .mcp.json for orchestrator leader so it can reach the MCP server
 	if body.AgentPreset == "orchestrator" && body.Parent != "" {
