@@ -17,6 +17,7 @@ func main() {
 	groupFlag := flag.String("group", "", "Orchestrator group title (required)")
 	baseURLFlag := flag.String("base-url", "http://localhost:8080", "Web server URL")
 	taskFlag := flag.String("task", "", "Initial task for the orchestrator")
+	mcpPortFlag := flag.Int("mcp-port", 0, "HTTP port for the MCP server")
 	flag.Parse()
 
 	if *groupFlag == "" {
@@ -44,16 +45,16 @@ func main() {
 	fmt.Printf("  API:      %s\n", *baseURLFlag)
 	fmt.Println("  ─────────────────────────────────────────")
 
-	// Start MCP server on Unix socket
-	socketPath := fmt.Sprintf("/tmp/claude-squad-mcp-%s.sock", sanitizeForSocket(*groupFlag))
-	mcpServer := orchestrator.NewMCPServer(*baseURLFlag, *groupFlag)
-	go func() {
-		fmt.Printf("  MCP socket: %s\n", socketPath)
-		if err := mcpServer.RunOnSocket(socketPath); err != nil && ctx.Err() == nil {
-			fmt.Printf("  MCP server error: %v\n", err)
-		}
-	}()
-	defer os.Remove(socketPath)
+	// Start MCP server on HTTP
+	if *mcpPortFlag > 0 {
+		mcpServer := orchestrator.NewMCPServer(*baseURLFlag, *groupFlag)
+		go func() {
+			fmt.Printf("  MCP HTTP: http://localhost:%d\n", *mcpPortFlag)
+			if err := mcpServer.RunHTTP(*mcpPortFlag); err != nil && ctx.Err() == nil {
+				fmt.Printf("  MCP server error: %v\n", err)
+			}
+		}()
+	}
 
 	// Create and configure the loop
 	cfg := orchestrator.DefaultConfig()
@@ -98,10 +99,4 @@ func readCommands(ctx context.Context, loop *orchestrator.Loop) {
 			loop.Restart(task)
 		}
 	}
-}
-
-// sanitizeForSocket creates a safe filename from a group title.
-func sanitizeForSocket(title string) string {
-	r := strings.NewReplacer(" ", "-", "/", "-", "'", "", "\"", "")
-	return r.Replace(title)
 }

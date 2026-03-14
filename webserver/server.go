@@ -40,6 +40,9 @@ type Server struct {
 
 	// port is the port the web server is running on (set during Run)
 	port int
+
+	// nextMCPPort is the next port to assign to an orchestrator MCP server.
+	nextMCPPort int
 }
 
 func NewServer(program string, autoYes bool) (*Server, error) {
@@ -413,16 +416,15 @@ func ensureLocalPlansDir(workDir string) {
 }
 
 // writeMCPConfig writes a .mcp.json in workDir so the Claude CLI connects
-// to the orchestrator's MCP server via a socat stdio-to-Unix-socket bridge.
-func writeMCPConfig(workDir, socketPath string) {
+// to the orchestrator's MCP HTTP server.
+func writeMCPConfig(workDir, mcpURL string) {
 	mcpPath := filepath.Join(workDir, ".mcp.json")
 
 	config := map[string]interface{}{
 		"mcpServers": map[string]interface{}{
 			"orchestrator": map[string]interface{}{
-				"type":    "stdio",
-				"command": "socat",
-				"args":    []string{"STDIO", "UNIX-CONNECT:" + socketPath},
+				"type": "http",
+				"url":  mcpURL,
 			},
 		},
 	}
@@ -436,19 +438,12 @@ func writeMCPConfig(workDir, socketPath string) {
 		log.ErrorLog.Printf("[MCP] failed to write .mcp.json: %v", err)
 		return
 	}
-	log.ErrorLog.Printf("[MCP] Wrote %s → socket %s", mcpPath, socketPath)
+	log.InfoLog.Printf("[MCP] Wrote %s → %s", mcpPath, mcpURL)
 }
 
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-// sanitizeForSocket creates a safe filename from a group title.
-// Must match the logic in cmd/orchestrator/main.go.
-func sanitizeForSocket(title string) string {
-	r := strings.NewReplacer(" ", "-", "/", "-", "'", "", "\"", "")
-	return r.Replace(title)
 }
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
@@ -462,6 +457,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		Parent       string `json:"parent,omitempty"`
 		AgentPreset  string `json:"agent_preset,omitempty"`
 		InstanceType string `json:"instance_type,omitempty"`
+		MCPPort      int    `json:"-"` // internal use, not from request body
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -498,13 +494,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		if binPath := filepath.Join(baseDir, "bin", "claude-squad-orchestrator"); fileExists(binPath) {
 			orchBin = binPath
 		}
+		mcpPort := s.nextMCPPort
+		s.nextMCPPort++
 		escaped := strings.ReplaceAll(body.Title, "'", "'\\''")
-		program = fmt.Sprintf("%s --group '%s' --base-url http://localhost:%d", orchBin, escaped, s.port)
+		program = fmt.Sprintf("%s --group '%s' --base-url http://localhost:%d --mcp-port %d", orchBin, escaped, s.port, mcpPort)
 		if body.Prompt != "" {
 			escapedTask := strings.ReplaceAll(body.Prompt, "'", "'\\''")
 			program += fmt.Sprintf(" --task '%s'", escapedTask)
 		}
-		log.ErrorLog.Printf("[Orchestrator] Creating loop instance %q with binary: %s", body.Title, orchBin)
+		// Store the MCP port so child instances can find it
+		body.MCPPort = mcpPort
+		log.InfoLog.Printf("[Orchestrator] Creating loop instance %q on MCP port %d with binary: %s", body.Title, mcpPort, orchBin)
 	}
 
 	// Ensure the working directory exists
@@ -533,6 +533,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if body.InstanceType != "" {
 		inst.InstanceType = body.InstanceType
 	}
+	if body.MCPPort != 0 {
+		inst.MCPPort = body.MCPPort
+	}
 	if body.Parent != "" {
 		inst.Parent = body.Parent
 		// Add to parent's children list
@@ -546,10 +549,13 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 	// Write .mcp.json for orchestrator leader so it can reach the MCP server
 	if body.AgentPreset == "orchestrator" && body.Parent != "" {
-		socketName := sanitizeForSocket(body.Parent)
-		socketPath := fmt.Sprintf("/tmp/claude-squad-mcp-%s.sock", socketName)
-		log.ErrorLog.Printf("[Orchestrator] Writing MCP config for leader %q → socket %s", body.Title, socketPath)
-		writeMCPConfig(inst.Path, socketPath)
+		if parent := s.findInstance(body.Parent); parent != nil && parent.MCPPort != 0 {
+			mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
+			log.InfoLog.Printf("[Orchestrator] Writing MCP config for leader %q → %s", body.Title, mcpURL)
+			writeMCPConfig(inst.Path, mcpURL)
+		} else {
+			log.WarningLog.Printf("[Orchestrator] Parent %q has no MCP port, skipping .mcp.json for leader %q", body.Parent, body.Title)
+		}
 	}
 
 	if err := inst.Start(true); err != nil {
@@ -1253,6 +1259,7 @@ func Run(program string, autoYes bool, port int) error {
 	}
 
 	srv.port = port
+	srv.nextMCPPort = port + 100 // MCP ports start at webserver port + 100
 	go srv.pollMetadata()
 	go srv.pollOutput()
 

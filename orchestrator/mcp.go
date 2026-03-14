@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 )
 
@@ -125,6 +126,53 @@ var tools = []toolDef{
 // Run starts the MCP server, reading from stdin and writing to stdout.
 func (s *MCPServer) Run() error {
 	return s.serve(os.Stdin, os.Stdout)
+}
+
+// RunHTTP starts the MCP server as an HTTP server on the given port.
+// Claude Code connects to this via "type": "http" in .mcp.json.
+func (s *MCPServer) RunHTTP(port int) error {
+	addr := fmt.Sprintf(":%d", port)
+	s.log("Starting HTTP server on %s", addr)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleHTTP)
+
+	return http.ListenAndServe(addr, mux)
+}
+
+func (s *MCPServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+
+	var req jsonRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
+		return
+	}
+
+	s.log("Request: %s (id=%v)", req.Method, req.ID)
+	resp := s.handleRequest(&req)
+
+	w.Header().Set("Content-Type", "application/json")
+	if resp == nil {
+		// Notifications don't get a response, but HTTP needs something
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if resp.Error != nil {
+		s.log("Response error: %s", resp.Error.Message)
+	}
+
+	json.NewEncoder(w).Encode(resp)
 }
 
 // RunOnSocket starts the MCP server on a Unix domain socket.

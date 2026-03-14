@@ -30,6 +30,7 @@ type InstanceData struct {
 	Children     []string `json:"children,omitempty"`
 	InstanceType string   `json:"instance_type,omitempty"`
 	AgentPreset  string   `json:"agent_preset,omitempty"`
+	MCPPort      int      `json:"mcp_port,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree

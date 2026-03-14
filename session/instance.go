@@ -67,6 +67,8 @@ type Instance struct {
 	InstanceType string
 	// AgentPreset is the agent's permission preset: "coder", "researcher", or "orchestrator".
 	AgentPreset string
+	// MCPPort is the HTTP port for the orchestrator's MCP server (only set on loop instances).
+	MCPPort int
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -99,6 +101,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		Children:     i.Children,
 		InstanceType: i.InstanceType,
 		AgentPreset:  i.AgentPreset,
+		MCPPort:      i.MCPPort,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -142,6 +145,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Children:     data.Children,
 		InstanceType: data.InstanceType,
 		AgentPreset:  data.AgentPreset,
+		MCPPort:      data.MCPPort,
 	}
 
 	// Backward compat: infer GitMode for old instances that have worktree data
