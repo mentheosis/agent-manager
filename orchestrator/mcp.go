@@ -14,9 +14,11 @@ import (
 // MCPServer implements an MCP server that provides orchestration
 // tools to the leader Claude session.
 type MCPServer struct {
-	client     *Client
-	groupTitle string
-	logFunc    func(string)
+	client      *Client
+	groupTitle  string
+	logFunc     func(string)
+	stateFunc   func() string // returns current loop state
+	doneCh      chan string   // signals task completion with summary
 }
 
 // NewMCPServer creates a new MCP server backed by the claude-squad API.
@@ -25,7 +27,19 @@ func NewMCPServer(baseURL, groupTitle string) *MCPServer {
 		client:     NewClient(baseURL),
 		groupTitle: groupTitle,
 		logFunc:    func(s string) { fmt.Println(s) },
+		stateFunc:  func() string { return "idle" },
+		doneCh:     make(chan string, 1),
 	}
+}
+
+// DoneCh returns the channel that receives the summary when the leader signals task completion.
+func (s *MCPServer) DoneCh() <-chan string {
+	return s.doneCh
+}
+
+// SetStateFunc sets the function used to retrieve the loop's current state.
+func (s *MCPServer) SetStateFunc(f func() string) {
+	s.stateFunc = f
 }
 
 // SetLogFunc sets a custom log function.
@@ -122,6 +136,20 @@ var tools = []toolDef{
 			"required": []string{"agent"},
 		},
 	},
+	{
+		Name:        "mark_task_done",
+		Description: "Signal that the overall task is complete. Call this when all sub-agents have finished and you have verified the results. This will pause the orchestration loop.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"summary": map[string]interface{}{
+					"type":        "string",
+					"description": "A summary of what was accomplished",
+				},
+			},
+			"required": []string{"summary"},
+		},
+	},
 }
 
 // Run starts the MCP server, reading from stdin and writing to stdout.
@@ -136,9 +164,17 @@ func (s *MCPServer) RunHTTP(port int) error {
 	s.log("Starting HTTP server on %s", addr)
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/", s.handleHTTP)
 
 	return http.ListenAndServe(addr, mux)
+}
+
+func (s *MCPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"state": s.stateFunc(),
+	})
 }
 
 func (s *MCPServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -312,6 +348,8 @@ func (s *MCPServer) handleToolCall(req *jsonRPCRequest) *jsonRPCResponse {
 		result, toolErr = s.toolReadAgentOutput(params.Arguments)
 	case "get_agent_status":
 		result, toolErr = s.toolGetAgentStatus(params.Arguments)
+	case "mark_task_done":
+		result, toolErr = s.toolMarkTaskDone(params.Arguments)
 	default:
 		return &jsonRPCResponse{
 			JSONRPC: "2.0",
@@ -425,4 +463,22 @@ func (s *MCPServer) toolGetAgentStatus(args json.RawMessage) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s: %s", params.Agent, status), nil
+}
+
+func (s *MCPServer) toolMarkTaskDone(args json.RawMessage) (string, error) {
+	var params struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	s.log("mark_task_done: %s", params.Summary)
+
+	select {
+	case s.doneCh <- params.Summary:
+	default:
+	}
+
+	return "Task marked as done. The orchestration loop will now pause.", nil
 }

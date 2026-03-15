@@ -45,9 +45,18 @@ func main() {
 	fmt.Printf("  API:      %s\n", *baseURLFlag)
 	fmt.Println("  ─────────────────────────────────────────")
 
+	// Create and configure the loop
+	cfg := orchestrator.DefaultConfig()
+	cfg.BaseURL = *baseURLFlag
+	loop := orchestrator.NewLoop(cfg, *groupFlag)
+
 	// Start MCP server on HTTP
 	if *mcpPortFlag > 0 {
 		mcpServer := orchestrator.NewMCPServer(*baseURLFlag, *groupFlag)
+		mcpServer.SetStateFunc(func() string {
+			return loop.State().String()
+		})
+		loop.SetDoneCh(mcpServer.DoneCh())
 		go func() {
 			fmt.Printf("  MCP HTTP: http://localhost:%d\n", *mcpPortFlag)
 			if err := mcpServer.RunHTTP(*mcpPortFlag); err != nil && ctx.Err() == nil {
@@ -55,11 +64,6 @@ func main() {
 			}
 		}()
 	}
-
-	// Create and configure the loop
-	cfg := orchestrator.DefaultConfig()
-	cfg.BaseURL = *baseURLFlag
-	loop := orchestrator.NewLoop(cfg, *groupFlag)
 
 	// Start stdin command reader
 	go readCommands(ctx, loop)

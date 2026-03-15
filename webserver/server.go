@@ -170,18 +170,25 @@ func (s *Server) pollMetadata() {
 		changed := make(map[string]string) // title -> new status
 		for _, inst := range s.instances {
 			if inst.Started() && !inst.Paused() {
-				inst.CheckAndHandleTrustPrompt()
-				updated, prompt := inst.HasUpdated()
-				if updated {
+				// Loop instances: check the orchestrator's /status endpoint for actual state
+				if inst.InstanceType == "loop" && inst.MCPPort > 0 {
+					s.pollLoopStatus(inst)
+				} else if inst.InstanceType == "loop" {
 					inst.SetStatus(session.Running)
 				} else {
-					if prompt {
-						inst.TapEnter()
+					inst.CheckAndHandleTrustPrompt()
+					updated, prompt := inst.HasUpdated()
+					if updated {
+						inst.SetStatus(session.Running)
 					} else {
-						inst.SetStatus(session.Ready)
+						if prompt {
+							inst.TapEnter()
+						} else {
+							inst.SetStatus(session.Ready)
+						}
 					}
+					_ = inst.UpdateDiffStats()
 				}
-				_ = inst.UpdateDiffStats()
 			}
 
 			// Always check for status changes (including paused/loading instances)
@@ -199,6 +206,41 @@ func (s *Server) pollMetadata() {
 		if len(changed) > 0 {
 			s.broadcastStatuses(changed)
 		}
+	}
+}
+
+// loopStatusClient is a shared HTTP client with short timeout for polling loop status.
+var loopStatusClient = &http.Client{Timeout: 500 * time.Millisecond}
+
+// pollLoopStatus checks the orchestrator binary's /status endpoint and maps
+// its state to an instance status.
+func (s *Server) pollLoopStatus(inst *session.Instance) {
+	statusURL := fmt.Sprintf("http://localhost:%d/status", inst.MCPPort)
+	resp, err := loopStatusClient.Get(statusURL)
+	if err != nil {
+		// MCP server not up yet — show as waiting (ready)
+		inst.SetStatus(session.Ready)
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		inst.SetStatus(session.Ready)
+		return
+	}
+
+	switch result.State {
+	case "running":
+		inst.SetStatus(session.Running)
+	case "paused":
+		inst.SetStatus(session.Paused)
+	case "idle", "done":
+		inst.SetStatus(session.Ready)
+	default:
+		inst.SetStatus(session.Ready)
 	}
 }
 

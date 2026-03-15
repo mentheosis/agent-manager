@@ -61,6 +61,8 @@ type Loop struct {
 	pauseCh chan struct{}
 	// restartCh is used to signal a restart from idle/done state.
 	restartCh chan string // carries optional new task prompt
+	// doneCh receives a summary when the leader calls mark_task_done via MCP.
+	doneCh <-chan string
 }
 
 // NewLoop creates a new control loop. groupTitle is the title of the loop instance
@@ -83,6 +85,11 @@ func NewLoop(cfg Config, groupTitle string) *Loop {
 func (l *Loop) SetLogFunc(f func(string)) {
 	l.logFunc = f
 	l.watcher.logFunc = f
+}
+
+// SetDoneCh sets the channel that signals task completion from the MCP server.
+func (l *Loop) SetDoneCh(ch <-chan string) {
+	l.doneCh = ch
 }
 
 // State returns the current loop state.
@@ -165,7 +172,7 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 		if prompt != "" {
 			teamDesc := l.buildTeamDescription()
 			fullPrompt := teamDesc + "\n\n## Task\n\n" + prompt
-			l.log("Sending task to orchestrator: %s", truncate(prompt, 100))
+			l.log("Sending initial task to orchestrator:\n%s", fullPrompt)
 			if err := l.client.SendToInstance(l.leaderTitle, fullPrompt); err != nil {
 				l.log("Error sending to orchestrator: %v", err)
 				return fmt.Errorf("failed to send initial prompt: %w", err)
@@ -208,6 +215,9 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 	var batchTimer *time.Timer
 	var batchCh <-chan time.Time // nil until batch window starts
 
+	// Channel for the heartbeat goroutine to signal all agents are idle
+	allIdleCh := make(chan struct{}, 1)
+
 	// Run heartbeat in a separate goroutine so it prints even when
 	// the main loop is blocked waiting for the leader.
 	go func() {
@@ -219,9 +229,32 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 				return
 			case <-ticker.C:
 				l.printHeartbeat()
+				// Check if all agents are idle
+				if len(l.agentTitles) > 0 {
+					allIdle := true
+					for _, t := range l.agentTitles {
+						s := l.watcher.GetStatus(t)
+						if s != "ready" && s != "" {
+							allIdle = false
+							break
+						}
+					}
+					if allIdle {
+						select {
+						case allIdleCh <- struct{}{}:
+						default:
+						}
+					}
+				}
 			}
 		}
 	}()
+
+	// doneCh from the MCP server (may be nil if no MCP server)
+	var doneCh <-chan string
+	if l.doneCh != nil {
+		doneCh = l.doneCh
+	}
 
 	changes := l.watcher.Changes()
 
@@ -229,6 +262,12 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
+
+		case summary := <-doneCh:
+			// Leader called mark_task_done via MCP
+			l.log("Task completed (via MCP): %s", summary)
+			l.Pause()
+			return true, nil
 
 		case change := <-changes:
 			// Handle pause
@@ -292,6 +331,16 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 			batchTimer = nil
 			batchCh = nil
 			goto dispatch
+
+		case <-allIdleCh:
+			// Heartbeat detected all agents idle — notify the leader
+			idleMsg := "All agents are currently idle (status: ready/waiting). " +
+				"If the task is complete, call the mark_task_done tool with a summary. " +
+				"If more work is needed, use send_to_agent to dispatch the next steps."
+			l.log("All agents idle — notifying orchestrator:\n%s", idleMsg)
+			if err := l.client.SendToInstance(l.leaderTitle, idleMsg); err != nil {
+				l.log("Error sending idle notification: %v", err)
+			}
 		}
 		continue
 
@@ -305,33 +354,12 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		// Collect output from all newly-ready agents
 		update := l.collectResults(readyAgents)
 
-		// Send batched update to orchestrator
+		// Send batched status update to orchestrator — the leader will use
+		// MCP tools (send_to_agent, read_agent_output, mark_task_done) to act on it.
 		promptText := update.FormatForPrompt()
-		l.log("Sending batched update to orchestrator (%d agents)", len(update.Agents))
+		l.log("Sending batched update to orchestrator (%d agents):\n%s", len(update.Agents), promptText)
 		if err := l.client.SendToInstance(l.leaderTitle, promptText); err != nil {
 			l.log("Error sending to orchestrator: %v", err)
-			continue
-		}
-
-		// Wait for orchestrator to finish processing
-		l.log("Waiting for orchestrator to respond...")
-		if err := l.waitForReady(ctx, l.leaderTitle); err != nil {
-			l.log("Error waiting for orchestrator: %v", err)
-			continue
-		}
-
-		// Read orchestrator's response
-		response, err := l.readOrchestratorResponse()
-		if err != nil {
-			l.log("Could not parse structured response: %v", err)
-			l.log("Orchestrator may have responded with natural language — check its session")
-			continue
-		}
-
-		// Dispatch commands
-		done := l.dispatchCommands(response)
-		if done {
-			return true, nil
 		}
 	}
 }
@@ -484,53 +512,6 @@ func (l *Loop) waitForReady(ctx context.Context, title string) error {
 	}
 }
 
-// readOrchestratorResponse reads and parses the orchestrator's latest output.
-func (l *Loop) readOrchestratorResponse() (*OrchestratorResponse, error) {
-	history, err := l.client.GetInstanceHistory(l.leaderTitle)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read orchestrator history: %w", err)
-	}
-
-	// The pane content contains the most recent output
-	text := strings.Join(history.Pane, "\n")
-	if text == "" && len(history.StableLines) > 0 {
-		// Fall back to recent stable lines
-		start := len(history.StableLines) - 100
-		if start < 0 {
-			start = 0
-		}
-		text = strings.Join(history.StableLines[start:], "\n")
-	}
-
-	return ParseOrchestratorResponse(text)
-}
-
-// dispatchCommands executes the orchestrator's commands. Returns true if "done".
-func (l *Loop) dispatchCommands(resp *OrchestratorResponse) bool {
-	for _, cmd := range resp.Commands {
-		switch cmd.Action {
-		case "dispatch":
-			l.log("Dispatching to %s: %s", cmd.Agent, truncate(cmd.Prompt, 80))
-			if err := l.client.SendToInstance(cmd.Agent, cmd.Prompt); err != nil {
-				l.log("Error dispatching to %s: %v", cmd.Agent, err)
-			}
-		case "share_context":
-			l.log("Sharing context from %s to %s", cmd.From, cmd.To)
-			contextMsg := fmt.Sprintf("Context from %s:\n\n%s", cmd.From, cmd.Context)
-			if err := l.client.SendToInstance(cmd.To, contextMsg); err != nil {
-				l.log("Error sharing context to %s: %v", cmd.To, err)
-			}
-		case "done":
-			l.log("Orchestrator signaled DONE: %s", cmd.Summary)
-			return true
-		case "wait":
-			l.log("Orchestrator is waiting for agents to complete")
-		default:
-			l.log("Unknown command action: %s", cmd.Action)
-		}
-	}
-	return false
-}
 
 // truncate truncates a string to maxLen characters, adding "..." if truncated.
 func truncate(s string, maxLen int) string {
