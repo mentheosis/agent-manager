@@ -249,13 +249,15 @@ func (t *TmuxSession) TapEnterViaTmux() error {
 }
 
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
-// the tmux pane has a prompt for aider or claude code.
-func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
+// the tmux pane has a prompt for aider or claude code. The pane content is returned for further parsing.
+func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool, paneContent string) {
 	content, err := t.CapturePaneContent()
 	if err != nil {
 		log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
-		return false, false
+		return false, false, ""
 	}
+
+	paneContent = content
 
 	// Only set hasPrompt for claude and aider. Use these strings to check for a prompt.
 	if t.program == ProgramClaude {
@@ -268,9 +270,9 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 
 	if !bytes.Equal(t.monitor.hash(content), t.monitor.prevOutputHash) {
 		t.monitor.prevOutputHash = t.monitor.hash(content)
-		return true, hasPrompt
+		return true, hasPrompt, paneContent
 	}
-	return false, hasPrompt
+	return false, hasPrompt, paneContent
 }
 
 func (t *TmuxSession) Attach() (chan struct{}, error) {

@@ -386,9 +386,9 @@ func (i *Instance) Preview() (string, error) {
 	return i.tmuxSession.CapturePaneContent()
 }
 
-func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
+func (i *Instance) HasUpdated() (updated bool, hasPrompt bool, paneContent string) {
 	if !i.started {
-		return false, false
+		return false, false, ""
 	}
 	return i.tmuxSession.HasUpdated()
 }

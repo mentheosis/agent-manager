@@ -206,7 +206,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				continue
 			}
 			instance.CheckAndHandleTrustPrompt()
-			updated, prompt := instance.HasUpdated()
+			updated, prompt, _ := instance.HasUpdated()
 			if updated {
 				instance.SetStatus(session.Running)
 			} else {

@@ -91,11 +91,6 @@
   .type-option.active { border-color: var(--accent) !important; background: rgba(122,162,247,0.08); }
 
   /* Loop controls in toolbar */
-  .loop-controls {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-  }
   #instance-list {
     flex: 1;
     overflow-y: auto;
@@ -158,7 +153,8 @@
     display: inline-block;
   }
   .status-dot.running { background: var(--green); animation: pulse-dot 1.5s ease-in-out infinite; }
-  .status-dot.ready { background: var(--yellow); }
+  .status-dot.ready, .status-dot.idle { background: var(--yellow); }
+  .status-dot.waiting { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
   .status-dot.loading { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
   .status-dot.paused { background: var(--text-dim); }
   @keyframes pulse-dot {
@@ -166,8 +162,9 @@
     50% { opacity: 0.4; }
   }
   .status-label { font-weight: 600; }
-  .status-label.ready { color: var(--yellow); }
+  .status-label.ready, .status-label.idle { color: var(--yellow); }
   .status-label.running { color: var(--green); }
+  .status-label.waiting { color: var(--orange); }
   .status-label.loading { color: var(--orange); }
   .status-label.paused { color: var(--text-dim); }
 
@@ -403,6 +400,45 @@
     line-height: 1;
   }
   .team-member-header .member-remove:hover { color: var(--red); }
+  .team-member-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .team-member-prompt {
+    font-size: 11px;
+    color: var(--orange);
+    background: rgba(255, 165, 0, 0.08);
+    border: 1px solid rgba(255, 165, 0, 0.2);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-top: 4px;
+  }
+  .team-member-prompt .prompt-msg {
+    margin-bottom: 4px;
+    white-space: pre-wrap;
+  }
+  .team-member-prompt .prompt-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .team-member-prompt .prompt-action-btn {
+    font-size: 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--orange);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--orange);
+    cursor: pointer;
+  }
+  .team-member-prompt .prompt-action-btn:hover {
+    background: rgba(255, 165, 0, 0.15);
+  }
   .team-member-card input,
   .team-member-card textarea {
     width: 100%;
@@ -1024,13 +1060,6 @@
       <div class="toolbar-divider"></div>
       <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
       <div style="flex:1"></div>
-      <div class="loop-controls" id="loop-controls" style="display:none">
-        <button class="toolbar-btn highlight" id="btn-loop-start">Start Loop</button>
-        <button class="toolbar-btn" id="btn-loop-pause">Pause Loop</button>
-        <button class="toolbar-btn" id="btn-loop-resume">Resume Loop</button>
-        <button class="toolbar-btn danger" id="btn-loop-stop">Stop Loop</button>
-        <div class="toolbar-divider"></div>
-      </div>
       <button class="toolbar-btn" id="btn-pause">Pause</button>
       <button class="toolbar-btn" id="btn-resume">Resume</button>
       <button class="toolbar-btn danger" id="btn-kill">Kill</button>
@@ -1158,6 +1187,7 @@ let cachedInstances = [];
 let activeTab = 'terminal';
 let currentMode = 'agent';
 let instanceStatuses = {};
+let instanceAgentMeta = {}; // enriched metadata from websocket: { title: { status, prompt } }
 
 function updatePausedState() {
   const status = selectedTitle ? (instanceStatuses[selectedTitle] || '') : '';
@@ -1257,9 +1287,31 @@ async function refreshList() {
   }
 }
 
+// Returns a fingerprint of the instance list structure (ignoring status).
+// If this changes, a full DOM rebuild is needed.
+function instanceListFingerprint(instances) {
+  return instances.map(i =>
+    `${i.title}|${i.parent||''}|${i.instance_type||''}|${i.agent_preset||''}|${i.display_title||''}|${i.work_dir||''}|${i.git_mode||false}|${i.diff_added||0}|${i.diff_removed||0}`
+  ).join('\n');
+}
+let lastListFingerprint = '';
+
 function renderList(instances) {
   cachedInstances = instances;
   updateToolbarTitle();
+
+  // If only statuses changed (not the list structure), update in-place
+  const fp = instanceListFingerprint(instances);
+  if (fp === lastListFingerprint) {
+    // Update statuses from fresh REST data
+    instances.forEach(i => {
+      if (!instanceStatuses[i.title]) instanceStatuses[i.title] = i.status;
+    });
+    updateListStatuses();
+    updateTeamPanelStatuses();
+    return;
+  }
+  lastListFingerprint = fp;
 
   // Refresh team panel if viewing a loop instance, but skip if user is typing in it
   const selInst = instances.find(i => i.title === selectedTitle);
@@ -1286,8 +1338,8 @@ function renderList(instances) {
 
   function renderItem(inst, isChild) {
     const status = instanceStatuses[inst.title] || inst.status;
-    const isWaiting = status === 'ready';
-    const statusLabel = isWaiting ? 'waiting' : status;
+    const isWaiting = status === 'ready' || status === 'waiting';
+    const statusLabel = status === 'ready' ? 'idle' : status;
     const isLoop = inst.instance_type === 'loop';
     const hasChildren = childrenOf[inst.title] && childrenOf[inst.title].length > 0;
 
@@ -1384,6 +1436,36 @@ function renderList(instances) {
   });
 }
 
+// Update status dots, labels, and waiting class on existing list items without rebuilding DOM.
+// This preserves CSS animations (like pulse-waiting) that would reset on DOM recreation.
+function updateListStatuses() {
+  const el = document.getElementById('instance-list');
+  if (!el) return;
+  const items = el.querySelectorAll('.instance-item[data-title]');
+  items.forEach(div => {
+    const title = div.dataset.title;
+    const inst = cachedInstances && cachedInstances.find(i => i.title === title);
+    const status = instanceStatuses[title] || (inst && inst.status) || 'unknown';
+    const isWaiting = status === 'ready' || status === 'waiting';
+    const statusLabel = status === 'ready' ? 'idle' : status;
+
+    // Update active and waiting classes (only toggle, don't recreate)
+    div.classList.toggle('active', title === selectedTitle);
+    div.classList.toggle('waiting', isWaiting);
+
+    // Update status dot
+    const dot = div.querySelector('.status-dot');
+    if (dot) dot.className = 'status-dot ' + status;
+
+    // Update status label
+    const label = div.querySelector('.status-label');
+    if (label) {
+      label.className = 'status-label ' + status;
+      label.textContent = statusLabel;
+    }
+  });
+}
+
 function reorderInstances(listEl, fromTitle, toTitle) {
   const items = Array.from(listEl.querySelectorAll('.instance-item'));
   const titles = items.map(el => el.dataset.title);
@@ -1420,27 +1502,11 @@ function selectInstance(title) {
   refreshList();
   updatePausedState();
   updateToolbarTitle();
-  updateLoopControls();
 
   // Load input history for this instance
   loadInputHistory(title);
 
   switchTab(activeTab);
-}
-
-function updateLoopControls() {
-  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
-  const isLoop = inst && inst.instance_type === 'loop';
-  const loopControls = document.getElementById('loop-controls');
-  loopControls.style.display = isLoop ? 'flex' : 'none';
-
-  if (isLoop) {
-    // Show all loop controls — the orchestrator binary handles idempotency
-    document.getElementById('btn-loop-start').style.display = 'inline-block';
-    document.getElementById('btn-loop-pause').style.display = 'inline-block';
-    document.getElementById('btn-loop-resume').style.display = 'inline-block';
-    document.getElementById('btn-loop-stop').style.display = 'inline-block';
-  }
 }
 
 async function loadInputHistory(title) {
@@ -2072,9 +2138,21 @@ function formatDiff(text) {
 }
 
 // --- Actions ---
+function isLoopInstance() {
+  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+  return inst && inst.instance_type === 'loop';
+}
+
 async function actionPause() {
   if (!selectedTitle) return;
   try {
+    // For loop instances, also send __PAUSE__ to the orchestrator binary
+    if (isLoopInstance()) {
+      await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ text: '__PAUSE__' }),
+      });
+    }
     await api(`/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
     instanceStatuses[selectedTitle] = 'paused';
     convLog.disconnect();
@@ -2091,6 +2169,13 @@ async function actionResume() {
     refreshList();
     updatePausedState();
     convLog.connect(selectedTitle);
+    // For loop instances, also send __RESUME__ to the orchestrator binary
+    if (isLoopInstance()) {
+      await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ text: '__RESUME__' }),
+      });
+    }
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -2113,49 +2198,6 @@ document.getElementById('btn-resume').addEventListener('click', actionResume);
 document.getElementById('btn-kill').addEventListener('click', actionKill);
 document.getElementById('btn-esc').addEventListener('click', () => sendKeys('\x1b'));
 
-// Loop control handlers — send stdin commands to the orchestrator binary via tmux
-document.getElementById('btn-loop-start').addEventListener('click', async () => {
-  if (!selectedTitle) return;
-  const task = prompt('Task description for the orchestrator (optional):');
-  if (task === null) return; // cancelled
-  try {
-    const taskJSON = JSON.stringify(task || '');
-    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
-      method: 'POST',
-      body: JSON.stringify({ text: `__TASK__ ${taskJSON}` }),
-    });
-  } catch (e) { alert('Error starting loop: ' + e.message); }
-});
-document.getElementById('btn-loop-pause').addEventListener('click', async () => {
-  if (!selectedTitle) return;
-  try {
-    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
-      method: 'POST',
-      body: JSON.stringify({ text: '__PAUSE__' }),
-    });
-  } catch (e) { alert('Error: ' + e.message); }
-});
-document.getElementById('btn-loop-resume').addEventListener('click', async () => {
-  if (!selectedTitle) return;
-  try {
-    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
-      method: 'POST',
-      body: JSON.stringify({ text: '__RESUME__' }),
-    });
-  } catch (e) { alert('Error: ' + e.message); }
-});
-document.getElementById('btn-loop-stop').addEventListener('click', async () => {
-  if (!selectedTitle) return;
-  if (!confirm('Stop the orchestrator loop? This will kill the process.')) return;
-  try {
-    await api(`/${encodeURIComponent(selectedTitle)}/kill`, { method: 'POST' });
-    convLog.disconnect();
-    selectedTitle = null;
-    document.getElementById('empty-state').style.display = 'flex';
-    document.getElementById('active-view').classList.remove('visible');
-    refreshList();
-  } catch (e) { alert('Error: ' + e.message); }
-});
 document.getElementById('btn-send').addEventListener('click', () => inputHistory.send());
 document.getElementById('btn-hist-prev').addEventListener('click', () => inputHistory.prev());
 document.getElementById('btn-hist-next').addEventListener('click', () => inputHistory.next());
@@ -2183,21 +2225,129 @@ function loadTeamPanel() {
   children.forEach(child => {
     const card = document.createElement('div');
     card.className = 'team-member-card' + (child.agent_preset === 'orchestrator' ? ' is-leader' : '');
+    card.dataset.childTitle = child.title;
     const preset = child.agent_preset || 'coder';
     const badge = child.agent_preset === 'orchestrator' ? 'Leader' : preset;
+    const meta = instanceAgentMeta[child.title];
+    const status = (meta && meta.status) || instanceStatuses[child.title] || child.status || 'unknown';
+
     card.innerHTML = `
       <div class="team-member-header">
         <span class="member-name">${esc(child.title)}</span>
         <span class="member-badge">${badge}</span>
       </div>
+      <div class="team-member-status">
+        <span class="status-dot ${status}"></span>
+        <span>${status}</span>
+      </div>
       <label>Path: ${esc(child.path || '.')}</label>
     `;
+
+    // Show prompt info if agent is waiting
+    if (meta && meta.prompt && meta.prompt.actions && meta.prompt.actions.length > 0) {
+      const promptEl = document.createElement('div');
+      promptEl.className = 'team-member-prompt';
+      if (meta.prompt.message) {
+        const msgEl = document.createElement('div');
+        msgEl.className = 'prompt-msg';
+        msgEl.textContent = meta.prompt.message;
+        promptEl.appendChild(msgEl);
+      }
+      const actionsEl = document.createElement('div');
+      actionsEl.className = 'prompt-actions';
+      meta.prompt.actions.forEach(action => {
+        const btn = document.createElement('button');
+        btn.className = 'prompt-action-btn';
+        btn.textContent = action.label;
+        btn.title = `Send key: ${action.key}`;
+        btn.addEventListener('click', async () => {
+          try {
+            await api(`/${encodeURIComponent(child.title)}/keys`, {
+              method: 'POST',
+              body: JSON.stringify({ keys: action.key }),
+            });
+          } catch (e) { alert('Error: ' + e.message); }
+        });
+        actionsEl.appendChild(btn);
+      });
+      promptEl.appendChild(actionsEl);
+      card.appendChild(promptEl);
+    }
+
     membersEl.appendChild(card);
   });
 
   // Show pending (not yet created) agents
   teamAgents.forEach((agent, idx) => {
     membersEl.appendChild(renderAgentCard(agent, idx));
+  });
+}
+
+// Update team panel child cards in-place from websocket data (no full rebuild)
+function updateTeamPanelStatuses() {
+  const teamPanel = document.getElementById('team-panel');
+  if (!teamPanel || !teamPanel.classList.contains('visible')) return;
+
+  const membersEl = document.getElementById('team-members');
+  if (!membersEl) return;
+
+  const cards = membersEl.querySelectorAll('.team-member-card[data-child-title]');
+  cards.forEach(card => {
+    const title = card.dataset.childTitle;
+    const meta = instanceAgentMeta[title];
+    const status = (meta && meta.status) || instanceStatuses[title] || 'unknown';
+
+    // Update status dot and label
+    const statusRow = card.querySelector('.team-member-status');
+    if (statusRow) {
+      const dot = statusRow.querySelector('.status-dot');
+      const label = statusRow.querySelector('span:last-child');
+      if (dot) dot.className = 'status-dot ' + status;
+      if (label) label.textContent = status;
+    }
+
+    // Update or add/remove prompt section
+    const existingPrompt = card.querySelector('.team-member-prompt');
+    const hasPrompt = meta && meta.prompt && meta.prompt.actions && meta.prompt.actions.length > 0;
+
+    if (!hasPrompt) {
+      if (existingPrompt) existingPrompt.remove();
+      return;
+    }
+
+    // Build new prompt element
+    const promptEl = document.createElement('div');
+    promptEl.className = 'team-member-prompt';
+    if (meta.prompt.message) {
+      const msgEl = document.createElement('div');
+      msgEl.className = 'prompt-msg';
+      msgEl.textContent = meta.prompt.message;
+      promptEl.appendChild(msgEl);
+    }
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'prompt-actions';
+    meta.prompt.actions.forEach(action => {
+      const btn = document.createElement('button');
+      btn.className = 'prompt-action-btn';
+      btn.textContent = action.label;
+      btn.title = `Send key: ${action.key}`;
+      btn.addEventListener('click', async () => {
+        try {
+          await api(`/${encodeURIComponent(title)}/keys`, {
+            method: 'POST',
+            body: JSON.stringify({ keys: action.key }),
+          });
+        } catch (e) { alert('Error: ' + e.message); }
+      });
+      actionsEl.appendChild(btn);
+    });
+    promptEl.appendChild(actionsEl);
+
+    if (existingPrompt) {
+      card.replaceChild(promptEl, existingPrompt);
+    } else {
+      card.appendChild(promptEl);
+    }
   });
 }
 
@@ -2684,7 +2834,7 @@ function renderSquadSessionCard(s) {
   const card = document.createElement('div');
   card.className = 'session-card' + (s.active ? ' active-session' : '');
 
-  const statusLabel = s.status === 'ready' ? 'waiting' : s.status;
+  const statusLabel = s.status === 'ready' ? 'idle' : s.status;
   const created = formatRelativeTime(s.created_at);
   const updated = formatRelativeTime(s.updated_at);
   const shortPath = (s.path || '').replace(/^\/Users\/[^/]+/, '~');
@@ -2806,9 +2956,16 @@ function connectStatusWS() {
           changed = true;
         }
       }
+      // Store enriched agent metadata if present
+      if (msg.agents) {
+        for (const [title, meta] of Object.entries(msg.agents)) {
+          instanceAgentMeta[title] = meta;
+        }
+      }
       if (changed) {
-        refreshList();
+        updateListStatuses();
         updatePausedState();
+        updateTeamPanelStatuses();
       }
     }
   };
@@ -2816,6 +2973,7 @@ function connectStatusWS() {
     statusWsConnected = false;
     // Clear cached statuses so stale data doesn't override REST responses
     instanceStatuses = {};
+    instanceAgentMeta = {};
     setTimeout(connectStatusWS, 3000);
   };
   statusWs.onerror = () => {

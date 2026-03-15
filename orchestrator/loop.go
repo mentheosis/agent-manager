@@ -217,6 +217,9 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 
 	// Channel for the heartbeat goroutine to signal all agents are idle
 	allIdleCh := make(chan struct{}, 1)
+	// stopHeartbeat is closed when runLoop returns, so the heartbeat goroutine exits.
+	stopHeartbeat := make(chan struct{})
+	defer close(stopHeartbeat)
 
 	// Run heartbeat in a separate goroutine so it prints even when
 	// the main loop is blocked waiting for the leader.
@@ -227,16 +230,26 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 			select {
 			case <-ctx.Done():
 				return
+			case <-stopHeartbeat:
+				return
 			case <-ticker.C:
 				l.printHeartbeat()
-				// Check if all agents are idle
+				// Check if all agents AND the leader are idle
 				if len(l.agentTitles) > 0 {
 					allIdle := true
+					// Check sub-agents
 					for _, t := range l.agentTitles {
 						s := l.watcher.GetStatus(t)
 						if s != "ready" && s != "" {
 							allIdle = false
 							break
+						}
+					}
+					// Check leader too
+					if allIdle && l.leaderTitle != "" {
+						ls := l.watcher.GetStatus(l.leaderTitle)
+						if ls != "ready" && ls != "" {
+							allIdle = false
 						}
 					}
 					if allIdle {
@@ -351,8 +364,16 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		}
 		pendingReady = make(map[string]bool)
 
-		// Collect output from all newly-ready agents
+		// Collect output and prompt info from all newly-ready agents
 		update := l.collectResults(readyAgents)
+
+		// Append prompt info for agents that have interactive prompts
+		for i, agent := range update.Agents {
+			meta := l.watcher.GetAgentMeta(agent.Name)
+			if meta != nil && meta.Prompt != nil && len(meta.Prompt.Actions) > 0 {
+				update.Agents[i].Prompt = meta.Prompt
+			}
+		}
 
 		// Send batched status update to orchestrator — the leader will use
 		// MCP tools (send_to_agent, read_agent_output, mark_task_done) to act on it.
@@ -440,22 +461,26 @@ func (l *Loop) printHeartbeat() {
 	if len(l.agentTitles) == 0 {
 		return
 	}
-	statuses := l.watcher.GetAll()
+	allMeta := l.watcher.GetAllAgentMeta()
 	parts := make([]string, 0, len(l.agentTitles)+2)
 	parts = append(parts, fmt.Sprintf("[%s]", time.Now().Format("15:04:05")))
 	for _, title := range l.agentTitles {
-		s := statuses[title]
-		if s == "" {
-			s = "unknown"
+		meta := allMeta[title]
+		if meta == nil {
+			parts = append(parts, fmt.Sprintf("%s:unknown", title))
+		} else if meta.Prompt != nil && len(meta.Prompt.Actions) > 0 {
+			parts = append(parts, fmt.Sprintf("%s:%s(prompt)", title, meta.Status))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:%s", title, meta.Status))
 		}
-		parts = append(parts, fmt.Sprintf("%s:%s", title, s))
 	}
 	if l.leaderTitle != "" {
-		s := statuses[l.leaderTitle]
-		if s == "" {
-			s = "unknown"
+		meta := allMeta[l.leaderTitle]
+		if meta == nil {
+			parts = append(parts, fmt.Sprintf("%s:unknown", l.leaderTitle))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:%s", l.leaderTitle, meta.Status))
 		}
-		parts = append(parts, fmt.Sprintf("%s:%s", l.leaderTitle, s))
 	}
 	fmt.Println(strings.Join(parts, "  "))
 }

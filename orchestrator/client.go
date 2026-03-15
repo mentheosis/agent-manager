@@ -110,6 +110,30 @@ func (c *Client) SendToInstance(title, text string) error {
 	return nil
 }
 
+// SendKeysToInstance sends raw keystrokes to an instance's tmux pane.
+func (c *Client) SendKeysToInstance(title, keys string) error {
+	body, err := json.Marshal(map[string]string{"keys": keys})
+	if err != nil {
+		return fmt.Errorf("failed to marshal keys body: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.baseURL+"/api/instances/"+title+"/keys",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to send keys to instance %s: %w", title, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("send keys to %s returned %d: %s", title, resp.StatusCode, respBody)
+	}
+	return nil
+}
+
 // GetInstanceHistory returns the conversation history for an instance.
 func (c *Client) GetInstanceHistory(title string) (*HistoryResponse, error) {
 	resp, err := c.httpClient.Get(c.baseURL + "/api/instances/" + title + "/history")

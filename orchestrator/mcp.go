@@ -137,6 +137,24 @@ var tools = []toolDef{
 		},
 	},
 	{
+		Name:        "respond_to_prompt",
+		Description: "Respond to an interactive prompt on a sub-agent (e.g. permission requests, tool approval). Send the keystroke that corresponds to the desired action.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"agent": map[string]interface{}{
+					"type":        "string",
+					"description": "The agent name (title) that has the prompt",
+				},
+				"key": map[string]interface{}{
+					"type":        "string",
+					"description": "The keystroke to send (e.g. '1', '2', or an escape sequence like '\\x1b')",
+				},
+			},
+			"required": []string{"agent", "key"},
+		},
+	},
+	{
 		Name:        "mark_task_done",
 		Description: "Signal that the overall task is complete. Call this when all sub-agents have finished and you have verified the results. This will pause the orchestration loop.",
 		InputSchema: map[string]interface{}{
@@ -348,6 +366,8 @@ func (s *MCPServer) handleToolCall(req *jsonRPCRequest) *jsonRPCResponse {
 		result, toolErr = s.toolReadAgentOutput(params.Arguments)
 	case "get_agent_status":
 		result, toolErr = s.toolGetAgentStatus(params.Arguments)
+	case "respond_to_prompt":
+		result, toolErr = s.toolRespondToPrompt(params.Arguments)
 	case "mark_task_done":
 		result, toolErr = s.toolMarkTaskDone(params.Arguments)
 	default:
@@ -463,6 +483,23 @@ func (s *MCPServer) toolGetAgentStatus(args json.RawMessage) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s: %s", params.Agent, status), nil
+}
+
+func (s *MCPServer) toolRespondToPrompt(args json.RawMessage) (string, error) {
+	var params struct {
+		Agent string `json:"agent"`
+		Key   string `json:"key"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	s.log("respond_to_prompt(%s, key=%q)", params.Agent, params.Key)
+
+	if err := s.client.SendKeysToInstance(params.Agent, params.Key); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Sent keystroke %q to %s", params.Key, params.Agent), nil
 }
 
 func (s *MCPServer) toolMarkTaskDone(args json.RawMessage) (string, error) {

@@ -37,8 +37,8 @@ type Server struct {
 
 	// Status broadcast: pollMetadata writes, status WS clients read
 	statusMu      sync.Mutex
-	lastStatuses  map[string]string        // title -> last known status string
-	statusClients map[*websocket.Conn]bool // connected status WS clients
+	lastAgentMeta map[string]*AgentMeta     // title -> last broadcast metadata
+	statusClients map[*websocket.Conn]bool  // connected status WS clients
 
 	// port is the port the web server is running on (set during Run)
 	port int
@@ -71,7 +71,7 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 		program:         program,
 		autoYes:         autoYes,
 		lastHistorySize: make(map[string]int),
-		lastStatuses:    make(map[string]string),
+		lastAgentMeta:   make(map[string]*AgentMeta),
 		statusClients:   make(map[*websocket.Conn]bool),
 	}, nil
 }
@@ -167,36 +167,68 @@ func (s *Server) pollMetadata() {
 	defer ticker.Stop()
 	for range ticker.C {
 		s.mu.Lock()
-		changed := make(map[string]string) // title -> new status
+		changed := make(map[string]*AgentMeta) // title -> new metadata
+
 		for _, inst := range s.instances {
+			var meta *AgentMeta
+
 			if inst.Started() && !inst.Paused() {
 				// Loop instances: check the orchestrator's /status endpoint for actual state
 				if inst.InstanceType == "loop" && inst.MCPPort > 0 {
 					s.pollLoopStatus(inst)
+					meta = &AgentMeta{Status: statusString(inst.Status)}
 				} else if inst.InstanceType == "loop" {
 					inst.SetStatus(session.Running)
+					meta = &AgentMeta{Status: "running"}
 				} else {
 					inst.CheckAndHandleTrustPrompt()
-					updated, prompt := inst.HasUpdated()
+					updated, prompt, paneContent := inst.HasUpdated()
+
+					// Parse pane for interactive prompts
+					var panePrompt *PanePrompt
+					if paneContent != "" {
+						panePrompt = parsePaneActions(paneContent)
+					}
+
+					var statusStr string
 					if updated {
 						inst.SetStatus(session.Running)
-					} else {
-						if prompt {
-							inst.TapEnter()
-						} else {
+						statusStr = "running"
+					} else if prompt {
+						// Known interactive prompt (Claude permission dialog, etc.)
+						// For loop children, don't auto-dismiss — let the loop handle it
+						if inst.Parent != "" {
 							inst.SetStatus(session.Ready)
+							statusStr = "waiting"
+						} else {
+							inst.TapEnter()
+							statusStr = statusString(inst.Status)
 						}
+					} else if panePrompt != nil {
+						// Pane parser detected interactive options — agent is waiting for input
+						inst.SetStatus(session.Ready)
+						statusStr = "waiting"
+					} else {
+						inst.SetStatus(session.Ready)
+						statusStr = "ready"
 					}
 					_ = inst.UpdateDiffStats()
+
+					meta = &AgentMeta{
+						Status: statusStr,
+						Prompt: panePrompt,
+					}
 				}
+			} else {
+				meta = &AgentMeta{Status: statusString(inst.Status)}
 			}
 
-			// Always check for status changes (including paused/loading instances)
-			status := statusString(inst.Status)
+			// Check if metadata changed
 			s.statusMu.Lock()
-			if s.lastStatuses[inst.Title] != status {
-				s.lastStatuses[inst.Title] = status
-				changed[inst.Title] = status
+			prev := s.lastAgentMeta[inst.Title]
+			if prev == nil || !agentMetaEqual(prev, meta) {
+				s.lastAgentMeta[inst.Title] = meta
+				changed[inst.Title] = meta
 			}
 			s.statusMu.Unlock()
 		}
@@ -204,9 +236,33 @@ func (s *Server) pollMetadata() {
 
 		// Broadcast any changes
 		if len(changed) > 0 {
-			s.broadcastStatuses(changed)
+			s.broadcastAgentMeta(changed)
 		}
 	}
+}
+
+// agentMetaEqual compares two AgentMeta for equality.
+func agentMetaEqual(a, b *AgentMeta) bool {
+	if a.Status != b.Status {
+		return false
+	}
+	if (a.Prompt == nil) != (b.Prompt == nil) {
+		return false
+	}
+	if a.Prompt != nil && b.Prompt != nil {
+		if a.Prompt.Message != b.Prompt.Message {
+			return false
+		}
+		if len(a.Prompt.Actions) != len(b.Prompt.Actions) {
+			return false
+		}
+		for i := range a.Prompt.Actions {
+			if a.Prompt.Actions[i] != b.Prompt.Actions[i] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // loopStatusClient is a shared HTTP client with short timeout for polling loop status.
@@ -244,11 +300,19 @@ func (s *Server) pollLoopStatus(inst *session.Instance) {
 	}
 }
 
-// broadcastStatuses sends status updates to all connected status WS clients.
-func (s *Server) broadcastStatuses(changed map[string]string) {
+// broadcastAgentMeta sends enriched status updates to all connected status WS clients.
+// Includes both the new "agents" format and backwards-compatible "statuses" map.
+func (s *Server) broadcastAgentMeta(changed map[string]*AgentMeta) {
+	// Build backwards-compatible statuses map
+	statuses := make(map[string]string, len(changed))
+	for title, meta := range changed {
+		statuses[title] = meta.Status
+	}
+
 	msg := map[string]interface{}{
 		"type":     "status_update",
-		"statuses": changed,
+		"statuses": statuses,
+		"agents":   changed,
 	}
 
 	s.statusMu.Lock()
@@ -270,21 +334,25 @@ func (s *Server) handleStatusWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collect current statuses, register client, and send initial state all
+	// Collect current state, register client, and send initial state
 	// under statusMu to prevent concurrent writes and missed updates.
 	s.mu.RLock()
-	current := make(map[string]string)
+	currentStatuses := make(map[string]string)
+	currentAgents := make(map[string]*AgentMeta)
 	for _, inst := range s.instances {
-		current[inst.Title] = statusString(inst.Status)
+		status := statusString(inst.Status)
+		currentStatuses[inst.Title] = status
+		currentAgents[inst.Title] = &AgentMeta{Status: status}
 	}
 	s.mu.RUnlock()
 
 	s.statusMu.Lock()
 	s.statusClients[conn] = true
-	if len(current) > 0 {
+	if len(currentStatuses) > 0 {
 		if err := conn.WriteJSON(map[string]interface{}{
 			"type":     "status_update",
-			"statuses": current,
+			"statuses": currentStatuses,
+			"agents":   currentAgents,
 		}); err != nil {
 			delete(s.statusClients, conn)
 			s.statusMu.Unlock()
@@ -457,6 +525,24 @@ func ensureLocalPlansDir(workDir string) {
 	if err := os.WriteFile(settingsPath, append(data, '\n'), 0644); err != nil {
 		log.ErrorLog.Printf("failed to write settings.local.json: %v", err)
 	}
+}
+
+// waitForMCPServer polls the MCP URL until it responds or the timeout expires.
+// This ensures the MCP HTTP server is accepting connections before the leader
+// Claude session starts, so Claude's MCP initialization handshake succeeds.
+func waitForMCPServer(mcpURL string, timeout time.Duration) {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(mcpURL + "/status")
+		if err == nil {
+			resp.Body.Close()
+			log.InfoLog.Printf("[MCP] Server at %s is reachable", mcpURL)
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	log.WarningLog.Printf("[MCP] Timed out waiting for server at %s after %v", mcpURL, timeout)
 }
 
 // writeMCPConfig writes a .mcp.json in workDir so the Claude CLI connects
@@ -632,12 +718,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		applyPresetSettings(inst.Path, orchestrator.AgentPreset(body.AgentPreset))
 	}
 
-	// Write .mcp.json for orchestrator leader so it can reach the MCP server
+	// Write .mcp.json for orchestrator leader BEFORE Start() so Claude sees it at init.
+	// Also wait for the MCP HTTP server to be reachable so Claude can connect.
 	if body.AgentPreset == "orchestrator" && body.Parent != "" {
 		if parent := s.findInstance(body.Parent); parent != nil && parent.MCPPort != 0 {
 			mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
 			log.InfoLog.Printf("[Orchestrator] Writing MCP config for leader %q → %s", body.Title, mcpURL)
 			writeMCPConfig(inst.Path, mcpURL)
+
+			// Wait for MCP server to be reachable before starting the leader,
+			// so Claude's MCP init handshake doesn't fail.
+			waitForMCPServer(mcpURL, 10*time.Second)
 		} else {
 			log.WarningLog.Printf("[Orchestrator] Parent %q has no MCP port, skipping .mcp.json for leader %q", body.Parent, body.Title)
 		}
@@ -646,6 +737,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	if err := inst.Start(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// For git worktree mode, also write .mcp.json into the worktree directory
+	if body.AgentPreset == "orchestrator" && body.Parent != "" {
+		if wt := inst.GetWorktreePath(); wt != "" {
+			if parent := s.findInstance(body.Parent); parent != nil && parent.MCPPort != 0 {
+				mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
+				log.InfoLog.Printf("[Orchestrator] Writing MCP config to worktree for leader %q → %s", body.Title, mcpURL)
+				writeMCPConfig(wt, mcpURL)
+			}
+		}
 	}
 
 	if body.Prompt != "" {
@@ -792,7 +894,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				delete(s.convLogs, childTitle)
 				delete(s.lastHistorySize, childTitle)
 				s.statusMu.Lock()
-				delete(s.lastStatuses, childTitle)
+				delete(s.lastAgentMeta, childTitle)
 				s.statusMu.Unlock()
 				_ = s.storage.DeleteInstance(childTitle)
 			}
@@ -811,7 +913,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		delete(s.convLogs, title)
 		delete(s.lastHistorySize, title)
 		s.statusMu.Lock()
-		delete(s.lastStatuses, title)
+		delete(s.lastAgentMeta, title)
 		s.statusMu.Unlock()
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
@@ -1333,7 +1435,7 @@ func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
 	delete(s.convLogs, title)
 	delete(s.lastHistorySize, title)
 	s.statusMu.Lock()
-	delete(s.lastStatuses, title)
+	delete(s.lastAgentMeta, title)
 	s.statusMu.Unlock()
 
 	// Delete from persistent storage
