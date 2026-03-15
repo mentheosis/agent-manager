@@ -63,6 +63,8 @@ type Loop struct {
 	restartCh chan string // carries optional new task prompt
 	// doneCh receives a summary when the leader calls mark_task_done via MCP.
 	doneCh <-chan string
+	// taskCh receives tasks from the MCP HTTP /task endpoint.
+	taskCh <-chan string
 }
 
 // NewLoop creates a new control loop. groupTitle is the title of the loop instance
@@ -90,6 +92,11 @@ func (l *Loop) SetLogFunc(f func(string)) {
 // SetDoneCh sets the channel that signals task completion from the MCP server.
 func (l *Loop) SetDoneCh(ch <-chan string) {
 	l.doneCh = ch
+}
+
+// SetTaskCh sets an additional channel for receiving tasks (from the MCP HTTP /task endpoint).
+func (l *Loop) SetTaskCh(ch <-chan string) {
+	l.taskCh = ch
 }
 
 // State returns the current loop state.
@@ -148,15 +155,17 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 
 	prompt := initialPrompt
 
-	// If no initial task, wait for one via restartCh (sent by __TASK__ stdin command)
+	// If no initial task, wait for one via restartCh or taskCh
 	if prompt == "" {
 		l.setState(LoopStateIdle)
-		l.log("Waiting for task... Send one via the web UI input box.")
+		l.log("Waiting for task... Send one via the web UI.")
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case prompt = <-l.restartCh:
-			l.log("Task received")
+			l.log("Task received (stdin)")
+		case prompt = <-l.taskCh:
+			l.log("Task received (HTTP)")
 		}
 	}
 
@@ -196,7 +205,11 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 				l.log("Context cancelled, shutting down")
 				return ctx.Err()
 			case newPrompt := <-l.restartCh:
-				l.log("Restart requested")
+				l.log("Restart requested (stdin)")
+				prompt = newPrompt
+				continue
+			case newPrompt := <-l.taskCh:
+				l.log("Restart requested (HTTP)")
 				prompt = newPrompt
 				continue
 			}

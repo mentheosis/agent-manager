@@ -92,6 +92,7 @@ type instanceJSON struct {
 	Children     []string `json:"children,omitempty"`
 	InstanceType string   `json:"instance_type,omitempty"`
 	AgentPreset  string   `json:"agent_preset,omitempty"`
+	MCPPort      int      `json:"mcp_port,omitempty"`
 }
 
 func statusString(s session.Status) string {
@@ -133,6 +134,7 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 	j.Children = inst.Children
 	j.InstanceType = inst.InstanceType
 	j.AgentPreset = inst.AgentPreset
+	j.MCPPort = inst.MCPPort
 	return j
 }
 
@@ -204,10 +206,6 @@ func (s *Server) pollMetadata() {
 							inst.TapEnter()
 							statusStr = statusString(inst.Status)
 						}
-					} else if panePrompt != nil {
-						// Pane parser detected interactive options — agent is waiting for input
-						inst.SetStatus(session.Ready)
-						statusStr = "waiting"
 					} else {
 						inst.SetStatus(session.Ready)
 						statusStr = "ready"
@@ -792,6 +790,32 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	title, _ := url.PathUnescape(encodedTitle)
 	if title == "" {
 		http.Error(w, "missing instance title", http.StatusBadRequest)
+		return
+	}
+
+	// For task action, proxy to the loop's MCP server (avoids tmux/pty issues with long text).
+	if action == "task" {
+		s.mu.RLock()
+		inst := s.findInstance(title)
+		s.mu.RUnlock()
+		if inst == nil {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+		if inst.MCPPort == 0 {
+			http.Error(w, "instance has no MCP server", http.StatusBadRequest)
+			return
+		}
+		mcpURL := fmt.Sprintf("http://localhost:%d/task", inst.MCPPort)
+		resp, err := http.Post(mcpURL, "application/json", r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
 		return
 	}
 

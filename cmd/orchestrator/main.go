@@ -57,6 +57,9 @@ func main() {
 			return loop.State().String()
 		})
 		loop.SetDoneCh(mcpServer.DoneCh())
+		loop.SetTaskCh(mcpServer.TaskCh())
+		mcpServer.SetPauseFunc(loop.Pause)
+		mcpServer.SetResumeFunc(loop.Resume)
 		go func() {
 			fmt.Printf("  MCP HTTP: http://localhost:%d\n", *mcpPortFlag)
 			if err := mcpServer.RunHTTP(*mcpPortFlag); err != nil && ctx.Err() == nil {

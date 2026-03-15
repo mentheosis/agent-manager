@@ -309,8 +309,8 @@
   /* Team configuration panel */
   #team-panel {
     display: none;
-    width: 360px;
-    min-width: 360px;
+    width: 420px;
+    min-width: 420px;
     border-left: 1px solid var(--border);
     background: var(--bg-surface);
     flex-direction: column;
@@ -322,6 +322,7 @@
   .team-panel-header {
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
   }
   .team-panel-header h3 {
     font-size: 13px;
@@ -341,9 +342,12 @@
     color: var(--text-dim);
     font-weight: 600;
     margin-top: 4px;
+    flex-shrink: 0;
   }
   #team-task {
     width: 100%;
+    min-height: 80px;
+    max-height: 200px;
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
@@ -354,8 +358,12 @@
     line-height: 1.4;
     resize: vertical;
     outline: none;
+    flex-shrink: 0;
   }
   #team-task:focus { border-color: var(--accent); }
+  #team-members {
+    flex-shrink: 0;
+  }
 
   /* Agent cards in the team panel */
   .team-member-card {
@@ -525,6 +533,7 @@
     font-size: 12px;
     font-weight: 600;
     border: 1px solid var(--border);
+    flex-shrink: 0;
   }
   .team-btn-secondary {
     background: var(--bg);
@@ -1168,6 +1177,20 @@
       <input id="modal-branch" type="text" placeholder="e.g. feature/my-task">
       <p style="font-size:10px;color:var(--text-dim);margin-top:6px">Agent will work in an isolated worktree branched from this repo. The working directory above is used as the repo if no separate repo path is given.</p>
     </div>
+    <div id="orch-config-section" style="display:none;margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Team config (YAML or JSON, optional)</label>
+      <textarea id="modal-orch-config" rows="8" style="font-family:monospace;font-size:12px" placeholder="task: |
+  Describe the task for the team...
+
+agents:
+  - name: agent-1
+    path: /abs/path/to/repo
+    preset: coder
+  - name: agent-2
+    path: /other/repo
+    preset: researcher"></textarea>
+      <p style="font-size:10px;color:var(--text-dim);margin-top:4px">Pre-populate the team. Each agent: name, path, preset (coder/researcher), git_mode (bool), prompt (string). Accepts YAML or JSON.</p>
+    </div>
     <textarea id="modal-prompt" placeholder="Initial prompt (optional)"></textarea>
     <div id="modal-actions">
       <button id="modal-cancel">Cancel</button>
@@ -1181,6 +1204,7 @@ import { ConvLogView } from '/static/js/convlog.js';
 import { InputHistory } from '/static/js/input-history.js';
 import { api, apiFetch } from '/static/js/api.js';
 import { esc, safeAnsiToHtml } from '/static/js/ansi.js';
+import { parseYAML } from '/static/js/yaml.js';
 
 let selectedTitle = null;
 let cachedInstances = [];
@@ -2445,11 +2469,10 @@ document.getElementById('btn-start-orchestration').addEventListener('click', asy
     teamAgents = [];
     teamAgentCounter = 0;
 
-    // Send the task to the loop
-    const taskJSON = JSON.stringify(task);
-    await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+    // Send the task to the loop via its MCP server (proxied through web server)
+    await api(`/${encodeURIComponent(selectedTitle)}/task`, {
       method: 'POST',
-      body: JSON.stringify({ text: `__TASK__ ${taskJSON}` }),
+      body: JSON.stringify({ task }),
     });
 
     btn.textContent = 'Orchestration Started';
@@ -2479,7 +2502,9 @@ function showNewModal(mode, parent) {
   document.getElementById('modal-repo').value = '';
   document.getElementById('modal-branch').value = '';
   document.getElementById('modal-prompt').value = '';
+  document.getElementById('modal-orch-config').value = '';
   document.getElementById('git-options').style.display = 'none';
+  document.getElementById('orch-config-section').style.display = 'none';
 
   if (parent) {
     // Adding agent to existing orchestrator — hide type selector, show preset
@@ -2503,6 +2528,7 @@ function selectType(type) {
   document.querySelectorAll('.type-option').forEach(el => {
     el.classList.toggle('active', el.dataset.type === type);
   });
+  document.getElementById('orch-config-section').style.display = type === 'orchestrator' ? 'block' : 'none';
 }
 
 document.querySelectorAll('.type-option').forEach(el => {
@@ -2547,6 +2573,23 @@ async function createInstance() {
 
   try {
     if (modalSelectedType === 'orchestrator' && !parent) {
+      // Parse optional YAML/JSON config for pre-populating team
+      let orchConfig = null;
+      const configText = document.getElementById('modal-orch-config').value.trim();
+      if (configText) {
+        try {
+          // Try JSON first (if it starts with {), otherwise parse as YAML
+          if (configText.startsWith('{')) {
+            orchConfig = JSON.parse(configText);
+          } else {
+            orchConfig = parseYAML(configText);
+          }
+        } catch (e) {
+          alert('Invalid team config: ' + e.message);
+          return;
+        }
+      }
+
       // Create orchestrator group:
       // 1. Create the control loop instance (top-level, instance_type=loop)
       const loopTitle = title;
@@ -2576,6 +2619,31 @@ async function createInstance() {
           agent_preset: 'orchestrator',
         }),
       });
+
+      // 3. Pre-populate team agents and task from JSON config
+      if (orchConfig) {
+        teamAgents = [];
+        teamAgentCounter = 0;
+        if (Array.isArray(orchConfig.agents)) {
+          orchConfig.agents.forEach((a, i) => {
+            teamAgentCounter++;
+            teamAgents.push({
+              name: a.name || (loopTitle + '-agent-' + teamAgentCounter),
+              path: a.path || '',
+              git_mode: !!a.git_mode,
+              preset: a.preset || 'coder',
+              prompt: a.prompt || '',
+            });
+          });
+        }
+        if (orchConfig.task) {
+          // Set the task prompt in the team panel textarea after selecting
+          setTimeout(() => {
+            const taskEl = document.getElementById('team-task');
+            if (taskEl) taskEl.value = orchConfig.task;
+          }, 200);
+        }
+      }
 
       selectInstance(loopTitle);
       refreshList();

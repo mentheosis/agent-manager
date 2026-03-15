@@ -19,6 +19,9 @@ type MCPServer struct {
 	logFunc     func(string)
 	stateFunc   func() string // returns current loop state
 	doneCh      chan string   // signals task completion with summary
+	taskCh      chan string   // receives task from HTTP /task endpoint
+	pauseFunc   func()
+	resumeFunc  func()
 }
 
 // NewMCPServer creates a new MCP server backed by the claude-squad API.
@@ -29,6 +32,7 @@ func NewMCPServer(baseURL, groupTitle string) *MCPServer {
 		logFunc:    func(s string) { fmt.Println(s) },
 		stateFunc:  func() string { return "idle" },
 		doneCh:     make(chan string, 1),
+		taskCh:     make(chan string, 1),
 	}
 }
 
@@ -40,6 +44,21 @@ func (s *MCPServer) DoneCh() <-chan string {
 // SetStateFunc sets the function used to retrieve the loop's current state.
 func (s *MCPServer) SetStateFunc(f func() string) {
 	s.stateFunc = f
+}
+
+// TaskCh returns the channel that receives tasks submitted via the HTTP /task endpoint.
+func (s *MCPServer) TaskCh() <-chan string {
+	return s.taskCh
+}
+
+// SetPauseFunc sets the function called when pause is received via HTTP.
+func (s *MCPServer) SetPauseFunc(f func()) {
+	s.pauseFunc = f
+}
+
+// SetResumeFunc sets the function called when resume is received via HTTP.
+func (s *MCPServer) SetResumeFunc(f func()) {
+	s.resumeFunc = f
 }
 
 // SetLogFunc sets a custom log function.
@@ -183,6 +202,9 @@ func (s *MCPServer) RunHTTP(port int) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/task", s.handleTask)
+	mux.HandleFunc("/pause", s.handlePause)
+	mux.HandleFunc("/resume", s.handleResume)
 	mux.HandleFunc("/", s.handleHTTP)
 
 	return http.ListenAndServe(addr, mux)
@@ -193,6 +215,57 @@ func (s *MCPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"state": s.stateFunc(),
 	})
+}
+
+func (s *MCPServer) handleTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Task string `json:"task"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if body.Task == "" {
+		http.Error(w, "task is required", http.StatusBadRequest)
+		return
+	}
+	s.log("Task received via HTTP: %d chars", len(body.Task))
+	select {
+	case s.taskCh <- body.Task:
+	default:
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *MCPServer) handlePause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.log("Pause received via HTTP")
+	if s.pauseFunc != nil {
+		s.pauseFunc()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *MCPServer) handleResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.log("Resume received via HTTP")
+	if s.resumeFunc != nil {
+		s.resumeFunc()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (s *MCPServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
