@@ -1460,6 +1460,7 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
 
   const output = document.getElementById('output-area');
+  const outputWrapper = document.getElementById('output-wrapper');
   const rulesEditor = document.getElementById('rules-editor');
   const plansEditor = document.getElementById('plans-editor');
   const memoryEditor = document.getElementById('memory-editor');
@@ -1482,6 +1483,7 @@ function switchTab(tab) {
   }
 
   if (tab === 'terminal') {
+    outputWrapper.style.display = '';
     output.style.display = '';
     output.className = '';
     inputArea.style.display = 'flex';
@@ -1489,6 +1491,7 @@ function switchTab(tab) {
     convLog.connect(selectedTitle);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
+    outputWrapper.style.display = '';
     output.style.display = '';
     output.className = 'diff';
     inputArea.style.display = 'flex';
@@ -1496,21 +1499,21 @@ function switchTab(tab) {
     convLog.disconnect();
     loadDiff();
   } else if (tab === 'rules') {
-    output.style.display = 'none';
+    outputWrapper.style.display = 'none';
     rulesEditor.classList.add('visible');
     inputArea.style.display = 'none';
     actionBar.style.display = 'none';
     convLog.disconnect();
     loadRules();
   } else if (tab === 'plans') {
-    output.style.display = 'none';
+    outputWrapper.style.display = 'none';
     plansEditor.classList.add('visible');
     inputArea.style.display = 'none';
     actionBar.style.display = 'none';
     convLog.disconnect();
     loadPlans();
   } else if (tab === 'memory') {
-    output.style.display = 'none';
+    outputWrapper.style.display = 'none';
     memoryEditor.classList.add('visible');
     inputArea.style.display = 'none';
     actionBar.style.display = 'none';
