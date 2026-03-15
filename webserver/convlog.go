@@ -8,25 +8,59 @@ import (
 // ConversationLog accumulates terminal output by separating tmux scrollback
 // (stable, append-only) from the visible pane (volatile, constantly rewritten).
 //
-// Two mechanisms preserve output:
-//  1. Scrollback promotion: the caller detects new scrollback lines (via tmux
-//     history_size metadata) and passes only the delta to Ingest, which appends
-//     them to stableLines.
-//  2. Turn-based promotion: when the instance status transitions to "ready",
-//     all current pane content is promoted to stable history.
+// Stable lines grow only via scrollback delta: the caller detects new scrollback
+// lines (via tmux history_size metadata) and passes only the delta to Ingest,
+// which appends them to stableLines. There is no turn-based promotion — lines
+// that never scroll off the visible pane remain in currentPane and are always
+// visible to the client via pane messages.
+//
+// GetState deduplicates at read time: if the tail of stableLines overlaps with
+// the head of currentPane (which can happen after a terminal resize pulls lines
+// back from scrollback into the visible pane), the overlapping stable lines are
+// excluded from the returned history.
 type ConversationLog struct {
 	mu           sync.Mutex
-	stableLines  []string // finalized lines (append-only)
+	stableLines  []string // finalized lines (append-only, from scrollback delta only)
 	currentPane  []string // volatile visible pane (replaced each ingest)
 	inputHistory []string // prompts sent by user
 	stableSeqNo  uint64   // bumped when stableLines grows
-	lastStatus   string   // tracks status for transition detection
+	lastStatus   string   // tracks instance status
 	lastInput    string   // most recent user prompt
 }
 
 // NewConversationLog creates a new empty ConversationLog.
 func NewConversationLog() *ConversationLog {
 	return &ConversationLog{}
+}
+
+// slicesEqual reports whether two string slices have identical contents.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// findOverlap returns the length of the longest suffix of stable that matches
+// a prefix of pane. This handles the case where a terminal resize causes lines
+// to return from scrollback into the visible pane (they appear at both the tail
+// of stable and the head of pane). Bounded by pane size (~50 lines).
+func findOverlap(stable, pane []string) int {
+	maxOverlap := len(pane)
+	if maxOverlap > len(stable) {
+		maxOverlap = len(stable)
+	}
+	for overlap := maxOverlap; overlap > 0; overlap-- {
+		if slicesEqual(stable[len(stable)-overlap:], pane[:overlap]) {
+			return overlap
+		}
+	}
+	return 0
 }
 
 // splitLines splits text into lines and strips trailing blank lines.
@@ -60,16 +94,12 @@ func (cl *ConversationLog) Ingest(newScrollback string, paneCapture string) {
 	cl.currentPane = paneLines
 }
 
+// SetStatus updates the instance status. Status is tracked for informational
+// purposes but does not affect stable line promotion.
 func (cl *ConversationLog) SetStatus(status string) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
-	// prev := cl.lastStatus
 	cl.lastStatus = status
-	// if status == "ready" && prev != "ready" && prev != "" && len(cl.currentPane) > 0 {
-	// 	cl.stableLines = append(cl.stableLines, cl.currentPane...)
-	// 	cl.stableSeqNo++
-	// 	cl.currentPane = nil
-	// }
 }
 
 // SetLastInput records the most recent user prompt.
@@ -87,17 +117,30 @@ func (cl *ConversationLog) GetLastInput() string {
 }
 
 // GetState returns the current stable lines, sequence number, volatile pane, and last input.
+// Stable lines are trimmed to exclude any trailing overlap with the pane head.
+// This handles the resize case where lines return from scrollback to the visible pane.
 func (cl *ConversationLog) GetState() (stableLines []string, stableSeqNo uint64, pane []string, lastInput string) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 
-	stable := make([]string, len(cl.stableLines))
-	copy(stable, cl.stableLines)
-
 	paneOut := make([]string, len(cl.currentPane))
 	copy(paneOut, cl.currentPane)
 
+	overlap := findOverlap(cl.stableLines, cl.currentPane)
+	trimmedLen := len(cl.stableLines) - overlap
+
+	stable := make([]string, trimmedLen)
+	copy(stable, cl.stableLines[:trimmedLen])
+
 	return stable, cl.stableSeqNo, paneOut, cl.lastInput
+}
+
+// GetRawStableCount returns the internal (untrimmed) stable line count.
+// Used by the WS handler to track position without overlap fluctuations.
+func (cl *ConversationLog) GetRawStableCount() int {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	return len(cl.stableLines)
 }
 
 // GetStableSince returns stable lines starting from the given index (for delta fetching).

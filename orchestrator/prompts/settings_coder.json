@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(cat *)",
+      "Bash(make *)",
+      "Bash(python *)",
+      "Bash(docker *)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(* | sudo *)"
+    ]
+  }
+}

@@ -59,6 +59,38 @@
     font-weight: 600;
   }
   #btn-new:hover { opacity: 0.85; }
+
+  /* Orchestrator group nesting */
+  .instance-item.child {
+    margin-left: 16px;
+    border-left: 2px solid var(--border);
+    padding-left: 10px;
+  }
+  .instance-item.orchestrator-group {
+    border-left: 3px solid var(--orange);
+  }
+  .instance-item.orchestrator-group .instance-title::before {
+    content: '\25BC ';
+    font-size: 10px;
+    color: var(--orange);
+  }
+  .orchestrator-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .orchestrator-badge.coder { background: rgba(122,162,247,0.2); color: var(--accent); }
+  .orchestrator-badge.researcher { background: rgba(158,206,106,0.2); color: var(--green); }
+  .orchestrator-badge.orchestrator { background: rgba(255,158,100,0.2); color: var(--orange); }
+  .orchestrator-badge.loop { background: rgba(224,175,104,0.2); color: var(--yellow); }
+
+  /* Type selector in modal */
+  .type-option { background: var(--bg); }
+  .type-option:hover { border-color: var(--text-dim) !important; }
+  .type-option.active { border-color: var(--accent) !important; background: rgba(122,162,247,0.08); }
+
+  /* Loop controls in toolbar */
   #instance-list {
     flex: 1;
     overflow-y: auto;
@@ -121,7 +153,8 @@
     display: inline-block;
   }
   .status-dot.running { background: var(--green); animation: pulse-dot 1.5s ease-in-out infinite; }
-  .status-dot.ready { background: var(--yellow); }
+  .status-dot.ready, .status-dot.idle { background: var(--yellow); }
+  .status-dot.waiting { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
   .status-dot.loading { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
   .status-dot.paused { background: var(--text-dim); }
   @keyframes pulse-dot {
@@ -129,8 +162,9 @@
     50% { opacity: 0.4; }
   }
   .status-label { font-weight: 600; }
-  .status-label.ready { color: var(--yellow); }
+  .status-label.ready, .status-label.idle { color: var(--yellow); }
   .status-label.running { color: var(--green); }
+  .status-label.waiting { color: var(--orange); }
   .status-label.loading { color: var(--orange); }
   .status-label.paused { color: var(--text-dim); }
 
@@ -260,6 +294,260 @@
   #output-area * {
     max-width: 100%;
   }
+
+  /* Output wrapper: side-by-side terminal + team panel */
+  #output-wrapper {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  #output-wrapper > #output-area {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Team configuration panel */
+  #team-panel {
+    display: none;
+    width: 420px;
+    min-width: 420px;
+    border-left: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #team-panel.visible {
+    display: flex;
+  }
+  .team-panel-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .team-panel-header h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .team-panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .team-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-top: 4px;
+    flex-shrink: 0;
+  }
+  #team-task {
+    width: 100%;
+    min-height: 80px;
+    max-height: 200px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    resize: vertical;
+    outline: none;
+    flex-shrink: 0;
+  }
+  #team-task:focus { border-color: var(--accent); }
+  #team-members {
+    flex-shrink: 0;
+  }
+
+  /* Agent cards in the team panel */
+  .team-member-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .team-member-card.is-leader {
+    border-color: var(--accent);
+    opacity: 0.7;
+  }
+  .team-member-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .team-member-header .member-name {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .team-member-header .member-badge {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .team-member-header .member-remove {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    line-height: 1;
+  }
+  .team-member-header .member-remove:hover { color: var(--red); }
+  .team-member-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+  .team-member-prompt {
+    font-size: 11px;
+    color: var(--orange);
+    background: rgba(255, 165, 0, 0.08);
+    border: 1px solid rgba(255, 165, 0, 0.2);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-top: 4px;
+  }
+  .team-member-prompt .prompt-msg {
+    margin-bottom: 4px;
+    white-space: pre-wrap;
+  }
+  .team-member-prompt .prompt-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .team-member-prompt .prompt-action-btn {
+    font-size: 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--orange);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--orange);
+    cursor: pointer;
+  }
+  .team-member-prompt .prompt-action-btn:hover {
+    background: rgba(255, 165, 0, 0.15);
+  }
+  .team-member-card input,
+  .team-member-card textarea {
+    width: 100%;
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    outline: none;
+  }
+  .team-member-card input:focus,
+  .team-member-card textarea:focus { border-color: var(--accent); }
+  .team-member-card textarea { resize: vertical; min-height: 40px; }
+  .team-member-card label {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .team-member-card .preset-row {
+    display: flex;
+    gap: 4px;
+  }
+  .team-member-card .preset-row button {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-family: inherit;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-surface);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .team-member-card .preset-row button.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .team-member-card .git-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .team-member-card .git-row input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    flex-shrink: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-surface);
+    cursor: pointer;
+    position: relative;
+  }
+  .team-member-card .git-row input[type="checkbox"]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .team-member-card .git-row input[type="checkbox"]:checked::after {
+    content: '✓';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--bg);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  /* Team panel buttons */
+  .team-btn {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .team-btn-secondary {
+    background: var(--bg);
+    color: var(--text-dim);
+  }
+  .team-btn-secondary:hover { color: var(--text); border-color: var(--text-dim); }
+  .team-btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    margin-top: 8px;
+  }
+  .team-btn-primary:hover { opacity: 0.85; }
+  .team-btn-primary:disabled { opacity: 0.4; cursor: default; }
   .connection-error {
     display: flex;
     align-items: center;
@@ -302,13 +590,13 @@
     flex-direction: column;
   }
   #rules-editor.visible { display: flex; }
-  #rules-file-tabs, #plans-file-tabs {
+  #rules-file-tabs, #plans-file-tabs, #memory-file-tabs {
     display: flex;
     border-bottom: 1px solid var(--border);
     background: var(--bg-surface);
     overflow-x: auto;
   }
-  .rules-file-tab, .plans-file-tab {
+  .rules-file-tab, .plans-file-tab, .memory-file-tab {
     padding: 8px 16px;
     cursor: pointer;
     font-size: 11px;
@@ -320,12 +608,12 @@
     align-items: center;
     gap: 6px;
   }
-  .rules-file-tab:hover, .plans-file-tab:hover { color: var(--text); }
-  .rules-file-tab.active, .plans-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .rules-file-tab:hover, .plans-file-tab:hover, .memory-file-tab:hover { color: var(--text); }
+  .rules-file-tab.active, .plans-file-tab.active, .memory-file-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .rules-file-tab .file-exists { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
   .rules-file-tab .file-exists.yes { background: var(--green); }
   .rules-file-tab .file-exists.no { background: var(--text-dim); opacity: 0.4; }
-  #rules-toolbar, #plans-toolbar {
+  #rules-toolbar, #plans-toolbar, #memory-toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -335,8 +623,8 @@
     font-size: 11px;
     color: var(--text-dim);
   }
-  #rules-path, #plans-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #rules-save-btn, #plans-save-btn {
+  #rules-path, #plans-path, #memory-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rules-save-btn, #plans-save-btn, #memory-save-btn {
     background: var(--accent);
     color: var(--bg);
     border: none;
@@ -347,17 +635,17 @@
     font-size: 11px;
     font-weight: 600;
   }
-  #rules-save-btn:hover, #plans-save-btn:hover { opacity: 0.85; }
-  #rules-save-btn:disabled, #plans-save-btn:disabled { opacity: 0.4; cursor: default; }
-  #rules-status, #plans-status {
+  #rules-save-btn:hover, #plans-save-btn:hover, #memory-save-btn:hover { opacity: 0.85; }
+  #rules-save-btn:disabled, #plans-save-btn:disabled, #memory-save-btn:disabled { opacity: 0.4; cursor: default; }
+  #rules-status, #plans-status, #memory-status {
     font-size: 11px;
     padding: 2px 8px;
     border-radius: 3px;
     transition: opacity 0.3s;
   }
-  #rules-status.saved, #plans-status.saved { color: var(--green); }
-  #rules-status.unsaved, #plans-status.unsaved { color: var(--yellow); }
-  #rules-textarea, #plans-textarea {
+  #rules-status.saved, #plans-status.saved, #memory-status.saved { color: var(--green); }
+  #rules-status.unsaved, #plans-status.unsaved, #memory-status.unsaved { color: var(--yellow); }
+  #rules-textarea, #plans-textarea, #memory-textarea {
     flex: 1;
     min-height: 0;
     background: var(--bg);
@@ -380,7 +668,7 @@
     flex-direction: column;
   }
   #plans-editor.visible { display: flex; }
-  #plans-empty {
+  #plans-empty, #memory-empty {
     flex: 1;
     display: flex;
     align-items: center;
@@ -388,7 +676,13 @@
     color: var(--text-dim);
     font-size: 13px;
   }
-
+  #memory-editor {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+  #memory-editor.visible { display: flex; }
   #output-area.diff { color: var(--text); }
   .diff-add { color: var(--green); }
   .diff-del { color: var(--red); }
@@ -412,6 +706,9 @@
 
   /* Action bar (interactive prompt buttons) */
   #action-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     padding: 6px 16px;
     border-top: 1px solid var(--border);
     background: var(--bg-surface);
@@ -420,6 +717,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    flex: 1;
   }
   .action-btn {
     background: var(--bg-highlight);
@@ -527,9 +825,9 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 24px;
-    width: 400px;
+    width: 520px;
   }
-  #modal h2 { font-size: 14px; margin-bottom: 16px; }
+  #modal h2 { font-size: 16px; margin-bottom: 16px; }
   #modal input, #modal textarea {
     width: 100%;
     background: var(--bg);
@@ -538,11 +836,11 @@
     padding: 8px 12px;
     border-radius: 6px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: 14px;
     outline: none;
     margin-bottom: 12px;
   }
-  #modal textarea { height: 80px; resize: vertical; }
+  #modal textarea { height: 90px; resize: vertical; }
   #modal input:focus, #modal textarea:focus { border-color: var(--accent); }
   #modal input[type="checkbox"] {
     -webkit-appearance: none;
@@ -758,8 +1056,9 @@
     <div id="tabs">
       <div class="tab active" data-tab="terminal">Terminal</div>
       <div class="tab" data-tab="diff">Diff</div>
-      <div class="tab" data-tab="rules">Rules</div>
+      <div class="tab" data-tab="rules">Settings</div>
       <div class="tab" data-tab="plans">Plans</div>
+      <div class="tab" data-tab="memory">Memory</div>
     </div>
     <div id="toolbar">
       <div class="mode-selector">
@@ -774,7 +1073,25 @@
       <button class="toolbar-btn" id="btn-resume">Resume</button>
       <button class="toolbar-btn danger" id="btn-kill">Kill</button>
     </div>
-    <div id="output-area"></div>
+    <div id="output-wrapper">
+      <div id="output-area"></div>
+      <div id="team-panel">
+        <div class="team-panel-header">
+          <h3>Team Configuration</h3>
+        </div>
+        <div class="team-panel-body">
+          <label class="team-label">Task Prompt</label>
+          <textarea id="team-task" placeholder="Describe the task for the team..." rows="4"></textarea>
+
+          <label class="team-label">Team Members</label>
+          <div id="team-members"></div>
+
+          <button id="btn-add-agent" class="team-btn team-btn-secondary">+ Add Agent</button>
+
+          <button id="btn-start-orchestration" class="team-btn team-btn-primary">Start Orchestration</button>
+        </div>
+      </div>
+    </div>
     <div id="rules-editor">
       <div id="rules-file-tabs"></div>
       <div id="rules-toolbar">
@@ -794,8 +1111,19 @@
       <textarea id="plans-textarea" placeholder="No plan files yet. Use /plan mode to generate plans."></textarea>
       <div id="plans-empty" style="display:none">No plan files found. Use /plan mode to generate plans.</div>
     </div>
+    <div id="memory-editor">
+      <div id="memory-file-tabs"></div>
+      <div id="memory-toolbar">
+        <span id="memory-path"></span>
+        <span id="memory-status"></span>
+        <button id="memory-save-btn">Save</button>
+      </div>
+      <textarea id="memory-textarea" placeholder="No memory files yet. Claude will create them as it learns."></textarea>
+      <div id="memory-empty" style="display:none">No memory files found. Claude will create them as it learns about your project.</div>
+    </div>
     <div id="action-bar" style="display:none">
       <div id="action-buttons"></div>
+      <button class="action-btn action-danger" id="btn-esc" title="Send Escape">Esc</button>
     </div>
     <div id="input-area">
       <textarea id="prompt-input" rows="1" placeholder="Send a message..."></textarea>
@@ -808,10 +1136,37 @@
 
 <div id="modal-overlay">
   <div id="modal">
-    <h2>New Instance</h2>
+    <h2 id="modal-heading">New Instance</h2>
+    <input type="hidden" id="modal-parent" value="">
+
+    <!-- Type selector (hidden when adding agent to existing orchestrator) -->
+    <div id="type-selector" style="margin-bottom:14px">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div class="type-option active" data-type="agent" style="flex:1;padding:14px 16px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:15px;font-weight:600;margin-bottom:6px">Agent</div>
+          <div style="font-size:12px;color:var(--text-dim)">A standard Claude CLI session. Works independently in a single repository with full tool access.</div>
+        </div>
+        <div class="type-option" data-type="orchestrator" style="flex:1;padding:14px 16px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:15px;font-weight:600;margin-bottom:6px">Orchestrator</div>
+          <div style="font-size:12px;color:var(--text-dim)">A control loop that coordinates multiple agents across repositories. Includes a leader agent that directs the team.</div>
+        </div>
+      </div>
+    </div>
+
     <input id="modal-title" type="text" placeholder="Instance name">
     <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Working directory</label>
     <input id="modal-path" type="text" placeholder="Absolute path (default: current dir)">
+
+    <!-- Preset selector (shown when adding agent to orchestrator) -->
+    <div id="preset-options" style="display:none;margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Agent preset</label>
+      <div style="display:flex;gap:6px">
+        <button class="mode-btn preset-btn active" data-preset="coder">Coder</button>
+        <button class="mode-btn preset-btn" data-preset="researcher">Researcher</button>
+      </div>
+      <p style="font-size:10px;color:var(--text-dim);margin-top:4px" id="preset-desc">Full code editing, testing, and Docker access</p>
+    </div>
+
     <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:13px;color:var(--text-dim);cursor:pointer">
       <input id="modal-gitmode" type="checkbox"> Use git worktree isolation
     </label>
@@ -821,6 +1176,22 @@
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Branch name (optional, auto-generated if empty)</label>
       <input id="modal-branch" type="text" placeholder="e.g. feature/my-task">
       <p style="font-size:10px;color:var(--text-dim);margin-top:6px">Agent will work in an isolated worktree branched from this repo. The working directory above is used as the repo if no separate repo path is given.</p>
+    </div>
+    <div id="orch-config-section" style="display:none;margin-bottom:12px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Team config (YAML or JSON, optional)</label>
+      <textarea id="modal-orch-config" rows="10" style="font-family:monospace;font-size:12px" placeholder="title: my-team
+path: /path/to/working/dir
+task: |
+  Describe the task for the team...
+
+agents:
+  - name: agent-1
+    path: /abs/path/to/repo
+    preset: coder
+  - name: agent-2
+    path: /other/repo
+    preset: researcher"></textarea>
+      <p style="font-size:10px;color:var(--text-dim);margin-top:4px">Pre-populate the team. Title and path can be set here or in the fields above. Each agent: name, path, preset (coder/researcher), git_mode (bool), prompt (string). Accepts YAML or JSON.</p>
     </div>
     <textarea id="modal-prompt" placeholder="Initial prompt (optional)"></textarea>
     <div id="modal-actions">
@@ -835,12 +1206,14 @@ import { ConvLogView } from '/static/js/convlog.js';
 import { InputHistory } from '/static/js/input-history.js';
 import { api, apiFetch } from '/static/js/api.js';
 import { esc, safeAnsiToHtml } from '/static/js/ansi.js';
+import { parseYAML } from '/static/js/yaml.js';
 
 let selectedTitle = null;
 let cachedInstances = [];
 let activeTab = 'terminal';
 let currentMode = 'agent';
 let instanceStatuses = {};
+let instanceAgentMeta = {}; // enriched metadata from websocket: { title: { status, prompt } }
 
 function updatePausedState() {
   const status = selectedTitle ? (instanceStatuses[selectedTitle] || '') : '';
@@ -910,13 +1283,19 @@ const inputHistory = new InputHistory(
   document.getElementById('prompt-input'),
   async (text) => {
     if (!selectedTitle) return;
-    console.log('[send] firing API call:', selectedTitle, text);
+    // If input is a single digit and the action bar is showing interactive
+    // options, send as a raw keystroke (what the interactive selector expects)
+    // instead of as a text prompt with Enter.
+    const actionBar = document.getElementById('action-bar');
+    if (/^\d$/.test(text) && actionBar && actionBar.style.display !== 'none') {
+      await sendKeys(text);
+      return;
+    }
     try {
       await api(`/${encodeURIComponent(selectedTitle)}/send`, {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
-      console.log('[send] API call succeeded');
     } catch (e) {
       console.error('[send] API call failed:', e);
       alert('Failed to send: ' + e.message);
@@ -934,20 +1313,68 @@ async function refreshList() {
   }
 }
 
+// Returns a fingerprint of the instance list structure (ignoring status).
+// If this changes, a full DOM rebuild is needed.
+function instanceListFingerprint(instances) {
+  return instances.map(i =>
+    `${i.title}|${i.parent||''}|${i.instance_type||''}|${i.agent_preset||''}|${i.display_title||''}|${i.work_dir||''}|${i.git_mode||false}|${i.diff_added||0}|${i.diff_removed||0}`
+  ).join('\n');
+}
+let lastListFingerprint = '';
+
 function renderList(instances) {
   cachedInstances = instances;
   updateToolbarTitle();
+
+  // If only statuses changed (not the list structure), update in-place
+  const fp = instanceListFingerprint(instances);
+  if (fp === lastListFingerprint) {
+    // Update statuses from fresh REST data
+    instances.forEach(i => {
+      if (!instanceStatuses[i.title]) instanceStatuses[i.title] = i.status;
+    });
+    updateListStatuses();
+    updateTeamPanelStatuses();
+    return;
+  }
+  lastListFingerprint = fp;
+
+  // Refresh team panel if viewing a loop instance, but skip if user is typing in it
+  const selInst = instances.find(i => i.title === selectedTitle);
+  const teamPanel = document.getElementById('team-panel');
+  if (selInst && selInst.instance_type === 'loop' && teamPanel.classList.contains('visible')) {
+    const active = document.activeElement;
+    if (!active || !teamPanel.contains(active)) {
+      loadTeamPanel();
+    }
+  }
   const el = document.getElementById('instance-list');
   el.innerHTML = '';
+
+  // Build a map of parent -> children and identify top-level instances
+  const childSet = new Set();
+  const childrenOf = {};
   instances.forEach(inst => {
+    if (inst.parent) {
+      childSet.add(inst.title);
+      if (!childrenOf[inst.parent]) childrenOf[inst.parent] = [];
+      childrenOf[inst.parent].push(inst);
+    }
+  });
+
+  function renderItem(inst, isChild) {
     const status = instanceStatuses[inst.title] || inst.status;
-    const isWaiting = status === 'ready';
-    const statusLabel = isWaiting ? 'waiting' : status;
+    const isWaiting = status === 'ready' || status === 'waiting';
+    const statusLabel = status === 'ready' ? 'idle' : status;
+    const isLoop = inst.instance_type === 'loop';
+    const hasChildren = childrenOf[inst.title] && childrenOf[inst.title].length > 0;
 
     const div = document.createElement('div');
     let cls = 'instance-item';
     if (inst.title === selectedTitle) cls += ' active';
     if (isWaiting) cls += ' waiting';
+    if (isChild) cls += ' child';
+    if (isLoop || hasChildren) cls += ' orchestrator-group';
     div.className = cls;
     div.draggable = true;
     div.dataset.title = inst.title;
@@ -988,11 +1415,19 @@ function renderList(instances) {
     const shortPath = inst.work_dir ? inst.work_dir.replace(/^\/Users\/[^/]+/, '~') : '';
     const gitBadge = inst.git_mode ? '<span style="color:var(--orange)">git</span>' : '';
     const displayName = inst.display_title || inst.title;
+
+    // Preset badge
+    let presetBadge = '';
+    if (inst.agent_preset) {
+      presetBadge = `<span class="orchestrator-badge ${inst.agent_preset}">${inst.agent_preset}</span>`;
+    }
+
     div.innerHTML = `
       <div class="instance-title">${esc(displayName)}</div>
       <div class="instance-meta">
         <span class="status-dot ${status}"></span>
         <span class="status-label ${status}">${statusLabel}</span>
+        ${presetBadge}
         ${gitBadge}
         ${diffInfo ? `<span>${diffInfo}</span>` : ''}
       </div>
@@ -1000,6 +1435,60 @@ function renderList(instances) {
     `;
 
     el.appendChild(div);
+
+    // If this is a loop/orchestrator group, render children and "Add Agent" button
+    if (isLoop || hasChildren) {
+      const children = childrenOf[inst.title] || [];
+      children.forEach(child => renderItem(child, true));
+
+      // Add "add agent" button
+      const addBtn = document.createElement('div');
+      addBtn.className = 'instance-item child';
+      addBtn.style.cssText = 'cursor:pointer;color:var(--text-dim);font-size:11px;text-align:center;padding:6px;';
+      addBtn.textContent = '+ Add Agent';
+      addBtn.onclick = (e) => {
+        e.stopPropagation();
+        showNewModal('agent', inst.title);
+      };
+      el.appendChild(addBtn);
+    }
+  }
+
+  // Render top-level instances (those without a parent)
+  instances.forEach(inst => {
+    if (!childSet.has(inst.title)) {
+      renderItem(inst, false);
+    }
+  });
+}
+
+// Update status dots, labels, and waiting class on existing list items without rebuilding DOM.
+// This preserves CSS animations (like pulse-waiting) that would reset on DOM recreation.
+function updateListStatuses() {
+  const el = document.getElementById('instance-list');
+  if (!el) return;
+  const items = el.querySelectorAll('.instance-item[data-title]');
+  items.forEach(div => {
+    const title = div.dataset.title;
+    const inst = cachedInstances && cachedInstances.find(i => i.title === title);
+    const status = instanceStatuses[title] || (inst && inst.status) || 'unknown';
+    const isWaiting = status === 'ready' || status === 'waiting';
+    const statusLabel = status === 'ready' ? 'idle' : status;
+
+    // Update active and waiting classes (only toggle, don't recreate)
+    div.classList.toggle('active', title === selectedTitle);
+    div.classList.toggle('waiting', isWaiting);
+
+    // Update status dot
+    const dot = div.querySelector('.status-dot');
+    if (dot) dot.className = 'status-dot ' + status;
+
+    // Update status label
+    const label = div.querySelector('.status-label');
+    if (label) {
+      label.className = 'status-label ' + status;
+      label.textContent = statusLabel;
+    }
   });
 }
 
@@ -1033,6 +1522,7 @@ function selectInstance(title) {
   diffGeneration++;
   rulesGeneration++;
   plansGeneration++;
+  memoryGeneration++;
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('active-view').classList.add('visible');
   refreshList();
@@ -1042,14 +1532,7 @@ function selectInstance(title) {
   // Load input history for this instance
   loadInputHistory(title);
 
-  if (activeTab === 'diff') {
-    loadDiff();
-  } else {
-    activeTab = 'terminal';
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'terminal'));
-    convLog.connect(title);
-  }
-  setTimeout(() => document.getElementById('prompt-input').focus(), 50);
+  switchTab(activeTab);
 }
 
 async function loadInputHistory(title) {
@@ -1069,38 +1552,65 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
 
   const output = document.getElementById('output-area');
+  const outputWrapper = document.getElementById('output-wrapper');
   const rulesEditor = document.getElementById('rules-editor');
   const plansEditor = document.getElementById('plans-editor');
+  const memoryEditor = document.getElementById('memory-editor');
   const inputArea = document.getElementById('input-area');
 
-  // Hide both editors by default
+  // Hide all editors by default
   rulesEditor.classList.remove('visible');
   plansEditor.classList.remove('visible');
+  memoryEditor.classList.remove('visible');
+
+  const actionBar = document.getElementById('action-bar');
+
+  // Show team panel only for loop instances on terminal tab
+  const teamPanel = document.getElementById('team-panel');
+  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+  const isLoop = inst && inst.instance_type === 'loop';
+  teamPanel.classList.toggle('visible', tab === 'terminal' && isLoop);
+  if (tab === 'terminal' && isLoop) {
+    loadTeamPanel();
+  }
 
   if (tab === 'terminal') {
+    outputWrapper.style.display = '';
     output.style.display = '';
     output.className = '';
     inputArea.style.display = 'flex';
+    actionBar.style.display = '';
     convLog.connect(selectedTitle);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
+    outputWrapper.style.display = '';
     output.style.display = '';
     output.className = 'diff';
     inputArea.style.display = 'flex';
+    actionBar.style.display = 'none';
     convLog.disconnect();
     loadDiff();
   } else if (tab === 'rules') {
-    output.style.display = 'none';
+    outputWrapper.style.display = 'none';
     rulesEditor.classList.add('visible');
     inputArea.style.display = 'none';
+    actionBar.style.display = 'none';
     convLog.disconnect();
     loadRules();
   } else if (tab === 'plans') {
-    output.style.display = 'none';
+    outputWrapper.style.display = 'none';
     plansEditor.classList.add('visible');
     inputArea.style.display = 'none';
+    actionBar.style.display = 'none';
     convLog.disconnect();
     loadPlans();
+  } else if (tab === 'memory') {
+    outputWrapper.style.display = 'none';
+    memoryEditor.classList.add('visible');
+    inputArea.style.display = 'none';
+    actionBar.style.display = 'none';
+    convLog.disconnect();
+    loadMemory();
   }
 }
 
@@ -1410,6 +1920,154 @@ async function savePlans() {
 document.getElementById('plans-textarea').addEventListener('input', onPlansEdit);
 document.getElementById('plans-save-btn').addEventListener('click', savePlans);
 
+// --- Memory (Claude memory file editor) ---
+let memoryFiles = [];
+let memoryActiveIdx = 0;
+let memorySavedContent = '';
+let memoryUnsaved = false;
+let memoryGeneration = 0;
+
+async function loadMemory() {
+  if (!selectedTitle) return;
+  memoryGeneration++;
+  const gen = memoryGeneration;
+  const titleAtRequest = selectedTitle;
+
+  const statusEl = document.getElementById('memory-status');
+  const pathEl = document.getElementById('memory-path');
+  const textarea = document.getElementById('memory-textarea');
+  const saveBtn = document.getElementById('memory-save-btn');
+  const tabsEl = document.getElementById('memory-file-tabs');
+  const emptyEl = document.getElementById('memory-empty');
+
+  statusEl.textContent = 'Loading...';
+  statusEl.className = '';
+  textarea.value = '';
+  tabsEl.innerHTML = '';
+
+  try {
+    const data = await api(`/${encodeURIComponent(titleAtRequest)}/memory`);
+    if (gen !== memoryGeneration) return;
+
+    memoryFiles = data.files || [];
+    memoryActiveIdx = 0;
+
+    if (memoryFiles.length > 0) {
+      emptyEl.style.display = 'none';
+      textarea.style.display = '';
+      renderMemoryFileTabs();
+      selectMemoryFile(0);
+    } else {
+      emptyEl.style.display = 'flex';
+      textarea.style.display = 'none';
+      statusEl.textContent = '';
+      pathEl.textContent = '';
+      saveBtn.disabled = true;
+    }
+  } catch (e) {
+    if (gen !== memoryGeneration) return;
+    statusEl.textContent = 'Error loading';
+    statusEl.className = 'unsaved';
+    textarea.value = '';
+    pathEl.textContent = '';
+  }
+}
+
+function renderMemoryFileTabs() {
+  const tabsEl = document.getElementById('memory-file-tabs');
+  tabsEl.innerHTML = '';
+  memoryFiles.forEach((f, idx) => {
+    const tab = document.createElement('div');
+    tab.className = 'memory-file-tab' + (idx === memoryActiveIdx ? ' active' : '');
+    tab.textContent = f.name.replace(/\.md$/, '');
+    tab.addEventListener('click', () => {
+      if (memoryUnsaved) {
+        if (!confirm('You have unsaved changes. Discard?')) return;
+      }
+      selectMemoryFile(idx);
+    });
+    tabsEl.appendChild(tab);
+  });
+}
+
+function selectMemoryFile(idx) {
+  memoryActiveIdx = idx;
+  const f = memoryFiles[idx];
+  const statusEl = document.getElementById('memory-status');
+  const pathEl = document.getElementById('memory-path');
+  const textarea = document.getElementById('memory-textarea');
+  const saveBtn = document.getElementById('memory-save-btn');
+
+  memorySavedContent = f.content || '';
+  textarea.value = memorySavedContent;
+  pathEl.textContent = f.name;
+  memoryUnsaved = false;
+  saveBtn.disabled = true;
+  statusEl.textContent = '';
+  statusEl.className = '';
+
+  document.querySelectorAll('.memory-file-tab').forEach((tab, i) => {
+    tab.classList.toggle('active', i === idx);
+  });
+
+  textarea.focus();
+}
+
+function onMemoryEdit() {
+  const textarea = document.getElementById('memory-textarea');
+  const statusEl = document.getElementById('memory-status');
+  const saveBtn = document.getElementById('memory-save-btn');
+  const changed = textarea.value !== memorySavedContent;
+  memoryUnsaved = changed;
+  saveBtn.disabled = !changed;
+  if (changed) {
+    statusEl.textContent = 'Unsaved changes';
+    statusEl.className = 'unsaved';
+  } else {
+    statusEl.textContent = '';
+    statusEl.className = '';
+  }
+}
+
+async function saveMemory() {
+  if (!selectedTitle || !memoryUnsaved) return;
+  const f = memoryFiles[memoryActiveIdx];
+  if (!f) return;
+
+  const textarea = document.getElementById('memory-textarea');
+  const statusEl = document.getElementById('memory-status');
+  const saveBtn = document.getElementById('memory-save-btn');
+
+  saveBtn.disabled = true;
+  statusEl.textContent = 'Saving...';
+  statusEl.className = '';
+
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/memory`, {
+      method: 'PUT',
+      body: JSON.stringify({ path: f.path, content: textarea.value }),
+    });
+    memorySavedContent = textarea.value;
+    f.content = textarea.value;
+    memoryUnsaved = false;
+    statusEl.textContent = 'Saved';
+    statusEl.className = 'saved';
+    setTimeout(() => {
+      if (!memoryUnsaved) {
+        statusEl.textContent = '';
+        statusEl.className = '';
+      }
+    }, 2000);
+  } catch (e) {
+    statusEl.textContent = 'Save failed';
+    statusEl.className = 'unsaved';
+    saveBtn.disabled = false;
+  }
+}
+
+document.getElementById('memory-textarea').addEventListener('input', onMemoryEdit);
+document.getElementById('memory-save-btn').addEventListener('click', saveMemory);
+
 // --- Load diff ---
 let diffGeneration = 0;
 
@@ -1506,9 +2164,21 @@ function formatDiff(text) {
 }
 
 // --- Actions ---
+function isLoopInstance() {
+  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+  return inst && inst.instance_type === 'loop';
+}
+
 async function actionPause() {
   if (!selectedTitle) return;
   try {
+    // For loop instances, also send __PAUSE__ to the orchestrator binary
+    if (isLoopInstance()) {
+      await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ text: '__PAUSE__' }),
+      });
+    }
     await api(`/${encodeURIComponent(selectedTitle)}/pause`, { method: 'POST' });
     instanceStatuses[selectedTitle] = 'paused';
     convLog.disconnect();
@@ -1525,6 +2195,13 @@ async function actionResume() {
     refreshList();
     updatePausedState();
     convLog.connect(selectedTitle);
+    // For loop instances, also send __RESUME__ to the orchestrator binary
+    if (isLoopInstance()) {
+      await api(`/${encodeURIComponent(selectedTitle)}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ text: '__RESUME__' }),
+      });
+    }
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -1545,6 +2222,8 @@ async function actionKill() {
 document.getElementById('btn-pause').addEventListener('click', actionPause);
 document.getElementById('btn-resume').addEventListener('click', actionResume);
 document.getElementById('btn-kill').addEventListener('click', actionKill);
+document.getElementById('btn-esc').addEventListener('click', () => sendKeys('\x1b'));
+
 document.getElementById('btn-send').addEventListener('click', () => inputHistory.send());
 document.getElementById('btn-hist-prev').addEventListener('click', () => inputHistory.prev());
 document.getElementById('btn-hist-next').addEventListener('click', () => inputHistory.next());
@@ -1554,8 +2233,270 @@ inputHistory.onNavigate = () => {
   document.getElementById('btn-hist-next').disabled = !inputHistory.hasNext;
 };
 
+// --- Team Panel ---
+let teamAgents = []; // [{name, path, git_mode, preset, prompt}]
+let teamAgentCounter = 0;
+
+function loadTeamPanel() {
+  if (!selectedTitle) return;
+  const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+  if (!inst || inst.instance_type !== 'loop') return;
+
+  // Find existing children of this loop
+  const children = (cachedInstances || []).filter(i => i.parent === selectedTitle);
+  const membersEl = document.getElementById('team-members');
+  membersEl.innerHTML = '';
+
+  // Show existing children (leader + any existing agents) as read-only cards
+  children.forEach(child => {
+    const card = document.createElement('div');
+    card.className = 'team-member-card' + (child.agent_preset === 'orchestrator' ? ' is-leader' : '');
+    card.dataset.childTitle = child.title;
+    const preset = child.agent_preset || 'coder';
+    const badge = child.agent_preset === 'orchestrator' ? 'Leader' : preset;
+    const meta = instanceAgentMeta[child.title];
+    const status = (meta && meta.status) || instanceStatuses[child.title] || child.status || 'unknown';
+
+    card.innerHTML = `
+      <div class="team-member-header">
+        <span class="member-name">${esc(child.title)}</span>
+        <span class="member-badge">${badge}</span>
+      </div>
+      <div class="team-member-status">
+        <span class="status-dot ${status}"></span>
+        <span>${status}</span>
+      </div>
+      <label>Path: ${esc(child.path || '.')}</label>
+    `;
+
+    // Show prompt info if agent is waiting
+    if (meta && meta.prompt && meta.prompt.actions && meta.prompt.actions.length > 0) {
+      const promptEl = document.createElement('div');
+      promptEl.className = 'team-member-prompt';
+      if (meta.prompt.message) {
+        const msgEl = document.createElement('div');
+        msgEl.className = 'prompt-msg';
+        msgEl.textContent = meta.prompt.message;
+        promptEl.appendChild(msgEl);
+      }
+      const actionsEl = document.createElement('div');
+      actionsEl.className = 'prompt-actions';
+      meta.prompt.actions.forEach(action => {
+        const btn = document.createElement('button');
+        btn.className = 'prompt-action-btn';
+        btn.textContent = action.label;
+        btn.title = `Send key: ${action.key}`;
+        btn.addEventListener('click', async () => {
+          try {
+            await api(`/${encodeURIComponent(child.title)}/keys`, {
+              method: 'POST',
+              body: JSON.stringify({ keys: action.key }),
+            });
+          } catch (e) { alert('Error: ' + e.message); }
+        });
+        actionsEl.appendChild(btn);
+      });
+      promptEl.appendChild(actionsEl);
+      card.appendChild(promptEl);
+    }
+
+    membersEl.appendChild(card);
+  });
+
+  // Show pending (not yet created) agents
+  teamAgents.forEach((agent, idx) => {
+    membersEl.appendChild(renderAgentCard(agent, idx));
+  });
+}
+
+// Update team panel child cards in-place from websocket data (no full rebuild)
+function updateTeamPanelStatuses() {
+  const teamPanel = document.getElementById('team-panel');
+  if (!teamPanel || !teamPanel.classList.contains('visible')) return;
+
+  const membersEl = document.getElementById('team-members');
+  if (!membersEl) return;
+
+  const cards = membersEl.querySelectorAll('.team-member-card[data-child-title]');
+  cards.forEach(card => {
+    const title = card.dataset.childTitle;
+    const meta = instanceAgentMeta[title];
+    const status = (meta && meta.status) || instanceStatuses[title] || 'unknown';
+
+    // Update status dot and label
+    const statusRow = card.querySelector('.team-member-status');
+    if (statusRow) {
+      const dot = statusRow.querySelector('.status-dot');
+      const label = statusRow.querySelector('span:last-child');
+      if (dot) dot.className = 'status-dot ' + status;
+      if (label) label.textContent = status;
+    }
+
+    // Update or add/remove prompt section
+    const existingPrompt = card.querySelector('.team-member-prompt');
+    const hasPrompt = meta && meta.prompt && meta.prompt.actions && meta.prompt.actions.length > 0;
+
+    if (!hasPrompt) {
+      if (existingPrompt) existingPrompt.remove();
+      return;
+    }
+
+    // Build new prompt element
+    const promptEl = document.createElement('div');
+    promptEl.className = 'team-member-prompt';
+    if (meta.prompt.message) {
+      const msgEl = document.createElement('div');
+      msgEl.className = 'prompt-msg';
+      msgEl.textContent = meta.prompt.message;
+      promptEl.appendChild(msgEl);
+    }
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'prompt-actions';
+    meta.prompt.actions.forEach(action => {
+      const btn = document.createElement('button');
+      btn.className = 'prompt-action-btn';
+      btn.textContent = action.label;
+      btn.title = `Send key: ${action.key}`;
+      btn.addEventListener('click', async () => {
+        try {
+          await api(`/${encodeURIComponent(title)}/keys`, {
+            method: 'POST',
+            body: JSON.stringify({ keys: action.key }),
+          });
+        } catch (e) { alert('Error: ' + e.message); }
+      });
+      actionsEl.appendChild(btn);
+    });
+    promptEl.appendChild(actionsEl);
+
+    if (existingPrompt) {
+      card.replaceChild(promptEl, existingPrompt);
+    } else {
+      card.appendChild(promptEl);
+    }
+  });
+}
+
+function renderAgentCard(agent, idx) {
+  const card = document.createElement('div');
+  card.className = 'team-member-card';
+  card.dataset.idx = idx;
+  card.innerHTML = `
+    <div class="team-member-header">
+      <input class="member-name" type="text" value="${esc(agent.name)}" placeholder="Agent name">
+      <button class="member-remove" title="Remove">&times;</button>
+    </div>
+    <label>Working directory</label>
+    <input type="text" class="agent-path" value="${esc(agent.path)}" placeholder="Absolute path">
+    <div class="git-row">
+      <input type="checkbox" class="agent-git" ${agent.git_mode ? 'checked' : ''}>
+      <span>Git worktree isolation</span>
+    </div>
+    <label>Preset</label>
+    <div class="preset-row">
+      <button class="agent-preset-btn ${agent.preset === 'coder' ? 'active' : ''}" data-preset="coder">Coder</button>
+      <button class="agent-preset-btn ${agent.preset === 'researcher' ? 'active' : ''}" data-preset="researcher">Researcher</button>
+    </div>
+    <label>System prompt (optional)</label>
+    <textarea class="agent-prompt" rows="2" placeholder="Optional instructions for this agent...">${esc(agent.prompt || '')}</textarea>
+  `;
+
+  // Wire up events
+  card.querySelector('.member-remove').addEventListener('click', () => {
+    teamAgents.splice(idx, 1);
+    loadTeamPanel();
+  });
+  card.querySelector('.member-name').addEventListener('input', (e) => {
+    agent.name = e.target.value;
+  });
+  card.querySelector('.agent-path').addEventListener('input', (e) => {
+    agent.path = e.target.value;
+  });
+  card.querySelector('.agent-git').addEventListener('change', (e) => {
+    agent.git_mode = e.target.checked;
+  });
+  card.querySelector('.agent-prompt').addEventListener('input', (e) => {
+    agent.prompt = e.target.value;
+  });
+  card.querySelectorAll('.agent-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      agent.preset = btn.dataset.preset;
+      card.querySelectorAll('.agent-preset-btn').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+
+  return card;
+}
+
+document.getElementById('btn-add-agent').addEventListener('click', () => {
+  teamAgentCounter++;
+  teamAgents.push({
+    name: selectedTitle + '-agent-' + teamAgentCounter,
+    path: '',
+    git_mode: false,
+    preset: 'coder',
+    prompt: '',
+  });
+  loadTeamPanel();
+});
+
+document.getElementById('btn-start-orchestration').addEventListener('click', async () => {
+  if (!selectedTitle) return;
+  const task = document.getElementById('team-task').value.trim();
+  if (!task) { alert('Please enter a task prompt'); return; }
+  if (teamAgents.length === 0) { alert('Please add at least one agent'); return; }
+
+  const btn = document.getElementById('btn-start-orchestration');
+  btn.disabled = true;
+  btn.textContent = 'Creating agents...';
+
+  try {
+    // Create each pending agent as a child of the loop
+    for (const agent of teamAgents) {
+      const name = agent.name.trim() || (selectedTitle + '-agent-' + (teamAgents.indexOf(agent) + 1));
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: name,
+          path: agent.path || '',
+          git_mode: agent.git_mode,
+          parent: selectedTitle,
+          agent_preset: agent.preset,
+          prompt: agent.prompt || undefined,
+        }),
+      });
+    }
+
+    // Clear pending agents (they're now real instances)
+    teamAgents = [];
+    teamAgentCounter = 0;
+
+    // Send the task to the loop via its MCP server (proxied through web server)
+    await api(`/${encodeURIComponent(selectedTitle)}/task`, {
+      method: 'POST',
+      body: JSON.stringify({ task }),
+    });
+
+    btn.textContent = 'Orchestration Started';
+    refreshList();
+    loadTeamPanel();
+
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Start Orchestration';
+    }, 3000);
+  } catch (e) {
+    alert('Error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Start Orchestration';
+  }
+});
+
 // --- Modal ---
-function showNewModal() {
+let modalSelectedType = 'agent';
+
+function showNewModal(mode, parent) {
+  document.getElementById('modal-parent').value = parent || '';
   document.getElementById('modal-overlay').classList.add('visible');
   document.getElementById('modal-title').value = '';
   document.getElementById('modal-path').value = '';
@@ -1563,9 +2504,54 @@ function showNewModal() {
   document.getElementById('modal-repo').value = '';
   document.getElementById('modal-branch').value = '';
   document.getElementById('modal-prompt').value = '';
+  document.getElementById('modal-orch-config').value = '';
   document.getElementById('git-options').style.display = 'none';
+  document.getElementById('orch-config-section').style.display = 'none';
+
+  if (parent) {
+    // Adding agent to existing orchestrator — hide type selector, show preset
+    document.getElementById('modal-heading').textContent = 'Add Agent to Orchestrator';
+    document.getElementById('type-selector').style.display = 'none';
+    document.getElementById('preset-options').style.display = 'block';
+    selectPreset('coder');
+    modalSelectedType = 'agent';
+  } else {
+    // Top-level creation — show type selector, hide preset
+    document.getElementById('modal-heading').textContent = 'New Instance';
+    document.getElementById('type-selector').style.display = 'block';
+    document.getElementById('preset-options').style.display = 'none';
+    selectType(mode || 'agent');
+  }
   setTimeout(() => document.getElementById('modal-title').focus(), 100);
 }
+
+function selectType(type) {
+  modalSelectedType = type;
+  document.querySelectorAll('.type-option').forEach(el => {
+    el.classList.toggle('active', el.dataset.type === type);
+  });
+  document.getElementById('orch-config-section').style.display = type === 'orchestrator' ? 'block' : 'none';
+}
+
+document.querySelectorAll('.type-option').forEach(el => {
+  el.addEventListener('click', () => selectType(el.dataset.type));
+});
+
+function selectPreset(preset) {
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.preset-btn[data-preset="${preset}"]`).classList.add('active');
+  const descs = {
+    coder: 'Full code editing, testing, and Docker access',
+    researcher: 'Read-only research, web search, documentation',
+  };
+  document.getElementById('preset-desc').textContent = descs[preset] || '';
+}
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => selectPreset(btn.dataset.preset));
+});
+
+document.getElementById('btn-new').addEventListener('click', () => showNewModal());
 
 function toggleGitOptions() {
   document.getElementById('git-options').style.display =
@@ -1577,25 +2563,121 @@ function hideModal() {
 }
 
 async function createInstance() {
-  const title = document.getElementById('modal-title').value.trim();
-  const path = document.getElementById('modal-path').value.trim();
+  const parent = document.getElementById('modal-parent').value;
+  let title = document.getElementById('modal-title').value.trim();
+  let path = document.getElementById('modal-path').value.trim();
   const git_mode = document.getElementById('modal-gitmode').checked;
   const repo_path = document.getElementById('modal-repo').value.trim();
   const branch = document.getElementById('modal-branch').value.trim();
   const prompt = document.getElementById('modal-prompt').value.trim();
+
+  // For orchestrator type, parse config first so title/path can come from it
+  let orchConfig = null;
+  if (modalSelectedType === 'orchestrator' && !parent) {
+    const configText = document.getElementById('modal-orch-config').value.trim();
+    if (configText) {
+      try {
+        if (configText.startsWith('{')) {
+          orchConfig = JSON.parse(configText);
+        } else {
+          orchConfig = parseYAML(configText);
+        }
+      } catch (e) {
+        alert('Invalid team config: ' + e.message);
+        return;
+      }
+    }
+    // Config values override empty form fields
+    if (orchConfig) {
+      if (!title && orchConfig.title) title = orchConfig.title;
+      if (!path && orchConfig.path) path = orchConfig.path;
+    }
+  }
+
   if (!title) { alert('Title is required'); return; }
   hideModal();
+
   try {
-    await api('', {
-      method: 'POST',
-      body: JSON.stringify({ title, prompt, path: path || '', git_mode, repo_path, branch }),
-    });
-    selectInstance(title);
-    refreshList();
+    if (modalSelectedType === 'orchestrator' && !parent) {
+      // Create orchestrator group:
+      // 1. Create the control loop instance (top-level, instance_type=loop)
+      const loopTitle = title;
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: loopTitle,
+          path: path || '',
+          git_mode: false,
+          agent_preset: 'loop',
+          instance_type: 'loop',
+        }),
+      });
+
+      // 2. Create the leader agent as a child of the loop
+      const leaderTitle = title + '-leader';
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: leaderTitle,
+          prompt,
+          path: path || '',
+          git_mode,
+          repo_path,
+          branch,
+          parent: loopTitle,
+          agent_preset: 'orchestrator',
+        }),
+      });
+
+      // 3. Pre-populate team agents and task from JSON config
+      if (orchConfig) {
+        teamAgents = [];
+        teamAgentCounter = 0;
+        if (Array.isArray(orchConfig.agents)) {
+          orchConfig.agents.forEach((a, i) => {
+            teamAgentCounter++;
+            teamAgents.push({
+              name: a.name || (loopTitle + '-agent-' + teamAgentCounter),
+              path: a.path || '',
+              git_mode: !!a.git_mode,
+              preset: a.preset || 'coder',
+              prompt: a.prompt || '',
+            });
+          });
+        }
+        if (orchConfig.task) {
+          // Set the task prompt in the team panel textarea after selecting
+          setTimeout(() => {
+            const taskEl = document.getElementById('team-task');
+            if (taskEl) taskEl.value = orchConfig.task;
+          }, 200);
+        }
+      }
+
+      selectInstance(loopTitle);
+      refreshList();
+    } else {
+      // Create a normal agent, optionally as a child of an orchestrator
+      const activePreset = document.querySelector('.preset-btn.active');
+      const agent_preset = parent && activePreset ? activePreset.dataset.preset : '';
+      await api('', {
+        method: 'POST',
+        body: JSON.stringify({
+          title,
+          prompt,
+          path: path || '',
+          git_mode,
+          repo_path,
+          branch,
+          parent: parent || undefined,
+          agent_preset: agent_preset || undefined,
+        }),
+      });
+      selectInstance(title);
+      refreshList();
+    }
   } catch (e) { alert('Error: ' + e.message); }
 }
-
-document.getElementById('btn-new').addEventListener('click', showNewModal);
 document.getElementById('modal-overlay').addEventListener('click', (e) => {
   if (e.target === document.getElementById('modal-overlay')) hideModal();
 });
@@ -1658,13 +2740,10 @@ function updateActionButtons(content) {
   if (!bar || !container) return;
 
   const plain = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-  const actions = parseActions(plain);
+  // Filter out Esc actions since we have a permanent Esc button
+  const actions = parseActions(plain).filter(a => a.keys !== '\x1b');
 
-  if (actions.length === 0) {
-    bar.style.display = 'none';
-    return;
-  }
-
+  // Always show bar (for permanent Esc button); clear dynamic buttons
   bar.style.display = '';
   container.innerHTML = '';
   for (const action of actions) {
@@ -1680,40 +2759,50 @@ function updateActionButtons(content) {
 function parseActions(plain) {
   const actions = [];
 
-  // Detect numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
-  // Only treat them as interactive options if preceded by a question (line containing "?")
-  const optionRe = /^\s*[❯>]?\s*(\d+)\.\s+(.+)$/gm;
-  let m;
-  const firstOptionMatch = optionRe.exec(plain);
-  if (firstOptionMatch) {
-    // Check if any line before the first numbered option contains a "?"
-    const textBefore = plain.slice(0, firstOptionMatch.index);
-    const hasQuestion = textBefore.split('\n').some(line => line.includes('?'));
-    if (hasQuestion) {
-      const num = firstOptionMatch[1];
-      const label = firstOptionMatch[2].trim();
+  // Detect interactive numbered options: lines like "❯ 1. Yes" or "  2. Yes, and don't ask again"
+  // Only collect options in the same group as the ❯ cursor. Options can have
+  // multi-line descriptions between them (wrapped text), so we find all option
+  // lines, identify which one has the cursor, then include all options connected
+  // to it where the gap between consecutive options is ≤ 15 lines.
+  const lines = plain.split('\n');
+  const optionLineRe = /^\s*([❯>])?\s*(\d+)\.\s*(.+)/;
+
+  // Collect all numbered option lines with their indices
+  const allOptions = [];
+  let cursorOptIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(optionLineRe);
+    if (!m) continue;
+    let label = m[3].replace(/\s{3,}.*$/, '').trim();
+    if (!label) continue;
+    if (m[1]) cursorOptIdx = allOptions.length;
+    allOptions.push({ num: m[2], label, lineIdx: i });
+  }
+
+  if (cursorOptIdx >= 0) {
+    // The ❯ cursor is on the first option in Claude CLI's selector,
+    // so only walk forward to collect the rest of the group (≤ 15 line gap).
+    let groupEnd = cursorOptIdx;
+    for (let i = cursorOptIdx + 1; i < allOptions.length; i++) {
+      if (allOptions[i].lineIdx - allOptions[i - 1].lineIdx <= 15) groupEnd = i;
+      else break;
+    }
+
+    for (let i = cursorOptIdx; i <= groupEnd; i++) {
+      const opt = allOptions[i];
       actions.push({
-        label: `${num}. ${label}`,
-        keys: num,
-        style: num === '1' ? 'action-primary' : '',
-        title: `Send ${num}`,
+        label: `${opt.num}. ${opt.label}`,
+        keys: opt.num,
+        style: opt.num === '1' ? 'action-primary' : '',
+        title: `Send ${opt.num}`,
       });
-      while ((m = optionRe.exec(plain)) !== null) {
-        const num = m[1];
-        const label = m[2].trim();
-        actions.push({
-          label: `${num}. ${label}`,
-          keys: num,
-          style: num === '1' ? 'action-primary' : '',
-          title: `Send ${num}`,
-        });
-      }
     }
   }
 
   // Detect hint line: "Esc to cancel · Tab to amend · ctrl+e to explain"
   // Match patterns like "Esc to cancel", "Tab to amend", "ctrl+x to something"
   const hintRe = /(Esc|Tab|ctrl\+\w)\s+to\s+(\w+)/gi;
+  let m;
   while ((m = hintRe.exec(plain)) !== null) {
     const key = m[1];
     const verb = m[2].toLowerCase();
@@ -1822,7 +2911,7 @@ function renderSquadSessionCard(s) {
   const card = document.createElement('div');
   card.className = 'session-card' + (s.active ? ' active-session' : '');
 
-  const statusLabel = s.status === 'ready' ? 'waiting' : s.status;
+  const statusLabel = s.status === 'ready' ? 'idle' : s.status;
   const created = formatRelativeTime(s.created_at);
   const updated = formatRelativeTime(s.updated_at);
   const shortPath = (s.path || '').replace(/^\/Users\/[^/]+/, '~');
@@ -1921,6 +3010,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
     if (activeTab === 'rules') { e.preventDefault(); saveRules(); }
     if (activeTab === 'plans') { e.preventDefault(); savePlans(); }
+    if (activeTab === 'memory') { e.preventDefault(); saveMemory(); }
   }
 });
 
@@ -1943,9 +3033,16 @@ function connectStatusWS() {
           changed = true;
         }
       }
+      // Store enriched agent metadata if present
+      if (msg.agents) {
+        for (const [title, meta] of Object.entries(msg.agents)) {
+          instanceAgentMeta[title] = meta;
+        }
+      }
       if (changed) {
-        refreshList();
+        updateListStatuses();
         updatePausedState();
+        updateTeamPanelStatuses();
       }
     }
   };
@@ -1953,6 +3050,7 @@ function connectStatusWS() {
     statusWsConnected = false;
     // Clear cached statuses so stale data doesn't override REST responses
     instanceStatuses = {};
+    instanceAgentMeta = {};
     setTimeout(connectStatusWS, 3000);
   };
   statusWs.onerror = () => {

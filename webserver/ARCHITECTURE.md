@@ -35,6 +35,8 @@ Every 200ms, for each active instance:
 - Capture visible pane via `inst.Preview()`
 - Query `inst.GetHistorySize()` to detect new scrollback (O(1) metadata check)
 - If scrollback grew, capture only the delta via `inst.CaptureScrollback(delta)`
+- If scrollback shrank (terminal resize), reset tracker without capturing (lines may have rewrapped)
+- On first sight of an instance with existing scrollback, capture full scrollback to seed history (restart recovery)
 - Feed both into `cl.Ingest(newScrollback, paneContent)`
 
 This delta approach avoids re-reading the entire scrollback buffer every tick.
@@ -45,10 +47,14 @@ ConversationLog maintains two regions:
 - **stableLines**: append-only history (lines that scrolled off the visible pane)
 - **currentPane**: volatile visible pane content (replaced every ingest)
 
-Lines enter stable **only** via scrollback promotion — when tmux reports new scrollback lines, they're appended to stableLines. There is no turn-based promotion (promoting pane to stable on status transitions was tried but caused duplication).
+Lines enter stable **only** via scrollback delta — when tmux reports new scrollback lines, they're appended to stableLines. There is no turn-based promotion (promoting pane to stable on status transitions was tried but caused duplication).
+
+`GetState()` deduplicates at read time via `findOverlap`: if the tail of stableLines matches the head of currentPane (which can happen after a terminal resize pulls lines back from scrollback into the visible pane), the overlapping stable lines are excluded. This is safe because it never mutates stableLines — the WebSocket handler uses `GetRawStableCount()` for delta tracking, which is immune to overlap fluctuations.
+
+Short responses that never scroll off the visible pane remain in `currentPane` and are always visible to the client via pane messages. They enter stableLines naturally when new output eventually displaces them into scrollback.
 
 The struct also tracks:
-- `lastStatus`: current instance status (for transition detection)
+- `lastStatus`: current instance status (informational only, does not drive promotion)
 - `lastInput`: most recent user prompt (displayed in UI)
 - `inputHistory`: all prompts sent by user
 
@@ -121,9 +127,9 @@ Every 500ms, checks each active instance for activity:
 
 3. **No persistence for conversation logs**: ConversationLog is purely in-memory. Tmux scrollback is the source of truth. This avoids stale data and keeps the server simple.
 
-4. **Scrollback-only promotion**: Lines only move to stable history when they physically scroll off the visible pane. Turn-based promotion (promoting on running→ready transitions) was removed because it caused duplicate lines appearing in both stable and pane.
+4. **Scrollback-only stable lines**: Lines only move to stable history when they physically scroll off the visible pane (detected via tmux `history_size` delta). There is no turn-based promotion — status transitions do not affect stable lines. This eliminates a class of duplication bugs where promoted pane content would overlap with scrollback delta. Short responses that never scroll off remain in the pane and are visible to clients via pane messages until displaced.
 
-5. **Delta scrollback capture**: Instead of capturing the full scrollback buffer every tick, we track `lastHistorySize` and only capture new lines. This is O(delta) instead of O(total).
+5. **Delta scrollback capture**: Instead of capturing the full scrollback buffer every tick, we track `lastHistorySize` and only capture new lines. This is O(delta) instead of O(total). When `history_size` decreases (terminal resize / line rewrapping), the tracker resets and `findOverlap` in `GetState()` handles the resulting overlap at read time.
 
 6. **Raw keystroke API**: The `/keys` endpoint sends bytes directly to the PTY, enabling the UI to interact with Claude CLI's interactive prompts (numbered choices, Esc/Tab/ctrl shortcuts) without the server needing to understand the prompt format.
 

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(cat *)",
+      "WebFetch",
+      "WebSearch",
+      "mcp__orchestrator__*"
+    ],
+    "deny": [
+      "Bash(rm -rf *)"
+    ]
+  }
+}

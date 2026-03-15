@@ -62,7 +62,19 @@ export class ConvLogView {
 
     // Render initial pane
     if (initialState && initialState.pane && initialState.pane.length > 0) {
-      this.paneDiv.innerHTML = safeAnsiToHtml(initialState.pane.join('\n'));
+      const paneContent = initialState.pane.join('\n');
+      this.paneDiv.innerHTML = safeAnsiToHtml(paneContent);
+    }
+
+    // Fire onContent with the bottom-most visible content for action button detection.
+    // The interactive selector may be in the pane (live) or at the tail of stable lines
+    // (if the pane is empty, e.g. on reconnect to an idle session).
+    if (this.onContent) {
+      const paneContent = initialState?.pane?.length > 0 ? initialState.pane.join('\n') : null;
+      const tailContent = initialState?.stable_lines?.length > 0
+        ? initialState.stable_lines.slice(-30).join('\n') : null;
+      const content = paneContent || tailContent;
+      if (content) this.onContent(content);
     }
 
     this._updateLastInput(initialState ? initialState.last_input : '');
@@ -70,7 +82,7 @@ export class ConvLogView {
     // Scroll to bottom
     this.container.scrollTop = this.container.scrollHeight;
 
-    // Open WebSocket
+    // Open WebSocket — server seeds from current raw stable count automatically
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let newWs;
     try {
@@ -148,8 +160,9 @@ export class ConvLogView {
     } else if (msg.type === 'pane') {
       // Replace volatile pane content
       if (this.paneDiv) {
-        const newHtml = safeAnsiToHtml(msg.content);
-        this.paneDiv.innerHTML = (this.stableCount > 0 ? '\n' : '') + newHtml;
+        const hasContent = msg.content && msg.content.trim();
+        this.paneDiv.innerHTML = hasContent ? safeAnsiToHtml(msg.content) : '';
+        this.paneDiv.style.display = hasContent ? '' : 'none';
       }
 
       this._updateLastInput(msg.last_input);

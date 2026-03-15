@@ -227,17 +227,30 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
-// SendPromptViaTmux sends text followed by Enter as a single atomic tmux
-// send-keys command. The text is passed as one argument (tmux sends
-// unrecognized strings as literal characters) and "Enter" as a recognized
-// key name. Using a single command ensures the Enter keystroke cannot be
-// lost or separated from the text.
+// SendPromptViaTmux sends text followed by Enter to the tmux session.
+// The text is sent with -l (literal) to prevent tmux from interpreting
+// special characters like ; # and key names. Enter is sent separately
+// since -l would send the literal string "Enter" instead of the key.
+// For long text, Claude CLI may detect it as "pasted text" and require
+// a second Enter to submit, so we send an extra Enter after a brief pause.
 func (t *TmuxSession) SendPromptViaTmux(text string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, text, "Enter")
+	// Send text literally (no interpretation of special chars)
+	cmd := exec.Command("tmux", "send-keys", "-l", "-t", t.sanitizedName, text)
 	out, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		log.ErrorLog.Printf("tmux send-keys failed for session %s: %v (output: %s)", t.sanitizedName, err, string(out))
+		return err
 	}
+	// Send Enter to submit
+	cmd = exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")
+	if _, err := t.cmdExec.Output(cmd); err != nil {
+		return err
+	}
+	// Claude CLI treats long input as "pasted text" requiring a second Enter.
+	// Send another Enter after a short pause to handle this.
+	time.Sleep(200 * time.Millisecond)
+	cmd = exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")
+	_, err = t.cmdExec.Output(cmd)
 	return err
 }
 
@@ -249,13 +262,15 @@ func (t *TmuxSession) TapEnterViaTmux() error {
 }
 
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
-// the tmux pane has a prompt for aider or claude code.
-func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
+// the tmux pane has a prompt for aider or claude code. The pane content is returned for further parsing.
+func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool, paneContent string) {
 	content, err := t.CapturePaneContent()
 	if err != nil {
 		log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
-		return false, false
+		return false, false, ""
 	}
+
+	paneContent = content
 
 	// Only set hasPrompt for claude and aider. Use these strings to check for a prompt.
 	if t.program == ProgramClaude {
@@ -268,9 +283,9 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 
 	if !bytes.Equal(t.monitor.hash(content), t.monitor.prevOutputHash) {
 		t.monitor.prevOutputHash = t.monitor.hash(content)
-		return true, hasPrompt
+		return true, hasPrompt, paneContent
 	}
-	return false, hasPrompt
+	return false, hasPrompt, paneContent
 }
 
 func (t *TmuxSession) Attach() (chan struct{}, error) {

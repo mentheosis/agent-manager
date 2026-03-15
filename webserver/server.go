@@ -3,11 +3,13 @@ package webserver
 import (
 	"claude-squad/config"
 	"claude-squad/log"
+	"claude-squad/orchestrator"
 	"claude-squad/session"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,8 +37,14 @@ type Server struct {
 
 	// Status broadcast: pollMetadata writes, status WS clients read
 	statusMu      sync.Mutex
-	lastStatuses  map[string]string        // title -> last known status string
-	statusClients map[*websocket.Conn]bool // connected status WS clients
+	lastAgentMeta map[string]*AgentMeta     // title -> last broadcast metadata
+	statusClients map[*websocket.Conn]bool  // connected status WS clients
+
+	// port is the port the web server is running on (set during Run)
+	port int
+
+	// nextMCPPort is the next port to assign to an orchestrator MCP server.
+	nextMCPPort int
 }
 
 func NewServer(program string, autoYes bool) (*Server, error) {
@@ -63,23 +71,28 @@ func NewServer(program string, autoYes bool) (*Server, error) {
 		program:         program,
 		autoYes:         autoYes,
 		lastHistorySize: make(map[string]int),
-		lastStatuses:    make(map[string]string),
+		lastAgentMeta:   make(map[string]*AgentMeta),
 		statusClients:   make(map[*websocket.Conn]bool),
 	}, nil
 }
 
 type instanceJSON struct {
-	Title        string `json:"title"`
-	DisplayTitle string `json:"display_title,omitempty"`
-	Status       string `json:"status"`
-	Branch      string `json:"branch"`
-	Program     string `json:"program"`
-	Path        string `json:"path"`
-	WorkDir     string `json:"work_dir"`
-	GitMode     bool   `json:"git_mode"`
-	CreatedAt   string `json:"created_at"`
-	DiffAdded   int    `json:"diff_added"`
-	DiffRemoved int    `json:"diff_removed"`
+	Title        string   `json:"title"`
+	DisplayTitle string   `json:"display_title,omitempty"`
+	Status       string   `json:"status"`
+	Branch       string   `json:"branch"`
+	Program      string   `json:"program"`
+	Path         string   `json:"path"`
+	WorkDir      string   `json:"work_dir"`
+	GitMode      bool     `json:"git_mode"`
+	CreatedAt    string   `json:"created_at"`
+	DiffAdded    int      `json:"diff_added"`
+	DiffRemoved  int      `json:"diff_removed"`
+	Parent       string   `json:"parent,omitempty"`
+	Children     []string `json:"children,omitempty"`
+	InstanceType string   `json:"instance_type,omitempty"`
+	AgentPreset  string   `json:"agent_preset,omitempty"`
+	MCPPort      int      `json:"mcp_port,omitempty"`
 }
 
 func statusString(s session.Status) string {
@@ -117,6 +130,11 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 		j.DiffAdded = ds.Added
 		j.DiffRemoved = ds.Removed
 	}
+	j.Parent = inst.Parent
+	j.Children = inst.Children
+	j.InstanceType = inst.InstanceType
+	j.AgentPreset = inst.AgentPreset
+	j.MCPPort = inst.MCPPort
 	return j
 }
 
@@ -151,29 +169,64 @@ func (s *Server) pollMetadata() {
 	defer ticker.Stop()
 	for range ticker.C {
 		s.mu.Lock()
-		changed := make(map[string]string) // title -> new status
+		changed := make(map[string]*AgentMeta) // title -> new metadata
+
 		for _, inst := range s.instances {
+			var meta *AgentMeta
+
 			if inst.Started() && !inst.Paused() {
-				inst.CheckAndHandleTrustPrompt()
-				updated, prompt := inst.HasUpdated()
-				if updated {
+				// Loop instances: check the orchestrator's /status endpoint for actual state
+				if inst.InstanceType == "loop" && inst.MCPPort > 0 {
+					s.pollLoopStatus(inst)
+					meta = &AgentMeta{Status: statusString(inst.Status)}
+				} else if inst.InstanceType == "loop" {
 					inst.SetStatus(session.Running)
+					meta = &AgentMeta{Status: "running"}
 				} else {
-					if prompt {
-						inst.TapEnter()
+					inst.CheckAndHandleTrustPrompt()
+					updated, prompt, paneContent := inst.HasUpdated()
+
+					// Parse pane for interactive prompts
+					var panePrompt *PanePrompt
+					if paneContent != "" {
+						panePrompt = parsePaneActions(paneContent)
+					}
+
+					var statusStr string
+					if updated {
+						inst.SetStatus(session.Running)
+						statusStr = "running"
+					} else if prompt {
+						// Known interactive prompt (Claude permission dialog, etc.)
+						// For loop children, don't auto-dismiss — let the loop handle it
+						if inst.Parent != "" {
+							inst.SetStatus(session.Ready)
+							statusStr = "waiting"
+						} else {
+							inst.TapEnter()
+							statusStr = statusString(inst.Status)
+						}
 					} else {
 						inst.SetStatus(session.Ready)
+						statusStr = "ready"
+					}
+					_ = inst.UpdateDiffStats()
+
+					meta = &AgentMeta{
+						Status: statusStr,
+						Prompt: panePrompt,
 					}
 				}
-				_ = inst.UpdateDiffStats()
+			} else {
+				meta = &AgentMeta{Status: statusString(inst.Status)}
 			}
 
-			// Always check for status changes (including paused/loading instances)
-			status := statusString(inst.Status)
+			// Check if metadata changed
 			s.statusMu.Lock()
-			if s.lastStatuses[inst.Title] != status {
-				s.lastStatuses[inst.Title] = status
-				changed[inst.Title] = status
+			prev := s.lastAgentMeta[inst.Title]
+			if prev == nil || !agentMetaEqual(prev, meta) {
+				s.lastAgentMeta[inst.Title] = meta
+				changed[inst.Title] = meta
 			}
 			s.statusMu.Unlock()
 		}
@@ -181,16 +234,83 @@ func (s *Server) pollMetadata() {
 
 		// Broadcast any changes
 		if len(changed) > 0 {
-			s.broadcastStatuses(changed)
+			s.broadcastAgentMeta(changed)
 		}
 	}
 }
 
-// broadcastStatuses sends status updates to all connected status WS clients.
-func (s *Server) broadcastStatuses(changed map[string]string) {
+// agentMetaEqual compares two AgentMeta for equality.
+func agentMetaEqual(a, b *AgentMeta) bool {
+	if a.Status != b.Status {
+		return false
+	}
+	if (a.Prompt == nil) != (b.Prompt == nil) {
+		return false
+	}
+	if a.Prompt != nil && b.Prompt != nil {
+		if a.Prompt.Message != b.Prompt.Message {
+			return false
+		}
+		if len(a.Prompt.Actions) != len(b.Prompt.Actions) {
+			return false
+		}
+		for i := range a.Prompt.Actions {
+			if a.Prompt.Actions[i] != b.Prompt.Actions[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// loopStatusClient is a shared HTTP client with short timeout for polling loop status.
+var loopStatusClient = &http.Client{Timeout: 500 * time.Millisecond}
+
+// pollLoopStatus checks the orchestrator binary's /status endpoint and maps
+// its state to an instance status.
+func (s *Server) pollLoopStatus(inst *session.Instance) {
+	statusURL := fmt.Sprintf("http://localhost:%d/status", inst.MCPPort)
+	resp, err := loopStatusClient.Get(statusURL)
+	if err != nil {
+		// MCP server not up yet — show as waiting (ready)
+		inst.SetStatus(session.Ready)
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		inst.SetStatus(session.Ready)
+		return
+	}
+
+	switch result.State {
+	case "running":
+		inst.SetStatus(session.Running)
+	case "paused":
+		inst.SetStatus(session.Paused)
+	case "idle", "done":
+		inst.SetStatus(session.Ready)
+	default:
+		inst.SetStatus(session.Ready)
+	}
+}
+
+// broadcastAgentMeta sends enriched status updates to all connected status WS clients.
+// Includes both the new "agents" format and backwards-compatible "statuses" map.
+func (s *Server) broadcastAgentMeta(changed map[string]*AgentMeta) {
+	// Build backwards-compatible statuses map
+	statuses := make(map[string]string, len(changed))
+	for title, meta := range changed {
+		statuses[title] = meta.Status
+	}
+
 	msg := map[string]interface{}{
 		"type":     "status_update",
-		"statuses": changed,
+		"statuses": statuses,
+		"agents":   changed,
 	}
 
 	s.statusMu.Lock()
@@ -212,21 +332,25 @@ func (s *Server) handleStatusWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collect current statuses, register client, and send initial state all
+	// Collect current state, register client, and send initial state
 	// under statusMu to prevent concurrent writes and missed updates.
 	s.mu.RLock()
-	current := make(map[string]string)
+	currentStatuses := make(map[string]string)
+	currentAgents := make(map[string]*AgentMeta)
 	for _, inst := range s.instances {
-		current[inst.Title] = statusString(inst.Status)
+		status := statusString(inst.Status)
+		currentStatuses[inst.Title] = status
+		currentAgents[inst.Title] = &AgentMeta{Status: status}
 	}
 	s.mu.RUnlock()
 
 	s.statusMu.Lock()
 	s.statusClients[conn] = true
-	if len(current) > 0 {
+	if len(currentStatuses) > 0 {
 		if err := conn.WriteJSON(map[string]interface{}{
 			"type":     "status_update",
-			"statuses": current,
+			"statuses": currentStatuses,
+			"agents":   currentAgents,
 		}); err != nil {
 			delete(s.statusClients, conn)
 			s.statusMu.Unlock()
@@ -280,25 +404,22 @@ func (s *Server) pollOutput() {
 
 			var newScrollback string
 			lastSize := s.lastHistorySize[inst.Title]
-			if historySize > lastSize {
+
+			// Resize guard: if history_size decreased (e.g. terminal resize
+			// caused line rewrapping), reset our tracker. The overlap between
+			// stable and pane is handled at read time by findOverlap in GetState.
+			if historySize < lastSize {
+				s.lastHistorySize[inst.Title] = historySize
+			} else if historySize > lastSize {
 				delta := historySize - lastSize
 				newScrollback, err = inst.CaptureScrollback(delta)
 				if err != nil {
 					continue
 				}
 				s.lastHistorySize[inst.Title] = historySize
-				
-				// fmt.Println("=======================")
-				// fmt.Printf("[convlog %s] historySize=%d lastSize=%d delta=%d scrollbackLines=%d",
-				// 	inst.Title, historySize, lastSize, delta, len(strings.Split(newScrollback, "\n")))
-				// fmt.Printf("\n[convlog %s] newScrollback (last lines):\n %s",
-				// 	inst.Title, lastNLines(newScrollback, 5))
-				// fmt.Printf("\n[convlog %s] paneContent (last lines):\n %s",
-				// 	inst.Title, firstNLines(paneContent, 5))
 			}
 
 			cl.Ingest(newScrollback, paneContent)
-			cl.SetStatus(statusString(inst.Status))
 		}
 		s.mu.RUnlock()
 	}
@@ -404,14 +525,103 @@ func ensureLocalPlansDir(workDir string) {
 	}
 }
 
+// waitForMCPServer polls the MCP URL until it responds or the timeout expires.
+// This ensures the MCP HTTP server is accepting connections before the leader
+// Claude session starts, so Claude's MCP initialization handshake succeeds.
+func waitForMCPServer(mcpURL string, timeout time.Duration) {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(mcpURL + "/status")
+		if err == nil {
+			resp.Body.Close()
+			log.InfoLog.Printf("[MCP] Server at %s is reachable", mcpURL)
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	log.WarningLog.Printf("[MCP] Timed out waiting for server at %s after %v", mcpURL, timeout)
+}
+
+// writeMCPConfig writes a .mcp.json in workDir so the Claude CLI connects
+// to the orchestrator's MCP HTTP server.
+func writeMCPConfig(workDir, mcpURL string) {
+	mcpPath := filepath.Join(workDir, ".mcp.json")
+
+	config := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"orchestrator": map[string]interface{}{
+				"type": "http",
+				"url":  mcpURL,
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		log.ErrorLog.Printf("[MCP] failed to marshal mcp config: %v", err)
+		return
+	}
+	if err := os.WriteFile(mcpPath, append(data, '\n'), 0644); err != nil {
+		log.ErrorLog.Printf("[MCP] failed to write .mcp.json: %v", err)
+		return
+	}
+	log.InfoLog.Printf("[MCP] Wrote %s → %s", mcpPath, mcpURL)
+}
+
+// applyPresetSettings merges the preset's default permissions into settings.local.json.
+func applyPresetSettings(workDir string, preset orchestrator.AgentPreset) {
+	settingsPath := filepath.Join(workDir, ".claude", "settings.local.json")
+
+	// Load existing settings
+	existing := make(map[string]interface{})
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		json.Unmarshal(data, &existing)
+	}
+
+	// Parse preset settings
+	var presetData map[string]interface{}
+	if err := json.Unmarshal([]byte(preset.DefaultSettings()), &presetData); err != nil {
+		log.ErrorLog.Printf("failed to parse preset settings for %s: %v", preset, err)
+		return
+	}
+
+	// Merge preset into existing (preset values override)
+	for k, v := range presetData {
+		existing[k] = v
+	}
+
+	if err := os.MkdirAll(filepath.Join(workDir, ".claude"), 0755); err != nil {
+		log.ErrorLog.Printf("failed to create .claude dir: %v", err)
+		return
+	}
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		log.ErrorLog.Printf("failed to marshal settings: %v", err)
+		return
+	}
+	if err := os.WriteFile(settingsPath, append(data, '\n'), 0644); err != nil {
+		log.ErrorLog.Printf("failed to write settings.local.json: %v", err)
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title    string `json:"title"`
-		Prompt   string `json:"prompt"`
-		Path     string `json:"path"`
-		GitMode  bool   `json:"git_mode"`
-		RepoPath string `json:"repo_path"`
-		Branch   string `json:"branch"`
+		Title       string `json:"title"`
+		Prompt      string `json:"prompt"`
+		Path        string `json:"path"`
+		GitMode     bool   `json:"git_mode"`
+		RepoPath    string `json:"repo_path"`
+		Branch      string `json:"branch"`
+		Parent       string `json:"parent,omitempty"`
+		AgentPreset  string `json:"agent_preset,omitempty"`
+		InstanceType string `json:"instance_type,omitempty"`
+		MCPPort      int    `json:"-"` // internal use, not from request body
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -433,11 +643,45 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine the program to run: loop instances run the orchestrator binary,
+	// regular instances run the configured CLI program (e.g. claude).
+	program := s.program
+	if body.InstanceType == "loop" {
+		// Find the orchestrator binary: check bin/ next to the server binary first,
+		// then fall back to same directory as the server binary.
+		selfBin, err := os.Executable()
+		if err != nil {
+			selfBin = "."
+		}
+		baseDir := filepath.Dir(selfBin)
+		orchBin := filepath.Join(baseDir, "claude-squad-orchestrator")
+		if binPath := filepath.Join(baseDir, "bin", "claude-squad-orchestrator"); fileExists(binPath) {
+			orchBin = binPath
+		}
+		mcpPort := s.nextMCPPort
+		s.nextMCPPort++
+		escaped := strings.ReplaceAll(body.Title, "'", "'\\''")
+		program = fmt.Sprintf("%s --group '%s' --base-url http://localhost:%d --mcp-port %d", orchBin, escaped, s.port, mcpPort)
+		if body.Prompt != "" {
+			escapedTask := strings.ReplaceAll(body.Prompt, "'", "'\\''")
+			program += fmt.Sprintf(" --task '%s'", escapedTask)
+		}
+		// Store the MCP port so child instances can find it
+		body.MCPPort = mcpPort
+		log.InfoLog.Printf("[Orchestrator] Creating loop instance %q on MCP port %d with binary: %s", body.Title, mcpPort, orchBin)
+	}
+
+	// Ensure the working directory exists
+	if err := os.MkdirAll(body.Path, 0755); err != nil {
+		http.Error(w, fmt.Sprintf("failed to create working directory: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	inst, err := session.NewInstance(session.InstanceOptions{
 		Title:    body.Title,
 		Path:     body.Path,
 		RepoPath: body.RepoPath,
-		Program:  s.program,
+		Program:  program,
 		AutoYes:  s.autoYes,
 		GitMode:  body.GitMode,
 	})
@@ -446,12 +690,62 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set orchestrator fields if provided
+	if body.AgentPreset != "" {
+		inst.AgentPreset = body.AgentPreset
+	}
+	if body.InstanceType != "" {
+		inst.InstanceType = body.InstanceType
+	}
+	if body.MCPPort != 0 {
+		inst.MCPPort = body.MCPPort
+	}
+	if body.Parent != "" {
+		inst.Parent = body.Parent
+		// Add to parent's children list
+		if parent := s.findInstance(body.Parent); parent != nil {
+			parent.Children = append(parent.Children, body.Title)
+		}
+	}
+
 	// Ensure .claude/settings.local.json exists with local plans directory
 	ensureLocalPlansDir(inst.Path)
+
+	// Apply preset settings (permissions) to settings.local.json
+	if body.AgentPreset != "" {
+		applyPresetSettings(inst.Path, orchestrator.AgentPreset(body.AgentPreset))
+	}
+
+	// Write .mcp.json for orchestrator leader BEFORE Start() so Claude sees it at init.
+	// Also wait for the MCP HTTP server to be reachable so Claude can connect.
+	if body.AgentPreset == "orchestrator" && body.Parent != "" {
+		if parent := s.findInstance(body.Parent); parent != nil && parent.MCPPort != 0 {
+			mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
+			log.InfoLog.Printf("[Orchestrator] Writing MCP config for leader %q → %s", body.Title, mcpURL)
+			writeMCPConfig(inst.Path, mcpURL)
+
+			// Wait for MCP server to be reachable before starting the leader,
+			// so Claude's MCP init handshake doesn't fail.
+			waitForMCPServer(mcpURL, 10*time.Second)
+		} else {
+			log.WarningLog.Printf("[Orchestrator] Parent %q has no MCP port, skipping .mcp.json for leader %q", body.Parent, body.Title)
+		}
+	}
 
 	if err := inst.Start(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// For git worktree mode, also write .mcp.json into the worktree directory
+	if body.AgentPreset == "orchestrator" && body.Parent != "" {
+		if wt := inst.GetWorktreePath(); wt != "" {
+			if parent := s.findInstance(body.Parent); parent != nil && parent.MCPPort != 0 {
+				mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
+				log.InfoLog.Printf("[Orchestrator] Writing MCP config to worktree for leader %q → %s", body.Title, mcpURL)
+				writeMCPConfig(wt, mcpURL)
+			}
+		}
 	}
 
 	if body.Prompt != "" {
@@ -479,16 +773,50 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	// Parse path: /api/instances/{title}/{action}
-	path := strings.TrimPrefix(r.URL.Path, "/api/instances/")
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) == 0 {
+	// Use RawPath to preserve %2F in titles that contain slashes.
+	rawPath := r.URL.RawPath
+	if rawPath == "" {
+		rawPath = r.URL.Path
+	}
+	path := strings.TrimPrefix(rawPath, "/api/instances/")
+	// The action is always the last path segment (kill, send, ws, etc.)
+	var encodedTitle, action string
+	if lastSlash := strings.LastIndex(path, "/"); lastSlash >= 0 {
+		encodedTitle = path[:lastSlash]
+		action = path[lastSlash+1:]
+	} else {
+		encodedTitle = path
+	}
+	title, _ := url.PathUnescape(encodedTitle)
+	if title == "" {
 		http.Error(w, "missing instance title", http.StatusBadRequest)
 		return
 	}
-	title := parts[0]
-	action := ""
-	if len(parts) > 1 {
-		action = parts[1]
+
+	// For task action, proxy to the loop's MCP server (avoids tmux/pty issues with long text).
+	if action == "task" {
+		s.mu.RLock()
+		inst := s.findInstance(title)
+		s.mu.RUnlock()
+		if inst == nil {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+		if inst.MCPPort == 0 {
+			http.Error(w, "instance has no MCP server", http.StatusBadRequest)
+			return
+		}
+		mcpURL := fmt.Sprintf("http://localhost:%d/task", inst.MCPPort)
+		resp, err := http.Post(mcpURL, "application/json", r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+		return
 	}
 
 	// For send/keys, use minimal locking — only hold the lock to find the
@@ -572,9 +900,32 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	case "kill":
+		// Cascade: if this is a loop/group, kill all children first
+		if len(inst.Children) > 0 {
+			for _, childTitle := range inst.Children {
+				if child := s.findInstance(childTitle); child != nil {
+					if err := child.Kill(); err != nil {
+						log.ErrorLog.Printf("kill child %s (non-fatal): %v", childTitle, err)
+					}
+				}
+				// Remove child from all tracking
+				for i, existing := range s.instances {
+					if existing.Title == childTitle {
+						s.instances = append(s.instances[:i], s.instances[i+1:]...)
+						break
+					}
+				}
+				delete(s.convLogs, childTitle)
+				delete(s.lastHistorySize, childTitle)
+				s.statusMu.Lock()
+				delete(s.lastAgentMeta, childTitle)
+				s.statusMu.Unlock()
+				_ = s.storage.DeleteInstance(childTitle)
+			}
+		}
+		// Best-effort kill — continue with removal even if tmux session is already gone
 		if err := inst.Kill(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			log.ErrorLog.Printf("kill %s (non-fatal): %v", title, err)
 		}
 		// Remove from list
 		for i, existing := range s.instances {
@@ -586,7 +937,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		delete(s.convLogs, title)
 		delete(s.lastHistorySize, title)
 		s.statusMu.Lock()
-		delete(s.lastStatuses, title)
+		delete(s.lastAgentMeta, title)
 		s.statusMu.Unlock()
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
@@ -686,6 +1037,84 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			"branch":  strings.TrimSpace(string(branchOutput)),
 		})
 
+	case "memory":
+		// Claude CLI stores memory at ~/.claude/projects/{encoded-path}/memory/
+		// where encoded-path is the original repo path with "/" replaced by "-"
+		// Always use inst.Path (the original repo), not the worktree path,
+		// because Claude CLI keys memory on the original working directory.
+		stripped := strings.TrimPrefix(inst.Path, "/")
+		stripped = strings.ReplaceAll(stripped, "/", "-")
+		stripped = strings.ReplaceAll(stripped, "_", "-")
+		encodedPath := "-" + stripped
+		homeDir, _ := os.UserHomeDir()
+		memoryDir := filepath.Join(homeDir, ".claude", "projects", encodedPath, "memory")
+		log.InfoLog.Printf("memory lookup: inst.Path=%s memoryDir=%s", inst.Path, memoryDir)
+
+		if r.Method == http.MethodGet {
+			type memoryFile struct {
+				Name    string `json:"name"`
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+
+			var result []memoryFile
+			entries, err := os.ReadDir(memoryDir)
+			if err == nil {
+				for _, e := range entries {
+					if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+						continue
+					}
+					p := filepath.Join(memoryDir, e.Name())
+					content, err := os.ReadFile(p)
+					if err != nil {
+						continue
+					}
+					result = append(result, memoryFile{
+						Name:    e.Name(),
+						Path:    p,
+						Content: string(content),
+					})
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"files": result, "directory": memoryDir})
+
+		} else if r.Method == http.MethodPut {
+			var body struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			absPath, err := filepath.Abs(body.Path)
+			if err != nil || !strings.HasPrefix(absPath, memoryDir) {
+				http.Error(w, "invalid path", http.StatusBadRequest)
+				return
+			}
+
+			if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := os.WriteFile(absPath, []byte(body.Content), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "path": absPath})
+		} else {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+
 	case "plans":
 		workDir := inst.GetWorktreePath()
 		if workDir == "" {
@@ -782,6 +1211,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				{"CLAUDE.md", filepath.Join(workDir, "CLAUDE.md"), true},
 				{".claude/settings.json", filepath.Join(workDir, ".claude", "settings.json"), true},
 				{".claude/settings.local.json", filepath.Join(workDir, ".claude", "settings.local.json"), true},
+				{".mcp.json", filepath.Join(workDir, ".mcp.json"), true},
 			}
 
 			var result []configFile
@@ -877,7 +1307,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	var lastStableCount int
+	// Seed from current raw stable count so the WS only sends lines added
+	// after the client fetched /history. We use the raw (untrimmed) count
+	// so that overlap fluctuations between stable and pane don't cause
+	// previously-sent lines to be re-sent as "new" history_append.
+	lastRawStableCount := cl.GetRawStableCount()
 	var lastPaneContent string
 	var lastLastInput string
 
@@ -888,23 +1322,30 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		case <-ticker.C:
 		}
 
-		stableLines, _, pane, lastInput := cl.GetState()
+		// Use raw stable count to detect genuinely new lines (immune to overlap changes)
+		rawStableCount := cl.GetRawStableCount()
+		_, _, pane, lastInput := cl.GetState()
 
 		s.mu.RLock()
 		status := statusString(inst.Status)
 		s.mu.RUnlock()
 
-		// Send new stable lines as history_append
-		if len(stableLines) > lastStableCount {
-			newLines := stableLines[lastStableCount:]
-			msg := map[string]interface{}{
-				"type":  "history_append",
-				"lines": newLines,
+		// Send new stable lines as history_append.
+		// New scrollback lines have already left the pane by the time they appear
+		// in stable, so no overlap filtering is needed here. The pane message
+		// (sent below) replaces the volatile content independently.
+		if rawStableCount > lastRawStableCount {
+			newLines := cl.GetStableSince(lastRawStableCount)
+			lastRawStableCount = rawStableCount
+			if len(newLines) > 0 {
+				msg := map[string]interface{}{
+					"type":  "history_append",
+					"lines": newLines,
+				}
+				if err := conn.WriteJSON(msg); err != nil {
+					return
+				}
 			}
-			if err := conn.WriteJSON(msg); err != nil {
-				return
-			}
-			lastStableCount = len(stableLines)
 		}
 
 		// Send current pane (volatile) - only if changed
@@ -1018,7 +1459,7 @@ func (s *Server) handleSessionAction(w http.ResponseWriter, r *http.Request) {
 	delete(s.convLogs, title)
 	delete(s.lastHistorySize, title)
 	s.statusMu.Lock()
-	delete(s.lastStatuses, title)
+	delete(s.lastAgentMeta, title)
 	s.statusMu.Unlock()
 
 	// Delete from persistent storage
@@ -1036,6 +1477,8 @@ func Run(program string, autoYes bool, port int) error {
 		return err
 	}
 
+	srv.port = port
+	srv.nextMCPPort = port + 100 // MCP ports start at webserver port + 100
 	go srv.pollMetadata()
 	go srv.pollOutput()
 
@@ -1104,3 +1547,4 @@ func Run(program string, autoYes bool, port int) error {
 	fmt.Printf("Claude Squad Web UI running at http://localhost%s\n", addr)
 	return http.ListenAndServe(addr, mux)
 }
+
