@@ -1179,7 +1179,9 @@
     </div>
     <div id="orch-config-section" style="display:none;margin-bottom:12px">
       <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">Team config (YAML or JSON, optional)</label>
-      <textarea id="modal-orch-config" rows="8" style="font-family:monospace;font-size:12px" placeholder="task: |
+      <textarea id="modal-orch-config" rows="10" style="font-family:monospace;font-size:12px" placeholder="title: my-team
+path: /path/to/working/dir
+task: |
   Describe the task for the team...
 
 agents:
@@ -1189,7 +1191,7 @@ agents:
   - name: agent-2
     path: /other/repo
     preset: researcher"></textarea>
-      <p style="font-size:10px;color:var(--text-dim);margin-top:4px">Pre-populate the team. Each agent: name, path, preset (coder/researcher), git_mode (bool), prompt (string). Accepts YAML or JSON.</p>
+      <p style="font-size:10px;color:var(--text-dim);margin-top:4px">Pre-populate the team. Title and path can be set here or in the fields above. Each agent: name, path, preset (coder/researcher), git_mode (bool), prompt (string). Accepts YAML or JSON.</p>
     </div>
     <textarea id="modal-prompt" placeholder="Initial prompt (optional)"></textarea>
     <div id="modal-actions">
@@ -2562,34 +2564,41 @@ function hideModal() {
 
 async function createInstance() {
   const parent = document.getElementById('modal-parent').value;
-  const title = document.getElementById('modal-title').value.trim();
-  const path = document.getElementById('modal-path').value.trim();
+  let title = document.getElementById('modal-title').value.trim();
+  let path = document.getElementById('modal-path').value.trim();
   const git_mode = document.getElementById('modal-gitmode').checked;
   const repo_path = document.getElementById('modal-repo').value.trim();
   const branch = document.getElementById('modal-branch').value.trim();
   const prompt = document.getElementById('modal-prompt').value.trim();
+
+  // For orchestrator type, parse config first so title/path can come from it
+  let orchConfig = null;
+  if (modalSelectedType === 'orchestrator' && !parent) {
+    const configText = document.getElementById('modal-orch-config').value.trim();
+    if (configText) {
+      try {
+        if (configText.startsWith('{')) {
+          orchConfig = JSON.parse(configText);
+        } else {
+          orchConfig = parseYAML(configText);
+        }
+      } catch (e) {
+        alert('Invalid team config: ' + e.message);
+        return;
+      }
+    }
+    // Config values override empty form fields
+    if (orchConfig) {
+      if (!title && orchConfig.title) title = orchConfig.title;
+      if (!path && orchConfig.path) path = orchConfig.path;
+    }
+  }
+
   if (!title) { alert('Title is required'); return; }
   hideModal();
 
   try {
     if (modalSelectedType === 'orchestrator' && !parent) {
-      // Parse optional YAML/JSON config for pre-populating team
-      let orchConfig = null;
-      const configText = document.getElementById('modal-orch-config').value.trim();
-      if (configText) {
-        try {
-          // Try JSON first (if it starts with {), otherwise parse as YAML
-          if (configText.startsWith('{')) {
-            orchConfig = JSON.parse(configText);
-          } else {
-            orchConfig = parseYAML(configText);
-          }
-        } catch (e) {
-          alert('Invalid team config: ' + e.message);
-          return;
-        }
-      }
-
       // Create orchestrator group:
       // 1. Create the control loop instance (top-level, instance_type=loop)
       const loopTitle = title;

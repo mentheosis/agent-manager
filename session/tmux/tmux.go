@@ -228,38 +228,18 @@ func (t *TmuxSession) SendKeys(keys string) error {
 }
 
 // SendPromptViaTmux sends text followed by Enter to the tmux session.
-// Uses tmux load-buffer + paste-buffer to avoid both special character
-// interpretation and terminal line length limits that affect send-keys.
+// The text is sent with -l (literal) to prevent tmux from interpreting
+// special characters like ; # and key names. Enter is sent separately
+// since -l would send the literal string "Enter" instead of the key.
 func (t *TmuxSession) SendPromptViaTmux(text string) error {
-	// Write text to a temp file for tmux load-buffer
-	tmpFile, err := os.CreateTemp("", "tmux-prompt-*.txt")
+	// Send text literally (no interpretation of special chars)
+	cmd := exec.Command("tmux", "send-keys", "-l", "-t", t.sanitizedName, text)
+	out, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmpFile.WriteString(text); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-	tmpFile.Close()
-
-	// Load the text into a tmux buffer
-	cmd := exec.Command("tmux", "load-buffer", tmpPath)
-	if out, err := t.cmdExec.Output(cmd); err != nil {
-		log.ErrorLog.Printf("tmux load-buffer failed for session %s: %v (output: %s)", t.sanitizedName, err, string(out))
+		log.ErrorLog.Printf("tmux send-keys failed for session %s: %v (output: %s)", t.sanitizedName, err, string(out))
 		return err
 	}
-
-	// Paste the buffer into the target pane
-	cmd = exec.Command("tmux", "paste-buffer", "-t", t.sanitizedName)
-	if out, err := t.cmdExec.Output(cmd); err != nil {
-		log.ErrorLog.Printf("tmux paste-buffer failed for session %s: %v (output: %s)", t.sanitizedName, err, string(out))
-		return err
-	}
-
-	// Send Enter to submit
+	// Send Enter separately (without -l so it's recognized as a key)
 	cmd = exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")
 	_, err = t.cmdExec.Output(cmd)
 	return err

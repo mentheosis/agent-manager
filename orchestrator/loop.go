@@ -239,6 +239,7 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		consecutiveIdleCount := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -266,10 +267,16 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 						}
 					}
 					if allIdle {
-						select {
-						case allIdleCh <- struct{}{}:
-						default:
+						consecutiveIdleCount++
+						// Only notify after 2 consecutive idle heartbeats, and only once
+						if consecutiveIdleCount == 2 {
+							select {
+							case allIdleCh <- struct{}{}:
+							default:
+							}
 						}
+					} else {
+						consecutiveIdleCount = 0
 					}
 				}
 			}
