@@ -13,6 +13,9 @@ import (
 	"syscall"
 )
 
+// Version is set at build time via -ldflags, or defaults to "dev".
+var Version = "dev"
+
 func main() {
 	groupFlag := flag.String("group", "", "Orchestrator group title (required)")
 	baseURLFlag := flag.String("base-url", "http://localhost:8080", "Web server URL")
@@ -41,6 +44,7 @@ func main() {
 	fmt.Println("╔══════════════════════════════════════════╗")
 	fmt.Println("║        Orchestrator Control Loop         ║")
 	fmt.Println("╚══════════════════════════════════════════╝")
+	fmt.Printf("  Version:  %s\n", Version)
 	fmt.Printf("  Group:    %s\n", *groupFlag)
 	fmt.Printf("  API:      %s\n", *baseURLFlag)
 	fmt.Println("  ─────────────────────────────────────────")

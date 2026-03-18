@@ -793,8 +793,44 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For task action, proxy to the loop's MCP server (avoids tmux/pty issues with long text).
-	if action == "task" {
+	// Restart the orchestrator binary in its tmux pane with the latest build.
+	if action == "restart-loop" {
+		s.mu.RLock()
+		inst := s.findInstance(title)
+		s.mu.RUnlock()
+		if inst == nil {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+		if inst.InstanceType != "loop" {
+			http.Error(w, "not a loop instance", http.StatusBadRequest)
+			return
+		}
+		// Re-resolve the orchestrator binary path to pick up new builds
+		selfBin, err := os.Executable()
+		if err != nil {
+			selfBin = "."
+		}
+		baseDir := filepath.Dir(selfBin)
+		orchBin := filepath.Join(baseDir, "claude-squad-orchestrator")
+		if binPath := filepath.Join(baseDir, "bin", "claude-squad-orchestrator"); fileExists(binPath) {
+			orchBin = binPath
+		}
+		escaped := strings.ReplaceAll(title, "'", "'\\''")
+		program := fmt.Sprintf("%s --group '%s' --base-url http://localhost:%d --mcp-port %d", orchBin, escaped, s.port, inst.MCPPort)
+		log.InfoLog.Printf("[Orchestrator] Restarting loop %q with: %s", title, program)
+		if err := inst.RespawnPane(program); err != nil {
+			http.Error(w, fmt.Sprintf("failed to restart: %v", err), http.StatusInternalServerError)
+			return
+		}
+		inst.SetStatus(session.Running)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+
+	// For task/resume-loop actions, proxy to the loop's MCP server.
+	if action == "task" || action == "resume-loop" {
 		s.mu.RLock()
 		inst := s.findInstance(title)
 		s.mu.RUnlock()
@@ -806,7 +842,13 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "instance has no MCP server", http.StatusBadRequest)
 			return
 		}
-		mcpURL := fmt.Sprintf("http://localhost:%d/task", inst.MCPPort)
+		mcpEndpoint := "task"
+		if action == "resume-loop" {
+			mcpEndpoint = "resume"
+			// Also update the instance status so the UI reflects the change
+			inst.SetStatus(session.Running)
+		}
+		mcpURL := fmt.Sprintf("http://localhost:%d/%s", inst.MCPPort, mcpEndpoint)
 		resp, err := http.Post(mcpURL, "application/json", r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

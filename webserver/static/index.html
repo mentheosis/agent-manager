@@ -1069,6 +1069,7 @@
       <div class="toolbar-divider"></div>
       <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
       <div style="flex:1"></div>
+      <button class="toolbar-btn" id="btn-restart-loop" style="display:none">Restart Loop</button>
       <button class="toolbar-btn" id="btn-pause">Pause</button>
       <button class="toolbar-btn" id="btn-resume">Resume</button>
       <button class="toolbar-btn danger" id="btn-kill">Kill</button>
@@ -1528,6 +1529,9 @@ function selectInstance(title) {
   refreshList();
   updatePausedState();
   updateToolbarTitle();
+
+  // Show/hide loop-specific buttons
+  document.getElementById('btn-restart-loop').style.display = isLoopInstance() ? '' : 'none';
 
   // Load input history for this instance
   loadInputHistory(title);
@@ -2190,18 +2194,16 @@ async function actionPause() {
 async function actionResume() {
   if (!selectedTitle) return;
   try {
-    await api(`/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
+    if (isLoopInstance()) {
+      // For loop instances, resume via MCP endpoint (bypasses instance pause state check)
+      await api(`/${encodeURIComponent(selectedTitle)}/resume-loop`, { method: 'POST' });
+    } else {
+      await api(`/${encodeURIComponent(selectedTitle)}/resume`, { method: 'POST' });
+    }
     instanceStatuses[selectedTitle] = 'running';
     refreshList();
     updatePausedState();
     convLog.connect(selectedTitle);
-    // For loop instances, also send __RESUME__ to the orchestrator binary
-    if (isLoopInstance()) {
-      await api(`/${encodeURIComponent(selectedTitle)}/send`, {
-        method: 'POST',
-        body: JSON.stringify({ text: '__RESUME__' }),
-      });
-    }
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -2223,6 +2225,13 @@ document.getElementById('btn-pause').addEventListener('click', actionPause);
 document.getElementById('btn-resume').addEventListener('click', actionResume);
 document.getElementById('btn-kill').addEventListener('click', actionKill);
 document.getElementById('btn-esc').addEventListener('click', () => sendKeys('\x1b'));
+document.getElementById('btn-restart-loop').addEventListener('click', async () => {
+  if (!selectedTitle) return;
+  try {
+    await api(`/${encodeURIComponent(selectedTitle)}/restart-loop`, { method: 'POST' });
+    refreshList();
+  } catch (e) { alert('Error: ' + e.message); }
+});
 
 document.getElementById('btn-send').addEventListener('click', () => inputHistory.send());
 document.getElementById('btn-hist-prev').addEventListener('click', () => inputHistory.prev());
