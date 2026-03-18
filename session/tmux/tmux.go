@@ -254,6 +254,19 @@ func (t *TmuxSession) SendPromptViaTmux(text string) error {
 	return err
 }
 
+// RespawnPane kills the current process in the pane and starts a new command.
+// Uses tmux respawn-pane -k which kills the existing process and launches the new one.
+func (t *TmuxSession) RespawnPane(program string) error {
+	cmd := exec.Command("tmux", "respawn-pane", "-k", "-t", t.sanitizedName, program)
+	out, err := t.cmdExec.Output(cmd)
+	if err != nil {
+		log.ErrorLog.Printf("tmux respawn-pane failed for session %s: %v (output: %s)", t.sanitizedName, err, string(out))
+		return err
+	}
+	t.program = program
+	return nil
+}
+
 // TapEnterViaTmux sends Enter via the tmux send-keys command.
 func (t *TmuxSession) TapEnterViaTmux() error {
 	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")

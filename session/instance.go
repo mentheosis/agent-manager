@@ -685,3 +685,12 @@ func (i *Instance) SendKeys(keys string) error {
 	}
 	return i.tmuxSession.SendKeys(keys)
 }
+
+// RespawnPane kills the current process in the tmux pane and starts a new one.
+func (i *Instance) RespawnPane(program string) error {
+	if i.tmuxSession == nil {
+		return fmt.Errorf("no tmux session")
+	}
+	i.Program = program
+	return i.tmuxSession.RespawnPane(program)
+}

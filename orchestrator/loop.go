@@ -119,15 +119,24 @@ func (l *Loop) Pause() {
 	l.log("Loop paused by user")
 }
 
-// Resume resumes a paused control loop.
+// Resume resumes a paused or done control loop.
 func (l *Loop) Resume() {
-	if l.State() == LoopStatePaused {
+	state := l.State()
+	switch state {
+	case LoopStatePaused:
 		l.setState(LoopStateRunning)
 		select {
 		case l.pauseCh <- struct{}{}:
 		default:
 		}
-		l.log("Loop resumed")
+		l.log("Loop resumed from paused")
+	case LoopStateDone, LoopStateIdle:
+		// Restart the loop with an empty prompt (task already sent to leader)
+		l.log("Loop resumed from %s", state)
+		select {
+		case l.restartCh <- "":
+		default:
+		}
 	}
 }
 
@@ -225,6 +234,7 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 	// Track which agents have become ready since the last dispatch
 	pendingReady := make(map[string]bool)
+	lastStatus := make(map[string]string) // suppress duplicate status change logs
 	var batchTimer *time.Timer
 	var batchCh <-chan time.Time // nil until batch window starts
 
@@ -326,6 +336,10 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 				continue
 			}
 
+			if change.Status == lastStatus[change.Title] {
+				continue
+			}
+			lastStatus[change.Title] = change.Status
 			l.log("Status change: %s → %s", change.Title, change.Status)
 
 			if change.Status == "ready" && !pendingReady[change.Title] {
@@ -478,9 +492,6 @@ func (l *Loop) buildTeamDescription() string {
 
 // printHeartbeat prints current agent statuses to stdout.
 func (l *Loop) printHeartbeat() {
-	if len(l.agentTitles) == 0 {
-		return
-	}
 	allMeta := l.watcher.GetAllAgentMeta()
 	parts := make([]string, 0, len(l.agentTitles)+2)
 	parts = append(parts, fmt.Sprintf("[%s]", time.Now().Format("15:04:05")))
