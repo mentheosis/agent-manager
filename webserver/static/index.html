@@ -85,10 +85,10 @@
   .orchestrator-badge.orchestrator { background: rgba(255,158,100,0.2); color: var(--orange); }
   .orchestrator-badge.loop { background: rgba(224,175,104,0.2); color: var(--yellow); }
 
-  /* Type selector in modal */
-  .type-option { background: var(--bg); }
-  .type-option:hover { border-color: var(--text-dim) !important; }
-  .type-option.active { border-color: var(--accent) !important; background: rgba(122,162,247,0.08); }
+  /* Type/CLI selector in modal */
+  .type-option, .cli-option { background: var(--bg); }
+  .type-option:hover, .cli-option:hover { border-color: var(--text-dim) !important; }
+  .type-option.active, .cli-option.active { border-color: var(--accent) !important; background: rgba(122,162,247,0.08); }
 
   /* Loop controls in toolbar */
   #instance-list {
@@ -1157,6 +1157,19 @@
   <div id="modal">
     <h2 id="modal-heading">New Instance</h2>
     <input type="hidden" id="modal-parent" value="">
+
+    <!-- CLI Type selector -->
+    <div id="cli-selector" style="margin-bottom:14px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">CLI Type</label>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div class="cli-option active" data-cli="claude" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:13px;font-weight:600">Claude</div>
+        </div>
+        <div class="cli-option" data-cli="opencode" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:13px;font-weight:600">OpenCode</div>
+        </div>
+      </div>
+    </div>
 
     <!-- Type selector (hidden when adding agent to existing orchestrator) -->
     <div id="type-selector" style="margin-bottom:14px">
@@ -2753,6 +2766,7 @@ document.getElementById('btn-start-orchestration').addEventListener('click', asy
 
 // --- Modal ---
 let modalSelectedType = 'agent';
+let modalSelectedCLIType = 'claude';
 
 function showNewModal(mode, parent) {
   document.getElementById('modal-parent').value = parent || '';
@@ -2766,6 +2780,7 @@ function showNewModal(mode, parent) {
   document.getElementById('modal-orch-config').value = '';
   document.getElementById('git-options').style.display = 'none';
   document.getElementById('orch-config-section').style.display = 'none';
+  selectCLIType('claude');
 
   if (parent) {
     // Adding agent to existing orchestrator — hide type selector, show preset
@@ -2783,6 +2798,17 @@ function showNewModal(mode, parent) {
   }
   setTimeout(() => document.getElementById('modal-title').focus(), 100);
 }
+
+function selectCLIType(type) {
+  modalSelectedCLIType = type;
+  document.querySelectorAll('.cli-option').forEach(el => {
+    el.classList.toggle('active', el.dataset.cli === type);
+  });
+}
+
+document.querySelectorAll('.cli-option').forEach(el => {
+  el.addEventListener('click', () => selectCLIType(el.dataset.cli));
+});
 
 function selectType(type) {
   modalSelectedType = type;
@@ -2869,6 +2895,7 @@ async function createInstance() {
           git_mode: false,
           agent_preset: 'loop',
           instance_type: 'loop',
+          cli_type: modalSelectedCLIType,
         }),
       });
 
@@ -2885,6 +2912,7 @@ async function createInstance() {
           branch,
           parent: loopTitle,
           agent_preset: 'orchestrator',
+          cli_type: modalSelectedCLIType,
         }),
       });
 
@@ -2930,6 +2958,7 @@ async function createInstance() {
           branch,
           parent: parent || undefined,
           agent_preset: agent_preset || undefined,
+          cli_type: modalSelectedCLIType,
         }),
       });
       selectInstance(title);

@@ -147,3 +147,5 @@ Every 500ms, checks each active instance for activity:
 7. **Raw keystroke API**: The `/keys` endpoint sends bytes directly to the PTY, enabling the UI to interact with Claude CLI's interactive prompts (numbered choices, Esc/Tab/ctrl shortcuts) without the server needing to understand the prompt format.
 
 8. **Single HTML file**: All CSS and main application JS live in `index.html`. Only reusable modules (ConvLogView, InputHistory, API wrapper, ANSI parser) are in separate JS files.
+
+9. **Multiple CLI programs**: The server supports starting different CLI programs (e.g., `claude` or `opencode`). The `/api/instances` POST endpoint accepts an optional `cli_type` parameter to select the program.

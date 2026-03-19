@@ -37,8 +37,8 @@ type Server struct {
 
 	// Status broadcast: pollMetadata writes, status WS clients read
 	statusMu      sync.Mutex
-	lastAgentMeta map[string]*AgentMeta     // title -> last broadcast metadata
-	statusClients map[*websocket.Conn]bool  // connected status WS clients
+	lastAgentMeta map[string]*AgentMeta    // title -> last broadcast metadata
+	statusClients map[*websocket.Conn]bool // connected status WS clients
 
 	// port is the port the web server is running on (set during Run)
 	port int
@@ -117,12 +117,12 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 		Title:        inst.Title,
 		DisplayTitle: inst.DisplayTitle,
 		Status:       statusString(inst.Status),
-		Branch:    inst.Branch,
-		Program:   inst.Program,
-		Path:      inst.Path,
-		WorkDir:   inst.GetWorktreePath(),
-		GitMode:   inst.GitMode,
-		CreatedAt: inst.CreatedAt.Format(time.RFC3339),
+		Branch:       inst.Branch,
+		Program:      inst.Program,
+		Path:         inst.Path,
+		WorkDir:      inst.GetWorktreePath(),
+		GitMode:      inst.GitMode,
+		CreatedAt:    inst.CreatedAt.Format(time.RFC3339),
 	}
 	// For non-git mode, work_dir is just the path
 	if j.WorkDir == "" {
@@ -620,15 +620,16 @@ func fileExists(path string) bool {
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title       string `json:"title"`
-		Prompt      string `json:"prompt"`
-		Path        string `json:"path"`
-		GitMode     bool   `json:"git_mode"`
-		RepoPath    string `json:"repo_path"`
-		Branch      string `json:"branch"`
+		Title        string `json:"title"`
+		Prompt       string `json:"prompt"`
+		Path         string `json:"path"`
+		GitMode      bool   `json:"git_mode"`
+		RepoPath     string `json:"repo_path"`
+		Branch       string `json:"branch"`
 		Parent       string `json:"parent,omitempty"`
 		AgentPreset  string `json:"agent_preset,omitempty"`
 		InstanceType string `json:"instance_type,omitempty"`
+		CLIType      string `json:"cli_type,omitempty"`
 		MCPPort      int    `json:"-"` // internal use, not from request body
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -654,7 +655,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	// Determine the program to run: loop instances run the orchestrator binary,
 	// regular instances run the configured CLI program (e.g. claude).
 	program := s.program
+	if body.CLIType == "opencode" {
+		// Look for opencode in the PATH
+		path, err := exec.LookPath("opencode")
+		if err != nil {
+			http.Error(w, "opencode not found in PATH", http.StatusInternalServerError)
+			return
+		}
+		program = path
+	}
 	if body.InstanceType == "loop" {
+
 		// Find the orchestrator binary: check bin/ next to the server binary first,
 		// then fall back to same directory as the server binary.
 		selfBin, err := os.Executable()
@@ -1135,9 +1146,9 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		if err := checkCmd.Run(); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"is_git":  false,
-				"status":  "",
-				"branch":  "",
+				"is_git": false,
+				"status": "",
+				"branch": "",
 			})
 			return
 		}
@@ -1154,9 +1165,9 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"is_git":  true,
-			"status":  string(statusOutput),
-			"branch":  strings.TrimSpace(string(branchOutput)),
+			"is_git": true,
+			"status": string(statusOutput),
+			"branch": strings.TrimSpace(string(branchOutput)),
 		})
 
 	case "memory":
@@ -1702,4 +1713,3 @@ func Run(program string, autoYes bool, port int) error {
 	fmt.Printf("Claude Squad Web UI running at http://localhost%s\n", addr)
 	return http.ListenAndServe(addr, mux)
 }
-
