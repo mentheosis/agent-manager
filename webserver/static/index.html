@@ -1443,7 +1443,8 @@ function renderList(instances) {
 
       // Add "add agent" button
       const addBtn = document.createElement('div');
-      addBtn.className = 'instance-item child';
+      addBtn.className = 'instance-item child add-agent-btn';
+      addBtn.dataset.parentGroup = inst.title;
       addBtn.style.cssText = 'cursor:pointer;color:var(--text-dim);font-size:11px;text-align:center;padding:6px;';
       addBtn.textContent = '+ Add Agent';
       addBtn.onclick = (e) => {
@@ -1516,6 +1517,11 @@ function getDropContext(listEl, y) {
     const title = item.dataset.title;
     const inst = findCachedInstance(title);
     const isGroupHeader = item.classList.contains('orchestrator-group');
+
+    // "+ Add Agent" button — treat as dropping into that group
+    if (item.dataset.parentGroup) {
+      return { type: 'into-group', groupTitle: item.dataset.parentGroup, item, idx: i };
+    }
 
     // If hovering on the center 50% of a group header, treat as "drop INTO group"
     if (isGroupHeader) {
