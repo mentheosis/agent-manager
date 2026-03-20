@@ -25,6 +25,8 @@ const (
 	Loading
 	// Paused is if the instance is paused (worktree removed but branch preserved).
 	Paused
+	// Deleting is if the instance is being deleted/killed.
+	Deleting
 )
 
 // Instance is a running instance of claude code.

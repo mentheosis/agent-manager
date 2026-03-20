@@ -105,6 +105,8 @@ func statusString(s session.Status) string {
 		return "loading"
 	case session.Paused:
 		return "paused"
+	case session.Deleting:
+		return "deleting"
 	default:
 		return "unknown"
 	}
@@ -942,6 +944,21 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	case "kill":
+		// Set deleting status and broadcast so UI shows immediate feedback
+		inst.SetStatus(session.Deleting)
+		changed := map[string]*AgentMeta{
+			title: {Status: "deleting"},
+		}
+		if len(inst.Children) > 0 {
+			for _, childTitle := range inst.Children {
+				if child := s.findInstance(childTitle); child != nil {
+					child.SetStatus(session.Deleting)
+				}
+				changed[childTitle] = &AgentMeta{Status: "deleting"}
+			}
+		}
+		s.broadcastAgentMeta(changed)
+
 		// Cascade: if this is a loop/group, kill all children first
 		if len(inst.Children) > 0 {
 			for _, childTitle := range inst.Children {

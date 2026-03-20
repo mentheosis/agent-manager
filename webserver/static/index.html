@@ -157,6 +157,7 @@
   .status-dot.waiting { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
   .status-dot.loading { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
   .status-dot.paused { background: var(--text-dim); }
+  .status-dot.deleting { background: var(--red); animation: pulse-dot 0.8s ease-in-out infinite; }
   @keyframes pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
@@ -167,6 +168,7 @@
   .status-label.waiting { color: var(--orange); }
   .status-label.loading { color: var(--orange); }
   .status-label.paused { color: var(--text-dim); }
+  .status-label.deleting { color: var(--red); }
 
   /* Main area */
   #main {
@@ -2210,14 +2212,23 @@ async function actionResume() {
 async function actionKill() {
   if (!selectedTitle) return;
   if (!confirm(`Kill "${selectedTitle}"? This cannot be undone.`)) return;
+  const titleToKill = selectedTitle;
+  // Optimistically show "deleting" status in sidebar
+  instanceStatuses[titleToKill] = 'deleting';
+  updateListStatuses();
   try {
-    await api(`/${encodeURIComponent(selectedTitle)}/kill`, { method: 'POST' });
+    await api(`/${encodeURIComponent(titleToKill)}/kill`, { method: 'POST' });
     convLog.disconnect();
     selectedTitle = null;
     document.getElementById('empty-state').style.display = 'flex';
     document.getElementById('active-view').classList.remove('visible');
     refreshList();
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) {
+    // Revert optimistic status on failure
+    delete instanceStatuses[titleToKill];
+    updateListStatuses();
+    alert('Error: ' + e.message);
+  }
 }
 
 // Toolbar button handlers

@@ -184,13 +184,13 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 			l.log("Error discovering agents: %v", err)
 			return fmt.Errorf("failed to discover agents: %w", err)
 		}
-		l.log("Discovered leader: %s, %d sub-agents: %v", l.leaderTitle, len(l.agentTitles), l.agentTitles)
+		l.log("%s: %s, %d sub-agents: %v", colorize(ansiGreen, "Discovered leader"), l.leaderTitle, len(l.agentTitles), l.agentTitles)
 
 		// Send initial prompt to orchestrator if provided
 		if prompt != "" {
 			teamDesc := l.buildTeamDescription()
 			fullPrompt := teamDesc + "\n\n## Task\n\n" + prompt
-			l.log("Sending initial task to orchestrator:\n%s", fullPrompt)
+			l.log("%s\n%s", colorize(ansiBold+ansiCyan, "▶ Sending initial task to orchestrator"), fullPrompt)
 			if err := l.client.SendToInstance(l.leaderTitle, fullPrompt); err != nil {
 				l.log("Error sending to orchestrator: %v", err)
 				return fmt.Errorf("failed to send initial prompt: %w", err)
@@ -207,7 +207,7 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 		if done {
 			// Orchestrator signaled done — idle and wait for restart
 			l.setState(LoopStateDone)
-			l.log("Orchestration complete. Waiting for user to restart...")
+			l.log(colorize(ansiBold+ansiGreen, "✓ Orchestration complete.") + " Waiting for user to restart...")
 
 			select {
 			case <-ctx.Done():
@@ -308,7 +308,7 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 
 		case summary := <-doneCh:
 			// Leader called mark_task_done via MCP
-			l.log("Task completed (via MCP): %s", summary)
+			l.log("%s: %s", colorize(ansiBold+ansiGreen, "✓ Task completed (via MCP)"), summary)
 			l.Pause()
 			return true, nil
 
@@ -340,7 +340,7 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 				continue
 			}
 			lastStatus[change.Title] = change.Status
-			l.log("Status change: %s → %s", change.Title, change.Status)
+			l.log("Status change: %s → %s", change.Title, colorize(ansiYellow, change.Status))
 
 			if change.Status == "ready" && !pendingReady[change.Title] {
 				pendingReady[change.Title] = true
@@ -384,7 +384,7 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 			idleMsg := "All agents are currently idle (status: ready/waiting). " +
 				"If the task is complete, call the mark_task_done tool with a summary. " +
 				"If more work is needed, use send_to_agent to dispatch the next steps."
-			l.log("All agents idle — notifying orchestrator:\n%s", idleMsg)
+			l.log("%s\n%s", colorize(ansiBold+ansiYellow, "⚠ All agents idle — notifying orchestrator"), colorize(ansiDim, idleMsg))
 			if err := l.client.SendToInstance(l.leaderTitle, idleMsg); err != nil {
 				l.log("Error sending idle notification: %v", err)
 			}
@@ -412,7 +412,8 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		// Send batched status update to orchestrator — the leader will use
 		// MCP tools (send_to_agent, read_agent_output, mark_task_done) to act on it.
 		promptText := update.FormatForPrompt()
-		l.log("Sending batched update to orchestrator (%d agents):\n%s", len(update.Agents), promptText)
+		displayText := update.FormatForDisplay()
+		l.log("%s\n%s", colorize(ansiBold+ansiCyan, fmt.Sprintf("▶ Sending batched update to orchestrator (%d agents)", len(update.Agents))), displayText)
 		if err := l.client.SendToInstance(l.leaderTitle, promptText); err != nil {
 			l.log("Error sending to orchestrator: %v", err)
 		}
@@ -500,9 +501,15 @@ func (l *Loop) printHeartbeat() {
 		if meta == nil {
 			parts = append(parts, fmt.Sprintf("%s:unknown", title))
 		} else if meta.Prompt != nil && len(meta.Prompt.Actions) > 0 {
-			parts = append(parts, fmt.Sprintf("%s:%s(prompt)", title, meta.Status))
+			parts = append(parts, colorize(ansiYellow, fmt.Sprintf("%s:%s(prompt)", title, meta.Status)))
 		} else {
-			parts = append(parts, fmt.Sprintf("%s:%s", title, meta.Status))
+			statusColor := ansiBrightBlk
+			if meta.Status == "running" {
+				statusColor = ansiGreen
+			} else if meta.Status == "ready" {
+				statusColor = ansiYellow
+			}
+			parts = append(parts, fmt.Sprintf("%s:%s", title, colorize(statusColor, meta.Status)))
 		}
 	}
 	if l.leaderTitle != "" {
