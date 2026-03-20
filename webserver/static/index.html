@@ -105,8 +105,16 @@
     border: 1px solid transparent;
   }
   .instance-item:hover { background: var(--bg-highlight); }
-  .instance-item.dragging { opacity: 0.4; }
-  .instance-item.drag-over { border-top: 2px solid var(--accent); }
+  .instance-item.dragging { opacity: 0.3; }
+  .drop-indicator {
+    height: 3px;
+    background: var(--accent);
+    border-radius: 2px;
+    margin: 0 4px;
+    transition: opacity 0.1s;
+    pointer-events: none;
+    box-shadow: 0 0 6px rgba(122,162,247,0.5);
+  }
   .instance-item.active {
     background: var(--bg-highlight);
     border-left: 3px solid var(--accent);
@@ -1390,26 +1398,7 @@ function renderList(instances) {
     });
     div.addEventListener('dragend', () => {
       div.classList.remove('dragging');
-      el.querySelectorAll('.drag-over').forEach(d => d.classList.remove('drag-over'));
-    });
-    div.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      const dragging = el.querySelector('.dragging');
-      if (dragging && dragging !== div) {
-        div.classList.add('drag-over');
-      }
-    });
-    div.addEventListener('dragleave', () => {
-      div.classList.remove('drag-over');
-    });
-    div.addEventListener('drop', (e) => {
-      e.preventDefault();
-      div.classList.remove('drag-over');
-      const fromTitle = e.dataTransfer.getData('text/plain');
-      if (fromTitle && fromTitle !== inst.title) {
-        reorderInstances(el, fromTitle, inst.title);
-      }
+      removeDropIndicator(el);
     });
 
     const diffInfo = (inst.diff_added || inst.diff_removed)
@@ -1495,17 +1484,92 @@ function updateListStatuses() {
   });
 }
 
-function reorderInstances(listEl, fromTitle, toTitle) {
+// --- Drag-and-drop helpers ---
+
+function removeDropIndicator(listEl) {
+  const existing = listEl.querySelector('.drop-indicator');
+  if (existing) existing.remove();
+}
+
+// Returns the instance-item element + whether cursor is in the bottom half
+function getDragTarget(listEl, y) {
+  const items = Array.from(listEl.querySelectorAll('.instance-item:not(.dragging)'));
+  for (const item of items) {
+    const rect = item.getBoundingClientRect();
+    if (y < rect.bottom) {
+      const isBottomHalf = y > rect.top + rect.height / 2;
+      return { item, isBottomHalf };
+    }
+  }
+  // Past all items — drop at end
+  if (items.length > 0) return { item: items[items.length - 1], isBottomHalf: true };
+  return null;
+}
+
+function showDropIndicator(listEl, y) {
+  const target = getDragTarget(listEl, y);
+  if (!target) return;
+
+  let indicator = listEl.querySelector('.drop-indicator');
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.className = 'drop-indicator';
+  }
+
+  if (target.isBottomHalf) {
+    target.item.after(indicator);
+  } else {
+    target.item.before(indicator);
+  }
+}
+
+function getDropIndex(listEl, y) {
+  const target = getDragTarget(listEl, y);
+  if (!target) return -1;
+  const items = Array.from(listEl.querySelectorAll('.instance-item:not(.dragging)'));
+  const idx = items.indexOf(target.item);
+  return target.isBottomHalf ? idx + 1 : idx;
+}
+
+// Attach container-level drag handlers to the instance list
+function setupListDragHandlers(listEl) {
+  listEl.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    showDropIndicator(listEl, e.clientY);
+  });
+
+  listEl.addEventListener('dragleave', (e) => {
+    // Only remove if leaving the container entirely
+    if (!listEl.contains(e.relatedTarget)) {
+      removeDropIndicator(listEl);
+    }
+  });
+
+  listEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const fromTitle = e.dataTransfer.getData('text/plain');
+    if (!fromTitle) return;
+
+    const dropIdx = getDropIndex(listEl, e.clientY);
+    removeDropIndicator(listEl);
+
+    if (dropIdx === -1) return;
+    reorderInstances(listEl, fromTitle, dropIdx);
+  });
+}
+
+function reorderInstances(listEl, fromTitle, dropIdx) {
   const items = Array.from(listEl.querySelectorAll('.instance-item'));
   const titles = items.map(el => el.dataset.title);
   const fromIdx = titles.indexOf(fromTitle);
-  const toIdx = titles.indexOf(toTitle);
-  if (fromIdx === -1 || toIdx === -1) return;
+  if (fromIdx === -1) return;
 
-  // Move fromTitle to just before toTitle
+  // Build new order: remove fromTitle, insert at dropIdx.
+  // dropIdx is relative to the non-dragging items (which matches
+  // the array after removing fromTitle), so no adjustment needed.
   titles.splice(fromIdx, 1);
-  const newToIdx = titles.indexOf(toTitle);
-  titles.splice(newToIdx, 0, fromTitle);
+  titles.splice(dropIdx, 0, fromTitle);
 
   // Reorder DOM immediately for responsiveness
   const byTitle = {};
@@ -1518,6 +1582,9 @@ function reorderInstances(listEl, fromTitle, toTitle) {
     body: JSON.stringify({ order: titles }),
   }).catch(e => console.error('Failed to save order:', e));
 }
+
+// Initialize drag handlers on the instance list
+setupListDragHandlers(document.getElementById('instance-list'));
 
 function selectInstance(title) {
   selectedTitle = title;
