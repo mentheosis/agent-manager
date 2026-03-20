@@ -115,6 +115,14 @@
     pointer-events: none;
     box-shadow: 0 0 6px rgba(122,162,247,0.5);
   }
+  .drop-indicator.child {
+    margin-left: 20px;
+  }
+  .instance-item.drop-target-group {
+    outline: 2px solid var(--orange);
+    outline-offset: -2px;
+    background: rgba(224, 175, 104, 0.15);
+  }
   .instance-item.active {
     background: var(--bg-highlight);
     border-left: 3px solid var(--accent);
@@ -1489,26 +1497,62 @@ function updateListStatuses() {
 function removeDropIndicator(listEl) {
   const existing = listEl.querySelector('.drop-indicator');
   if (existing) existing.remove();
+  listEl.querySelectorAll('.drop-target-group').forEach(el => el.classList.remove('drop-target-group'));
 }
 
-// Returns the instance-item element + whether cursor is in the bottom half
-function getDragTarget(listEl, y) {
+// Look up an instance from cachedInstances by title
+function findCachedInstance(title) {
+  return cachedInstances && cachedInstances.find(i => i.title === title);
+}
+
+// Determine the drop context: are we dropping into a group, or between items?
+function getDropContext(listEl, y) {
   const items = Array.from(listEl.querySelectorAll('.instance-item:not(.dragging)'));
-  for (const item of items) {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
     const rect = item.getBoundingClientRect();
-    if (y < rect.bottom) {
-      const isBottomHalf = y > rect.top + rect.height / 2;
-      return { item, isBottomHalf };
+    if (y >= rect.bottom) continue;
+
+    const title = item.dataset.title;
+    const inst = findCachedInstance(title);
+    const isGroupHeader = item.classList.contains('orchestrator-group');
+
+    // If hovering on the center 50% of a group header, treat as "drop INTO group"
+    if (isGroupHeader) {
+      const centerTop = rect.top + rect.height * 0.25;
+      const centerBottom = rect.top + rect.height * 0.75;
+      if (y > centerTop && y < centerBottom) {
+        return { type: 'into-group', groupTitle: title, item, idx: i };
+      }
     }
+
+    const isBottomHalf = y > rect.top + rect.height / 2;
+    // Determine context parent: what group does the drop position belong to?
+    const contextParent = inst ? (inst.parent || '') : '';
+    return { type: 'between', item, isBottomHalf, idx: i, contextParent };
   }
-  // Past all items — drop at end
-  if (items.length > 0) return { item: items[items.length - 1], isBottomHalf: true };
+
+  // Past all items — drop at end (top-level)
+  if (items.length > 0) {
+    return { type: 'between', item: items[items.length - 1], isBottomHalf: true, idx: items.length - 1, contextParent: '' };
+  }
   return null;
 }
 
 function showDropIndicator(listEl, y) {
-  const target = getDragTarget(listEl, y);
-  if (!target) return;
+  // Clear previous group highlight
+  listEl.querySelectorAll('.drop-target-group').forEach(el => el.classList.remove('drop-target-group'));
+
+  const context = getDropContext(listEl, y);
+  if (!context) return;
+
+  if (context.type === 'into-group') {
+    // Highlight the group header instead of showing a bar
+    let indicator = listEl.querySelector('.drop-indicator');
+    if (indicator) indicator.remove();
+    context.item.classList.add('drop-target-group');
+    return;
+  }
 
   let indicator = listEl.querySelector('.drop-indicator');
   if (!indicator) {
@@ -1516,19 +1560,14 @@ function showDropIndicator(listEl, y) {
     indicator.className = 'drop-indicator';
   }
 
-  if (target.isBottomHalf) {
-    target.item.after(indicator);
-  } else {
-    target.item.before(indicator);
-  }
-}
+  // Add child indentation if dropping within a group
+  indicator.classList.toggle('child', !!context.contextParent);
 
-function getDropIndex(listEl, y) {
-  const target = getDragTarget(listEl, y);
-  if (!target) return -1;
-  const items = Array.from(listEl.querySelectorAll('.instance-item:not(.dragging)'));
-  const idx = items.indexOf(target.item);
-  return target.isBottomHalf ? idx + 1 : idx;
+  if (context.isBottomHalf) {
+    context.item.after(indicator);
+  } else {
+    context.item.before(indicator);
+  }
 }
 
 // Attach container-level drag handlers to the instance list
@@ -1540,7 +1579,6 @@ function setupListDragHandlers(listEl) {
   });
 
   listEl.addEventListener('dragleave', (e) => {
-    // Only remove if leaving the container entirely
     if (!listEl.contains(e.relatedTarget)) {
       removeDropIndicator(listEl);
     }
@@ -1549,38 +1587,106 @@ function setupListDragHandlers(listEl) {
   listEl.addEventListener('drop', (e) => {
     e.preventDefault();
     const fromTitle = e.dataTransfer.getData('text/plain');
-    if (!fromTitle) return;
-
-    const dropIdx = getDropIndex(listEl, e.clientY);
     removeDropIndicator(listEl);
-
-    if (dropIdx === -1) return;
-    reorderInstances(listEl, fromTitle, dropIdx);
+    if (!fromTitle) return;
+    handleDrop(listEl, fromTitle, e.clientY);
   });
 }
 
-function reorderInstances(listEl, fromTitle, dropIdx) {
-  const items = Array.from(listEl.querySelectorAll('.instance-item'));
-  const titles = items.map(el => el.dataset.title);
-  const fromIdx = titles.indexOf(fromTitle);
-  if (fromIdx === -1) return;
+async function handleDrop(listEl, fromTitle, y) {
+  const context = getDropContext(listEl, y);
+  if (!context) return;
 
-  // Build new order: remove fromTitle, insert at dropIdx.
-  // dropIdx is relative to the non-dragging items (which matches
-  // the array after removing fromTitle), so no adjustment needed.
-  titles.splice(fromIdx, 1);
+  const fromInst = findCachedInstance(fromTitle);
+  if (!fromInst) return;
+
+  // Guard: don't reparent loop instances or orchestrator leaders
+  if (fromInst.instance_type === 'loop') {
+    reorderOnly(listEl, fromTitle, context);
+    return;
+  }
+  if (fromInst.agent_preset === 'orchestrator') {
+    reorderOnly(listEl, fromTitle, context);
+    return;
+  }
+
+  const oldParent = fromInst.parent || '';
+  let newParent;
+
+  if (context.type === 'into-group') {
+    newParent = context.groupTitle;
+  } else {
+    newParent = context.contextParent || '';
+  }
+
+  // Reparent if parent changed
+  if (newParent !== oldParent) {
+    try {
+      await api(`/${encodeURIComponent(fromTitle)}/reparent`, {
+        method: 'POST',
+        body: JSON.stringify({ new_parent: newParent }),
+      });
+    } catch (e) {
+      console.error('Failed to reparent:', e);
+      return;
+    }
+  }
+
+  // Build new order and persist
+  reorderOnly(listEl, fromTitle, context);
+
+  // Full re-render to update parent/child styling if reparented
+  if (newParent !== oldParent) {
+    refreshList();
+  }
+}
+
+function reorderOnly(listEl, fromTitle, context) {
+  const items = Array.from(listEl.querySelectorAll('.instance-item:not(.dragging)'));
+  const titles = items.map(el => el.dataset.title);
+
+  // Compute drop index
+  let dropIdx;
+  if (context.type === 'into-group') {
+    // Insert after the group header's last child
+    dropIdx = findGroupEndIndex(titles, context.groupTitle);
+  } else {
+    dropIdx = context.isBottomHalf ? context.idx + 1 : context.idx;
+  }
+
+  // Remove fromTitle if present (it's excluded by :not(.dragging) but may be in titles via cachedInstances)
+  const fromIdx = titles.indexOf(fromTitle);
+  if (fromIdx !== -1) {
+    titles.splice(fromIdx, 1);
+    if (fromIdx < dropIdx) dropIdx--;
+  }
   titles.splice(dropIdx, 0, fromTitle);
 
-  // Reorder DOM immediately for responsiveness
+  // Reorder DOM
   const byTitle = {};
-  items.forEach(el => { byTitle[el.dataset.title] = el; });
-  titles.forEach(t => listEl.appendChild(byTitle[t]));
+  listEl.querySelectorAll('.instance-item').forEach(el => { byTitle[el.dataset.title] = el; });
+  titles.forEach(t => { if (byTitle[t]) listEl.appendChild(byTitle[t]); });
 
-  // Persist to server
+  // Persist
   api('/reorder', {
     method: 'POST',
     body: JSON.stringify({ order: titles }),
   }).catch(e => console.error('Failed to save order:', e));
+}
+
+// Find the index after the last child of a group in the titles array
+function findGroupEndIndex(titles, groupTitle) {
+  let lastChildIdx = titles.indexOf(groupTitle);
+  if (lastChildIdx === -1) return titles.length;
+  for (let i = lastChildIdx + 1; i < titles.length; i++) {
+    const inst = findCachedInstance(titles[i]);
+    if (inst && inst.parent === groupTitle) {
+      lastChildIdx = i;
+    } else {
+      break;
+    }
+  }
+  return lastChildIdx + 1;
 }
 
 // Initialize drag handlers on the instance list

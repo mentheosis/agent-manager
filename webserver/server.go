@@ -1001,6 +1001,63 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
 
+	case "reparent":
+		var body struct {
+			NewParent string `json:"new_parent"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Don't allow reparenting loop instances or orchestrator leaders
+		if inst.InstanceType == "loop" {
+			http.Error(w, "cannot reparent a loop instance", http.StatusBadRequest)
+			return
+		}
+		if inst.AgentPreset == "orchestrator" {
+			http.Error(w, "cannot reparent the orchestrator leader", http.StatusBadRequest)
+			return
+		}
+
+		oldParent := inst.Parent
+
+		// Remove from old parent's Children
+		if oldParent != "" {
+			if old := s.findInstance(oldParent); old != nil {
+				filtered := make([]string, 0, len(old.Children))
+				for _, c := range old.Children {
+					if c != title {
+						filtered = append(filtered, c)
+					}
+				}
+				old.Children = filtered
+			}
+		}
+
+		// Set new parent and add to new parent's Children
+		inst.Parent = body.NewParent
+		if body.NewParent != "" {
+			if newP := s.findInstance(body.NewParent); newP != nil {
+				newP.Children = append(newP.Children, title)
+			}
+		}
+
+		_ = s.save()
+		w.WriteHeader(http.StatusOK)
+
+		// Tell affected loops to rediscover agents AFTER releasing the lock.
+		// sendRediscoverToLoop triggers discoverAgents() which calls GET /api/instances,
+		// and that handler takes s.mu.RLock — so we must not hold the write lock here.
+		go func() {
+			if oldParent != "" {
+				s.sendRediscoverToLoop(oldParent)
+			}
+			if body.NewParent != "" && body.NewParent != oldParent {
+				s.sendRediscoverToLoop(body.NewParent)
+			}
+		}()
+
 	case "rename":
 		var body struct {
 			DisplayTitle string `json:"display_title"`
@@ -1337,6 +1394,31 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sendRediscoverToLoop sends a rediscover signal to the loop instance.
+// Tries MCP HTTP first, falls back to tmux stdin command.
+func (s *Server) sendRediscoverToLoop(groupTitle string) {
+	for _, inst := range s.instances {
+		if inst.Title != groupTitle {
+			continue
+		}
+		// Try MCP HTTP endpoint first
+		if inst.MCPPort > 0 {
+			mcpURL := fmt.Sprintf("http://localhost:%d/rediscover", inst.MCPPort)
+			resp, err := http.Post(mcpURL, "application/json", nil)
+			if err == nil {
+				resp.Body.Close()
+				return
+			}
+			log.ErrorLog.Printf("MCP rediscover failed for %s, falling back to stdin: %v", groupTitle, err)
+		}
+		// Fallback: send __REDISCOVER__ via tmux stdin
+		if err := inst.SendPrompt("__REDISCOVER__"); err != nil {
+			log.ErrorLog.Printf("failed to send __REDISCOVER__ to %s: %v", groupTitle, err)
+		}
+		return
+	}
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *session.Instance, title string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1537,7 +1619,13 @@ func Run(program string, autoYes bool, port int) error {
 	}
 
 	srv.port = port
-	srv.nextMCPPort = port + 100 // MCP ports start at webserver port + 100
+	// MCP ports start at webserver port + 100, but skip past any already-assigned ports
+	srv.nextMCPPort = port + 100
+	for _, inst := range srv.instances {
+		if inst.MCPPort >= srv.nextMCPPort {
+			srv.nextMCPPort = inst.MCPPort + 1
+		}
+	}
 	go srv.pollMetadata()
 	go srv.pollOutput()
 

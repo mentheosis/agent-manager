@@ -20,8 +20,9 @@ type MCPServer struct {
 	stateFunc   func() string // returns current loop state
 	doneCh      chan string   // signals task completion with summary
 	taskCh      chan string   // receives task from HTTP /task endpoint
-	pauseFunc   func()
-	resumeFunc  func()
+	pauseFunc      func()
+	resumeFunc     func()
+	rediscoverFunc func()
 }
 
 // NewMCPServer creates a new MCP server backed by the claude-squad API.
@@ -59,6 +60,11 @@ func (s *MCPServer) SetPauseFunc(f func()) {
 // SetResumeFunc sets the function called when resume is received via HTTP.
 func (s *MCPServer) SetResumeFunc(f func()) {
 	s.resumeFunc = f
+}
+
+// SetRediscoverFunc sets the function called when rediscover is received via HTTP.
+func (s *MCPServer) SetRediscoverFunc(f func()) {
+	s.rediscoverFunc = f
 }
 
 // SetLogFunc sets a custom log function.
@@ -205,6 +211,7 @@ func (s *MCPServer) RunHTTP(port int) error {
 	mux.HandleFunc("/task", s.handleTask)
 	mux.HandleFunc("/pause", s.handlePause)
 	mux.HandleFunc("/resume", s.handleResume)
+	mux.HandleFunc("/rediscover", s.handleRediscover)
 	mux.HandleFunc("/", s.handleHTTP)
 
 	return http.ListenAndServe(addr, mux)
@@ -263,6 +270,19 @@ func (s *MCPServer) handleResume(w http.ResponseWriter, r *http.Request) {
 	s.log("Resume received via HTTP")
 	if s.resumeFunc != nil {
 		s.resumeFunc()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *MCPServer) handleRediscover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.log("Rediscover received via HTTP")
+	if s.rediscoverFunc != nil {
+		s.rediscoverFunc()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

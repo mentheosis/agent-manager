@@ -101,6 +101,7 @@ These buttons appear in `#action-bar` between the output area and input area. Th
 | `/api/instances/{title}/rules` | GET/PUT | Read/write config files (CLAUDE.md, settings) |
 | `/api/instances/{title}/plans` | GET/PUT | Read/write plan files (.claude/plans/*.md) |
 | `/api/instances/{title}/rename` | POST | Set display_title (UI-only rename) |
+| `/api/instances/{title}/reparent` | POST | Move instance to different parent group |
 | `/api/instances/reorder` | POST | Reorder instance list (persisted) |
 | `/api/statuses/ws` | GET | WebSocket for status broadcasts |
 | `/api/sessions` | GET | List all saved sessions (from state.json) |

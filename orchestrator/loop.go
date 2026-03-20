@@ -65,6 +65,8 @@ type Loop struct {
 	doneCh <-chan string
 	// taskCh receives tasks from the MCP HTTP /task endpoint.
 	taskCh <-chan string
+	// rediscoverCh signals the loop to re-discover its agents mid-run.
+	rediscoverCh chan struct{}
 }
 
 // NewLoop creates a new control loop. groupTitle is the title of the loop instance
@@ -77,9 +79,10 @@ func NewLoop(cfg Config, groupTitle string) *Loop {
 		groupTitle: groupTitle,
 		watcher:   NewStatusWatcher(cfg.BaseURL, logFunc),
 		logFunc:   logFunc,
-		pauseCh:   make(chan struct{}, 1),
-		restartCh: make(chan string, 1),
-		state:     LoopStateIdle,
+		pauseCh:      make(chan struct{}, 1),
+		restartCh:    make(chan string, 1),
+		rediscoverCh: make(chan struct{}, 1),
+		state:        LoopStateIdle,
 	}
 }
 
@@ -148,6 +151,44 @@ func (l *Loop) Restart(taskPrompt string) {
 	}
 }
 
+// handleRediscover performs agent re-discovery and logs joins/leaves.
+func (l *Loop) handleRediscover() {
+	oldAgents := make(map[string]bool, len(l.agentTitles))
+	for _, t := range l.agentTitles {
+		oldAgents[t] = true
+	}
+	l.log("Rediscovering agents...")
+	if err := l.discoverAgents(); err != nil {
+		l.log("Rediscovery failed: %v", err)
+		return
+	}
+	// Report joins
+	for _, t := range l.agentTitles {
+		if !oldAgents[t] {
+			l.log("%s %s", colorize(ansiBold+ansiGreen, "▶ Agent joined:"), t)
+		}
+	}
+	// Report leaves
+	newAgents := make(map[string]bool, len(l.agentTitles))
+	for _, t := range l.agentTitles {
+		newAgents[t] = true
+	}
+	for t := range oldAgents {
+		if !newAgents[t] {
+			l.log("%s %s", colorize(ansiBold+ansiYellow, "◀ Agent left:"), t)
+		}
+	}
+	l.log("%s: %d agents=%v", colorize(ansiGreen, "Team updated"), len(l.agentTitles), l.agentTitles)
+}
+
+// Rediscover signals the loop to re-discover its agents (e.g. after reparenting).
+func (l *Loop) Rediscover() {
+	select {
+	case l.rediscoverCh <- struct{}{}:
+	default:
+	}
+}
+
 func (l *Loop) log(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
@@ -168,13 +209,19 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 	if prompt == "" {
 		l.setState(LoopStateIdle)
 		l.log("Waiting for task... Send one via the web UI.")
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case prompt = <-l.restartCh:
-			l.log("Task received (stdin)")
-		case prompt = <-l.taskCh:
-			l.log("Task received (HTTP)")
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case prompt = <-l.restartCh:
+				l.log("Task received (stdin)")
+			case prompt = <-l.taskCh:
+				l.log("Task received (HTTP)")
+			case <-l.rediscoverCh:
+				l.handleRediscover()
+				continue
+			}
+			break
 		}
 	}
 
@@ -209,19 +256,24 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 			l.setState(LoopStateDone)
 			l.log(colorize(ansiBold+ansiGreen, "✓ Orchestration complete.") + " Waiting for user to restart...")
 
-			select {
-			case <-ctx.Done():
-				l.log("Context cancelled, shutting down")
-				return ctx.Err()
-			case newPrompt := <-l.restartCh:
-				l.log("Restart requested (stdin)")
-				prompt = newPrompt
-				continue
-			case newPrompt := <-l.taskCh:
-				l.log("Restart requested (HTTP)")
-				prompt = newPrompt
-				continue
+			for {
+				select {
+				case <-ctx.Done():
+					l.log("Context cancelled, shutting down")
+					return ctx.Err()
+				case newPrompt := <-l.restartCh:
+					l.log("Restart requested (stdin)")
+					prompt = newPrompt
+				case newPrompt := <-l.taskCh:
+					l.log("Restart requested (HTTP)")
+					prompt = newPrompt
+				case <-l.rediscoverCh:
+					l.handleRediscover()
+					continue
+				}
+				break
 			}
+			continue
 		} else {
 			// Context was cancelled
 			return ctx.Err()
@@ -305,6 +357,9 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
+
+		case <-l.rediscoverCh:
+			l.handleRediscover()
 
 		case summary := <-doneCh:
 			// Leader called mark_task_done via MCP
