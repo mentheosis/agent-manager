@@ -582,8 +582,6 @@ func (l *Loop) printHeartbeat() {
 		meta := allMeta[title]
 		if meta == nil {
 			parts = append(parts, fmt.Sprintf("%s:unknown", title))
-		} else if meta.Prompt != nil && len(meta.Prompt.Actions) > 0 {
-			parts = append(parts, colorize(ansiYellow, fmt.Sprintf("%s:%s(prompt)", title, meta.Status)))
 		} else {
 			statusColor := ansiBrightBlk
 			if meta.Status == "running" {
@@ -591,7 +589,11 @@ func (l *Loop) printHeartbeat() {
 			} else if meta.Status == "ready" {
 				statusColor = ansiYellow
 			}
-			parts = append(parts, fmt.Sprintf("%s:%s", title, colorize(statusColor, meta.Status)))
+			label := meta.Status
+			if meta.Prompt != nil && len(meta.Prompt.Actions) > 0 {
+				label += colorize(ansiYellow, "(prompt)")
+			}
+			parts = append(parts, fmt.Sprintf("%s:%s", title, colorize(statusColor, label)))
 		}
 	}
 	if l.leaderTitle != "" {
@@ -599,7 +601,13 @@ func (l *Loop) printHeartbeat() {
 		if meta == nil {
 			parts = append(parts, fmt.Sprintf("%s:unknown", l.leaderTitle))
 		} else {
-			parts = append(parts, fmt.Sprintf("%s:%s", l.leaderTitle, meta.Status))
+			statusColor := ansiBrightBlk
+			if meta.Status == "running" {
+				statusColor = ansiGreen
+			} else if meta.Status == "ready" {
+				statusColor = ansiYellow
+			}
+			parts = append(parts, fmt.Sprintf("%s:%s", l.leaderTitle, colorize(statusColor, meta.Status)))
 		}
 	}
 	fmt.Println(strings.Join(parts, "  "))

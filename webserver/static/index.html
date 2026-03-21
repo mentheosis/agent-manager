@@ -1298,6 +1298,65 @@ convLog.onContent = (content) => {
   updateActionButtons(content);
 };
 
+// Smart copy: join lines that were word-wrapped by the terminal.
+// Detects the terminal width from the selection, then joins lines that
+// reach that width and are followed by a continuation line.
+outputArea.addEventListener('copy', (e) => {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const raw = sel.toString();
+  if (!raw) return;
+
+  const lines = raw.split('\n');
+  if (lines.length < 2) return;
+
+  // Infer terminal width: the most common length among long lines (60+).
+  // Lines at terminal width are the ones that were wrapped.
+  const lengthCounts = {};
+  for (const line of lines) {
+    const len = line.replace(/\s+$/, '').length;
+    if (len >= 60) {
+      lengthCounts[len] = (lengthCounts[len] || 0) + 1;
+    }
+  }
+  let termWidth = 0;
+  let maxCount = 0;
+  for (const [len, count] of Object.entries(lengthCounts)) {
+    if (count > maxCount || (count === maxCount && Number(len) > termWidth)) {
+      termWidth = Number(len);
+      maxCount = count;
+    }
+  }
+
+  if (termWidth === 0 || maxCount < 2) return; // can't determine width
+
+  // Join lines that hit terminal width with a continuation line.
+  // A line is "wrapped" if it's within 2 chars of termWidth.
+  // A "continuation" line starts with a word char (not bullet, heading, blank, etc.)
+  const result = [];
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].replace(/\s+$/, '');
+    const nextLine = i + 1 < lines.length ? lines[i + 1] : null;
+    const atWidth = trimmed.length >= termWidth - 2 && trimmed.length <= termWidth;
+    const nextIsContinuation = nextLine !== null &&
+      nextLine.length > 0 &&
+      /^[a-zA-Z0-9"'`(]/.test(nextLine.trimStart()) &&
+      !/^\s*[-*#>|│┌└⏺●•]/.test(nextLine) &&
+      nextLine.trimStart() === nextLine.slice(0, 2).trimStart() + nextLine.slice(2); // not deeply indented shift
+
+    if (atWidth && nextIsContinuation) {
+      // Join: append without newline (add space if line doesn't end with one)
+      result.push(trimmed.endsWith(' ') ? trimmed : trimmed + ' ');
+    } else {
+      result.push(lines[i]);
+      if (i < lines.length - 1) result.push('\n');
+    }
+  }
+
+  e.preventDefault();
+  e.clipboardData.setData('text/plain', result.join(''));
+});
+
 const inputHistory = new InputHistory(
   document.getElementById('prompt-input'),
   async (text) => {

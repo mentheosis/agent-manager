@@ -49,7 +49,6 @@ func (u *StatusUpdate) FormatForPrompt() string {
 			for _, act := range a.Prompt.Actions {
 				b.WriteString(fmt.Sprintf("- %s (key: %q)\n", act.Label, act.Key))
 			}
-			b.WriteString("Use `respond_to_prompt` with agent=\"" + a.Name + "\" and the appropriate key.\n")
 		}
 		b.WriteString("\n")
 	}

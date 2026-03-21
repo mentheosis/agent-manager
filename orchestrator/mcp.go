@@ -530,6 +530,7 @@ func (s *MCPServer) toolSendToAgent(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	s.log("%s(%s, %d chars)", colorize(ansiBold+ansiCyan, "send_to_agent"), colorize(ansiBold, params.Agent), len(params.Prompt))
 	if err := s.client.SendToInstance(params.Agent, params.Prompt); err != nil {
 		return "", err
 	}
@@ -549,8 +550,9 @@ func (s *MCPServer) toolReadAgentOutput(args json.RawMessage) (string, error) {
 		return "", err
 	}
 
-	s.log("read_agent_output(%s): pane=%d lines, stable=%d lines, last_input=%q",
-		params.Agent, len(history.Pane), len(history.StableLines), history.LastInput)
+	s.log("%s(%s): pane=%d lines, stable=%d lines",
+		colorize(ansiCyan, "read_agent_output"), colorize(ansiBold, params.Agent),
+		len(history.Pane), len(history.StableLines))
 
 	output := strings.Join(history.Pane, "\n")
 	if output == "" && len(history.StableLines) > 0 {
@@ -587,7 +589,7 @@ func (s *MCPServer) toolRespondToPrompt(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	s.log("respond_to_prompt(%s, key=%q)", params.Agent, params.Key)
+	s.log("%s(%s, key=%q)", colorize(ansiBold+ansiYellow, "respond_to_prompt"), colorize(ansiBold, params.Agent), params.Key)
 
 	if err := s.client.SendKeysToInstance(params.Agent, params.Key); err != nil {
 		return "", err
@@ -603,7 +605,7 @@ func (s *MCPServer) toolMarkTaskDone(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	s.log("mark_task_done: %s", params.Summary)
+	s.log("%s: %s", colorize(ansiBold+ansiGreen, "mark_task_done"), params.Summary)
 
 	select {
 	case s.doneCh <- params.Summary:
