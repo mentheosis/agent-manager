@@ -435,7 +435,13 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 			goto dispatch
 
 		case <-allIdleCh:
-			// Heartbeat detected all agents idle — notify the leader
+			// Heartbeat detected all agents idle — only notify if leader is also idle.
+			// If the leader is busy, it's already working on dispatching tasks.
+			leaderStatus := l.watcher.GetStatus(l.leaderTitle)
+			if leaderStatus != "ready" {
+				l.log("All agents idle but leader is %s — skipping notification", colorize(ansiYellow, leaderStatus))
+				continue
+			}
 			idleMsg := "All agents are currently idle (status: ready/waiting). " +
 				"If the task is complete, call the mark_task_done tool with a summary. " +
 				"If more work is needed, use send_to_agent to dispatch the next steps."
@@ -447,13 +453,34 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		continue
 
 	dispatch:
-		readyAgents := make([]string, 0, len(pendingReady))
-		for t := range pendingReady {
-			readyAgents = append(readyAgents, t)
-		}
 		pendingReady = make(map[string]bool)
 
-		// Collect output and prompt info from all newly-ready agents
+		// Wait for the leader to be idle before sending — avoids queueing
+		// redundant messages while the leader is still processing.
+		leaderStatus := l.watcher.GetStatus(l.leaderTitle)
+		if leaderStatus != "ready" && leaderStatus != "" {
+			l.log("Leader busy (%s), waiting for idle before dispatching...", colorize(ansiYellow, leaderStatus))
+			if err := l.waitForReady(ctx, l.leaderTitle); err != nil {
+				return false, err
+			}
+			l.log("Leader now idle, dispatching")
+		}
+
+		// Collect output from ALL agents that are currently ready (not just
+		// the ones that triggered the dispatch). This naturally batches results
+		// from agents that became ready while we waited for the leader.
+		var readyAgents []string
+		for _, t := range l.agentTitles {
+			s := l.watcher.GetStatus(t)
+			if s == "ready" {
+				readyAgents = append(readyAgents, t)
+			}
+		}
+
+		if len(readyAgents) == 0 {
+			continue // all agents went back to running while we waited
+		}
+
 		update := l.collectResults(readyAgents)
 
 		// Append prompt info for agents that have interactive prompts
