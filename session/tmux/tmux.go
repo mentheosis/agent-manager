@@ -191,6 +191,13 @@ func (t *TmuxSession) Restore() error {
 	}
 	t.ptmx = ptmx
 	t.monitor = newStatusMonitor()
+
+	// Ensure paste detection is disabled (may not have been set on older sessions)
+	pasteCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "paste-time", "0")
+	if err := t.cmdExec.Run(pasteCmd); err != nil {
+		log.InfoLog.Printf("Warning: failed to set paste-time for session %s: %v", t.sanitizedName, err)
+	}
+
 	return nil
 }
 
