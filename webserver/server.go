@@ -407,9 +407,10 @@ func (s *Server) pollOutput() {
 			var newScrollback string
 			lastSize := s.lastHistorySize[inst.Title]
 
-			// Resize guard: if history_size decreased (e.g. terminal resize
-			// caused line rewrapping), reset our tracker. The overlap between
-			// stable and pane is handled at read time by findOverlap in GetState.
+			// When history_size decreases (screen clear/redraw, terminal resize),
+			// reset the tracker. Ingest() deduplicates at the content level,
+			// so re-capturing old lines after a decrease is safe — duplicates
+			// are detected and skipped via overlap matching.
 			if historySize < lastSize {
 				s.lastHistorySize[inst.Title] = historySize
 			} else if historySize > lastSize {
@@ -418,6 +419,11 @@ func (s *Server) pollOutput() {
 				if err != nil {
 					continue
 				}
+				// Diagnostic logging (uncomment to debug convlog issues):
+				// scrollLines := len(splitLines(newScrollback))
+				// stableCount := cl.GetRawStableCount()
+				// log.InfoLog.Printf("[convlog %s] scrollback delta: %d lines (history %d→%d), captured %d lines, stable total: %d",
+				// 	inst.Title, delta, lastSize, historySize, scrollLines, stableCount+scrollLines)
 				s.lastHistorySize[inst.Title] = historySize
 			}
 
@@ -1477,6 +1483,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		// (sent below) replaces the volatile content independently.
 		if rawStableCount > lastRawStableCount {
 			newLines := cl.GetStableSince(lastRawStableCount)
+			// log.InfoLog.Printf("[ws %s] history_append: %d new lines (raw stable %d→%d)",
+			// 	title, len(newLines), lastRawStableCount, rawStableCount)
 			lastRawStableCount = rawStableCount
 			if len(newLines) > 0 {
 				msg := map[string]interface{}{

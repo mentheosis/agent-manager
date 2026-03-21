@@ -49,18 +49,69 @@ func slicesEqual(a, b []string) bool {
 // findOverlap returns the length of the longest suffix of stable that matches
 // a prefix of pane. This handles the case where a terminal resize causes lines
 // to return from scrollback into the visible pane (they appear at both the tail
-// of stable and the head of pane). Bounded by pane size (~50 lines).
+// of stable and the head of pane), and also deduplicates re-captured scrollback
+// after screen clears.
+//
+// Algorithm: scan the tail of stable for positions where 3 consecutive lines
+// match pane[0:3] (to avoid false positives on blank lines), then verify the
+// full match forward. This is O(searchWindow + overlap) for large inputs.
 func findOverlap(stable, pane []string) int {
+	if len(stable) == 0 || len(pane) == 0 {
+		return 0
+	}
+
 	maxOverlap := len(pane)
 	if maxOverlap > len(stable) {
 		maxOverlap = len(stable)
 	}
-	for overlap := maxOverlap; overlap > 0; overlap-- {
-		if slicesEqual(stable[len(stable)-overlap:], pane[:overlap]) {
+
+	const seedLen = 3
+	bestOverlap := 0
+	searchStart := len(stable) - maxOverlap
+
+	// Scan for 3-line seed match, then verify full extent.
+	// This avoids false positives on single blank lines.
+	if maxOverlap >= seedLen && len(pane) >= seedLen {
+		for i := searchStart; i <= len(stable)-seedLen; i++ {
+			if stable[i] != pane[0] || stable[i+1] != pane[1] || stable[i+2] != pane[2] {
+				continue
+			}
+			candidateLen := len(stable) - i
+			if candidateLen > len(pane) {
+				candidateLen = len(pane)
+			}
+			match := true
+			for j := seedLen; j < candidateLen; j++ {
+				if stable[i+j] != pane[j] {
+					match = false
+					break
+				}
+			}
+			if match && candidateLen > bestOverlap {
+				bestOverlap = candidateLen
+			}
+		}
+	}
+
+	// Fall back to checking small overlaps (1-2 lines) directly.
+	// These are common at the stable/pane boundary after resize.
+	limit := seedLen - 1
+	if limit > maxOverlap {
+		limit = maxOverlap
+	}
+	for overlap := limit; overlap > bestOverlap; overlap-- {
+		match := true
+		for j := 0; j < overlap; j++ {
+			if stable[len(stable)-overlap+j] != pane[j] {
+				match = false
+				break
+			}
+		}
+		if match {
 			return overlap
 		}
 	}
-	return 0
+	return bestOverlap
 }
 
 // splitLines splits text into lines and strips trailing blank lines.
@@ -79,6 +130,11 @@ func splitLines(s string) []string {
 //   - newScrollback: lines that have newly scrolled off the visible pane since
 //     the last call (may be empty when nothing has scrolled)
 //   - paneCapture: the current visible pane content
+//
+// Before appending, Ingest deduplicates: if the captured scrollback overlaps
+// with the tail of existing stableLines (which happens when Claude CLI clears
+// and redraws the screen, causing old content to re-scroll), the overlapping
+// prefix is skipped so only genuinely new lines are appended.
 func (cl *ConversationLog) Ingest(newScrollback string, paneCapture string) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
@@ -87,8 +143,14 @@ func (cl *ConversationLog) Ingest(newScrollback string, paneCapture string) {
 	paneLines := splitLines(paneCapture)
 
 	if len(newLines) > 0 {
-		cl.stableLines = append(cl.stableLines, newLines...)
-		cl.stableSeqNo++
+		// Dedup: find how many leading lines of newLines match trailing
+		// lines of stableLines (re-captured old content after screen clear).
+		overlap := findOverlap(cl.stableLines, newLines)
+		newLines = newLines[overlap:]
+		if len(newLines) > 0 {
+			cl.stableLines = append(cl.stableLines, newLines...)
+			cl.stableSeqNo++
+		}
 	}
 
 	cl.currentPane = paneLines

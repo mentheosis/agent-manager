@@ -2397,6 +2397,7 @@ async function actionKill() {
   updateListStatuses();
   try {
     await api(`/${encodeURIComponent(titleToKill)}/kill`, { method: 'POST' });
+    convLog.evict(titleToKill);
     convLog.disconnect();
     selectedTitle = null;
     document.getElementById('empty-state').style.display = 'flex';
@@ -3180,6 +3181,7 @@ async function deleteSession(title) {
   try {
     const res = await fetch(`/api/sessions/${encodeURIComponent(title)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(await res.text());
+    convLog.evict(title);
     loadSessions();
     refreshList();
   } catch (e) {

@@ -142,6 +142,13 @@ func (t *TmuxSession) Start(workDir string) error {
 		log.InfoLog.Printf("Warning: failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
 	}
 
+	// Disable paste detection so send-keys input isn't treated as pasted text.
+	// Without this, Claude CLI may require a second Enter to confirm "pasted" input.
+	pasteCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "paste-time", "0")
+	if err := t.cmdExec.Run(pasteCmd); err != nil {
+		log.InfoLog.Printf("Warning: failed to set paste-time for session %s: %v", t.sanitizedName, err)
+	}
+
 	err = t.Restore()
 	if err != nil {
 		if cleanupErr := t.Close(); cleanupErr != nil {
@@ -231,8 +238,8 @@ func (t *TmuxSession) SendKeys(keys string) error {
 // The text is sent with -l (literal) to prevent tmux from interpreting
 // special characters like ; # and key names. Enter is sent separately
 // since -l would send the literal string "Enter" instead of the key.
-// For long text, Claude CLI may detect it as "pasted text" and require
-// a second Enter to submit, so we send an extra Enter after a brief pause.
+// Paste detection is disabled on the session (paste-time 0), so no
+// second Enter is needed.
 func (t *TmuxSession) SendPromptViaTmux(text string) error {
 	// Send text literally (no interpretation of special chars)
 	cmd := exec.Command("tmux", "send-keys", "-l", "-t", t.sanitizedName, text)
@@ -242,13 +249,6 @@ func (t *TmuxSession) SendPromptViaTmux(text string) error {
 		return err
 	}
 	// Send Enter to submit
-	cmd = exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")
-	if _, err := t.cmdExec.Output(cmd); err != nil {
-		return err
-	}
-	// Claude CLI treats long input as "pasted text" requiring a second Enter.
-	// Send another Enter after a short pause to handle this.
-	time.Sleep(200 * time.Millisecond)
 	cmd = exec.Command("tmux", "send-keys", "-t", t.sanitizedName, "Enter")
 	_, err = t.cmdExec.Output(cmd)
 	return err

@@ -3,6 +3,7 @@ import { api } from './api.js';
 
 // ConvLogView manages the terminal output display for a single instance.
 // It owns the WS connection and renders stable history + volatile pane.
+// DOM nodes are cached per instance so switching conversations is instant.
 export class ConvLogView {
   constructor(container) {
     this.container = container;
@@ -14,73 +15,99 @@ export class ConvLogView {
     this.stableCount = 0; // number of stable lines rendered
     this.onStatus = null; // callback(title, status) for sidebar updates
     this.onContent = null; // callback(content) for mode detection etc.
+    this.currentTitle = null;
+    this._cache = {}; // title -> { wrapper, historyDiv, paneDiv, lastInputDiv, stableCount }
   }
 
-  // Connect to an instance: load initial history + start WS stream
+  // Connect to an instance: restore cached DOM or fetch fresh history + start WS
   async connect(title) {
-    this.disconnect();
+    this._detachCurrent();
+    if (this.ws) { this.ws.close(); this.ws = null; }
     this.generation++;
     const gen = this.generation;
+    this.currentTitle = title;
 
-    // Set up DOM structure
-    this.container.innerHTML = '';
-    this.container.className = '';
-    this.historyDiv = document.createElement('div');
-    this.historyDiv.id = 'output-history';
-    this.paneDiv = document.createElement('div');
-    this.paneDiv.id = 'output-live';
-    this.lastInputDiv = document.createElement('div');
-    this.lastInputDiv.className = 'last-input';
-    this.lastInputDiv.style.display = 'none';
-    this.container.appendChild(this.historyDiv);
-    this.container.appendChild(this.paneDiv);
-    this.container.appendChild(this.lastInputDiv);
-    this.stableCount = 0;
+    const cached = this._cache[title];
+    if (cached) {
+      // Restore cached DOM
+      this.container.innerHTML = '';
+      this.container.className = '';
+      this.container.appendChild(cached.wrapper);
+      this.historyDiv = cached.historyDiv;
+      this.paneDiv = cached.paneDiv;
+      this.lastInputDiv = cached.lastInputDiv;
+      this.stableCount = cached.stableCount;
 
-    // Fetch initial state from server
-    let initialState = null;
-    try {
-      initialState = await api(`/${encodeURIComponent(title)}/history`);
-      if (gen !== this.generation) return;
-    } catch (e) {
-      if (gen !== this.generation) return;
-      if (e.message && e.message.includes('Failed to fetch')) {
-        this._showError('Cannot connect to Agent Manager server. Is it running?', title);
-        return;
+      // Fire onContent from current pane for action button detection
+      if (this.onContent && this.paneDiv.textContent) {
+        this.onContent(this.paneDiv.textContent);
       }
+
+      this.container.scrollTop = this.container.scrollHeight;
+    } else {
+      // Set up fresh DOM structure
+      this.container.innerHTML = '';
+      this.container.className = '';
+      const wrapper = document.createElement('div');
+      wrapper.className = 'convlog-wrapper';
+      this.historyDiv = document.createElement('div');
+      this.historyDiv.id = 'output-history';
+      this.paneDiv = document.createElement('div');
+      this.paneDiv.id = 'output-live';
+      this.lastInputDiv = document.createElement('div');
+      this.lastInputDiv.className = 'last-input';
+      this.lastInputDiv.style.display = 'none';
+      wrapper.appendChild(this.historyDiv);
+      wrapper.appendChild(this.paneDiv);
+      wrapper.appendChild(this.lastInputDiv);
+      this.container.appendChild(wrapper);
+      this.stableCount = 0;
+
+      // Fetch initial state from server
+      let initialState = null;
+      try {
+        initialState = await api(`/${encodeURIComponent(title)}/history`);
+        if (gen !== this.generation) return;
+      } catch (e) {
+        if (gen !== this.generation) return;
+        if (e.message && e.message.includes('Failed to fetch')) {
+          this._showError('Cannot connect to Agent Manager server. Is it running?', title);
+          return;
+        }
+      }
+
+      if (gen !== this.generation) return;
+
+      // Render initial stable lines
+      if (initialState && initialState.stable_lines && initialState.stable_lines.length > 0) {
+        this.historyDiv.innerHTML = safeAnsiToHtml(initialState.stable_lines.join('\n'));
+        this.stableCount = initialState.stable_lines.length;
+      }
+
+      // Render initial pane
+      if (initialState && initialState.pane && initialState.pane.length > 0) {
+        const paneContent = initialState.pane.join('\n');
+        this.paneDiv.innerHTML = safeAnsiToHtml(paneContent);
+      }
+
+      // Fire onContent for action button detection
+      if (this.onContent) {
+        const paneContent = initialState?.pane?.length > 0 ? initialState.pane.join('\n') : null;
+        const tailContent = initialState?.stable_lines?.length > 0
+          ? initialState.stable_lines.slice(-30).join('\n') : null;
+        const content = paneContent || tailContent;
+        if (content) this.onContent(content);
+      }
+
+      this._updateLastInput(initialState ? initialState.last_input : '');
+      this.container.scrollTop = this.container.scrollHeight;
+
+      // Save to cache
+      this._cache[title] = {
+        wrapper, historyDiv: this.historyDiv, paneDiv: this.paneDiv,
+        lastInputDiv: this.lastInputDiv, stableCount: this.stableCount,
+      };
     }
-
-    if (gen !== this.generation) return;
-
-    // console.log('initialState', { initialState, gen, title });
-
-    // Render initial stable lines
-    if (initialState && initialState.stable_lines && initialState.stable_lines.length > 0) {
-      this.historyDiv.innerHTML = safeAnsiToHtml(initialState.stable_lines.join('\n'));
-      this.stableCount = initialState.stable_lines.length;
-    }
-
-    // Render initial pane
-    if (initialState && initialState.pane && initialState.pane.length > 0) {
-      const paneContent = initialState.pane.join('\n');
-      this.paneDiv.innerHTML = safeAnsiToHtml(paneContent);
-    }
-
-    // Fire onContent with the bottom-most visible content for action button detection.
-    // The interactive selector may be in the pane (live) or at the tail of stable lines
-    // (if the pane is empty, e.g. on reconnect to an idle session).
-    if (this.onContent) {
-      const paneContent = initialState?.pane?.length > 0 ? initialState.pane.join('\n') : null;
-      const tailContent = initialState?.stable_lines?.length > 0
-        ? initialState.stable_lines.slice(-30).join('\n') : null;
-      const content = paneContent || tailContent;
-      if (content) this.onContent(content);
-    }
-
-    this._updateLastInput(initialState ? initialState.last_input : '');
-
-    // Scroll to bottom
-    this.container.scrollTop = this.container.scrollHeight;
 
     // Open WebSocket — server seeds from current raw stable count automatically
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -115,11 +142,25 @@ export class ConvLogView {
     };
   }
 
-  disconnect() {
-    if (this.ws) { this.ws.close(); this.ws = null; }
+  // Detach current DOM into cache (preserving rendered content)
+  _detachCurrent() {
+    if (this.currentTitle && this._cache[this.currentTitle]) {
+      this._cache[this.currentTitle].stableCount = this.stableCount;
+    }
     this.historyDiv = null;
     this.paneDiv = null;
     this.lastInputDiv = null;
+    this.currentTitle = null;
+  }
+
+  // Remove a title from the cache (e.g. when instance is killed)
+  evict(title) {
+    delete this._cache[title];
+  }
+
+  disconnect() {
+    if (this.ws) { this.ws.close(); this.ws = null; }
+    this._detachCurrent();
     this.stableCount = 0;
   }
 
