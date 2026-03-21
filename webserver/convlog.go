@@ -5,6 +5,8 @@ import (
 	"sync"
 )
 
+// ansiRe is defined in pane_parser.go (shared across the package).
+
 // ConversationLog accumulates terminal output by separating tmux scrollback
 // (stable, append-only) from the visible pane (volatile, constantly rewritten).
 //
@@ -46,15 +48,21 @@ func slicesEqual(a, b []string) bool {
 	return true
 }
 
+// normalizeLine strips ANSI escape sequences and trailing whitespace
+// for comparison purposes. Claude CLI re-renders the same content with
+// different ANSI codes after screen clears, so raw comparison fails.
+func normalizeLine(s string) string {
+	return strings.TrimRight(ansiRe.ReplaceAllString(s, ""), " \t")
+}
+
 // findOverlap returns the length of the longest suffix of stable that matches
-// a prefix of pane. This handles the case where a terminal resize causes lines
-// to return from scrollback into the visible pane (they appear at both the tail
-// of stable and the head of pane), and also deduplicates re-captured scrollback
-// after screen clears.
+// a prefix of pane. Comparison is done on normalized lines (ANSI-stripped,
+// trailing whitespace trimmed) so that re-captured content with different
+// formatting is still detected as duplicate.
 //
-// Algorithm: scan the tail of stable for positions where 3 consecutive lines
-// match pane[0:3] (to avoid false positives on blank lines), then verify the
-// full match forward. This is O(searchWindow + overlap) for large inputs.
+// Algorithm: scan the tail of stable for positions where 3 consecutive
+// normalized lines match pane[0:3] (to avoid false positives on blank lines),
+// then verify the full match forward. This is O(searchWindow + overlap).
 func findOverlap(stable, pane []string) int {
 	if len(stable) == 0 || len(pane) == 0 {
 		return 0
@@ -65,24 +73,34 @@ func findOverlap(stable, pane []string) int {
 		maxOverlap = len(stable)
 	}
 
+	// Pre-normalize the pane lines (searched repeatedly)
+	normPane := make([]string, len(pane))
+	for i, l := range pane {
+		normPane[i] = normalizeLine(l)
+	}
+	// Pre-normalize the search window of stable
+	searchStart := len(stable) - maxOverlap
+	normStable := make([]string, maxOverlap)
+	for i := 0; i < maxOverlap; i++ {
+		normStable[i] = normalizeLine(stable[searchStart+i])
+	}
+
 	const seedLen = 3
 	bestOverlap := 0
-	searchStart := len(stable) - maxOverlap
 
 	// Scan for 3-line seed match, then verify full extent.
-	// This avoids false positives on single blank lines.
 	if maxOverlap >= seedLen && len(pane) >= seedLen {
-		for i := searchStart; i <= len(stable)-seedLen; i++ {
-			if stable[i] != pane[0] || stable[i+1] != pane[1] || stable[i+2] != pane[2] {
+		for i := 0; i <= len(normStable)-seedLen; i++ {
+			if normStable[i] != normPane[0] || normStable[i+1] != normPane[1] || normStable[i+2] != normPane[2] {
 				continue
 			}
-			candidateLen := len(stable) - i
-			if candidateLen > len(pane) {
-				candidateLen = len(pane)
+			candidateLen := len(normStable) - i
+			if candidateLen > len(normPane) {
+				candidateLen = len(normPane)
 			}
 			match := true
 			for j := seedLen; j < candidateLen; j++ {
-				if stable[i+j] != pane[j] {
+				if normStable[i+j] != normPane[j] {
 					match = false
 					break
 				}
@@ -94,7 +112,6 @@ func findOverlap(stable, pane []string) int {
 	}
 
 	// Fall back to checking small overlaps (1-2 lines) directly.
-	// These are common at the stable/pane boundary after resize.
 	limit := seedLen - 1
 	if limit > maxOverlap {
 		limit = maxOverlap
@@ -102,7 +119,7 @@ func findOverlap(stable, pane []string) int {
 	for overlap := limit; overlap > bestOverlap; overlap-- {
 		match := true
 		for j := 0; j < overlap; j++ {
-			if stable[len(stable)-overlap+j] != pane[j] {
+			if normStable[len(normStable)-overlap+j] != normPane[j] {
 				match = false
 				break
 			}
