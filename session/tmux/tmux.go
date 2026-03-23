@@ -561,20 +561,44 @@ func (t *TmuxSession) SetWindowHeight(height int) error {
 // If width or height is 0, that dimension is left unchanged.
 func (t *TmuxSession) ResizeWindow(height, width int) error {
 	log.InfoLog.Printf("[TmuxSession.ResizeWindow] session=%s height=%d width=%d", t.sanitizedName, height, width)
-	if height > 0 {
-		cmd := exec.Command("tmux", "resize-window", "-t", t.sanitizedName, "-y", strconv.Itoa(height))
-		if err := t.cmdExec.Run(cmd); err != nil {
-			return fmt.Errorf("error resizing tmux window height: %w", err)
-		}
+
+	if height <= 0 && width <= 0 {
+		return nil
 	}
+
+	args := []string{"resize-window", "-t", t.sanitizedName}
 	if width > 0 {
-		cmd := exec.Command("tmux", "resize-window", "-t", t.sanitizedName, "-x", strconv.Itoa(width))
-		if err := t.cmdExec.Run(cmd); err != nil {
-			return fmt.Errorf("error resizing tmux window width: %w", err)
-		}
+		args = append(args, "-x", strconv.Itoa(width))
+	}
+	if height > 0 {
+		args = append(args, "-y", strconv.Itoa(height))
+	}
+
+	cmd := exec.Command("tmux", args...)
+	if err := t.cmdExec.Run(cmd); err != nil {
+		return fmt.Errorf("error resizing tmux window: %w", err)
 	}
 
 	// Update the PTY size so tmux and our PTY handler are in sync
+	// Use current dimensions for any that were left as 0
+	if width <= 0 || height <= 0 {
+		currentRows, currentCols, err := pty.Getsize(t.ptmx)
+		if err == nil {
+			if height <= 0 {
+				height = currentRows
+			}
+			if width <= 0 {
+				width = currentCols
+			}
+		} else {
+			log.WarningLog.Printf("error getting current pty size: %v", err)
+			// If we can't get the current size, don't update with 0s as that breaks the terminal
+			if width <= 0 || height <= 0 {
+				return nil
+			}
+		}
+	}
+
 	if err := t.updateWindowSize(width, height); err != nil {
 		log.WarningLog.Printf("error updating PTY window size: %v", err)
 	}
