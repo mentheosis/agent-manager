@@ -105,6 +105,8 @@ func statusString(s session.Status) string {
 		return "loading"
 	case session.Paused:
 		return "paused"
+	case session.Deleting:
+		return "deleting"
 	default:
 		return "unknown"
 	}
@@ -405,9 +407,10 @@ func (s *Server) pollOutput() {
 			var newScrollback string
 			lastSize := s.lastHistorySize[inst.Title]
 
-			// Resize guard: if history_size decreased (e.g. terminal resize
-			// caused line rewrapping), reset our tracker. The overlap between
-			// stable and pane is handled at read time by findOverlap in GetState.
+			// When history_size decreases (screen clear/redraw, terminal resize),
+			// reset the tracker. Ingest() deduplicates at the content level,
+			// so re-capturing old lines after a decrease is safe — duplicates
+			// are detected and skipped via overlap matching.
 			if historySize < lastSize {
 				s.lastHistorySize[inst.Title] = historySize
 			} else if historySize > lastSize {
@@ -416,6 +419,11 @@ func (s *Server) pollOutput() {
 				if err != nil {
 					continue
 				}
+				// Diagnostic logging (uncomment to debug convlog issues):
+				// scrollLines := len(splitLines(newScrollback))
+				// stableCount := cl.GetRawStableCount()
+				// log.InfoLog.Printf("[convlog %s] scrollback delta: %d lines (history %d→%d), captured %d lines, stable total: %d",
+				// 	inst.Title, delta, lastSize, historySize, scrollLines, stableCount+scrollLines)
 				s.lastHistorySize[inst.Title] = historySize
 			}
 
@@ -942,6 +950,21 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	case "kill":
+		// Set deleting status and broadcast so UI shows immediate feedback
+		inst.SetStatus(session.Deleting)
+		changed := map[string]*AgentMeta{
+			title: {Status: "deleting"},
+		}
+		if len(inst.Children) > 0 {
+			for _, childTitle := range inst.Children {
+				if child := s.findInstance(childTitle); child != nil {
+					child.SetStatus(session.Deleting)
+				}
+				changed[childTitle] = &AgentMeta{Status: "deleting"}
+			}
+		}
+		s.broadcastAgentMeta(changed)
+
 		// Cascade: if this is a loop/group, kill all children first
 		if len(inst.Children) > 0 {
 			for _, childTitle := range inst.Children {
@@ -983,6 +1006,63 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		s.statusMu.Unlock()
 		_ = s.storage.DeleteInstance(title)
 		w.WriteHeader(http.StatusOK)
+
+	case "reparent":
+		var body struct {
+			NewParent string `json:"new_parent"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Don't allow reparenting loop instances or orchestrator leaders
+		if inst.InstanceType == "loop" {
+			http.Error(w, "cannot reparent a loop instance", http.StatusBadRequest)
+			return
+		}
+		if inst.AgentPreset == "orchestrator" {
+			http.Error(w, "cannot reparent the orchestrator leader", http.StatusBadRequest)
+			return
+		}
+
+		oldParent := inst.Parent
+
+		// Remove from old parent's Children
+		if oldParent != "" {
+			if old := s.findInstance(oldParent); old != nil {
+				filtered := make([]string, 0, len(old.Children))
+				for _, c := range old.Children {
+					if c != title {
+						filtered = append(filtered, c)
+					}
+				}
+				old.Children = filtered
+			}
+		}
+
+		// Set new parent and add to new parent's Children
+		inst.Parent = body.NewParent
+		if body.NewParent != "" {
+			if newP := s.findInstance(body.NewParent); newP != nil {
+				newP.Children = append(newP.Children, title)
+			}
+		}
+
+		_ = s.save()
+		w.WriteHeader(http.StatusOK)
+
+		// Tell affected loops to rediscover agents AFTER releasing the lock.
+		// sendRediscoverToLoop triggers discoverAgents() which calls GET /api/instances,
+		// and that handler takes s.mu.RLock — so we must not hold the write lock here.
+		go func() {
+			if oldParent != "" {
+				s.sendRediscoverToLoop(oldParent)
+			}
+			if body.NewParent != "" && body.NewParent != oldParent {
+				s.sendRediscoverToLoop(body.NewParent)
+			}
+		}()
 
 	case "rename":
 		var body struct {
@@ -1320,6 +1400,31 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sendRediscoverToLoop sends a rediscover signal to the loop instance.
+// Tries MCP HTTP first, falls back to tmux stdin command.
+func (s *Server) sendRediscoverToLoop(groupTitle string) {
+	for _, inst := range s.instances {
+		if inst.Title != groupTitle {
+			continue
+		}
+		// Try MCP HTTP endpoint first
+		if inst.MCPPort > 0 {
+			mcpURL := fmt.Sprintf("http://localhost:%d/rediscover", inst.MCPPort)
+			resp, err := http.Post(mcpURL, "application/json", nil)
+			if err == nil {
+				resp.Body.Close()
+				return
+			}
+			log.ErrorLog.Printf("MCP rediscover failed for %s, falling back to stdin: %v", groupTitle, err)
+		}
+		// Fallback: send __REDISCOVER__ via tmux stdin
+		if err := inst.SendPrompt("__REDISCOVER__"); err != nil {
+			log.ErrorLog.Printf("failed to send __REDISCOVER__ to %s: %v", groupTitle, err)
+		}
+		return
+	}
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *session.Instance, title string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1378,6 +1483,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, inst *s
 		// (sent below) replaces the volatile content independently.
 		if rawStableCount > lastRawStableCount {
 			newLines := cl.GetStableSince(lastRawStableCount)
+			// log.InfoLog.Printf("[ws %s] history_append: %d new lines (raw stable %d→%d)",
+			// 	title, len(newLines), lastRawStableCount, rawStableCount)
 			lastRawStableCount = rawStableCount
 			if len(newLines) > 0 {
 				msg := map[string]interface{}{
@@ -1520,7 +1627,13 @@ func Run(program string, autoYes bool, port int) error {
 	}
 
 	srv.port = port
-	srv.nextMCPPort = port + 100 // MCP ports start at webserver port + 100
+	// MCP ports start at webserver port + 100, but skip past any already-assigned ports
+	srv.nextMCPPort = port + 100
+	for _, inst := range srv.instances {
+		if inst.MCPPort >= srv.nextMCPPort {
+			srv.nextMCPPort = inst.MCPPort + 1
+		}
+	}
 	go srv.pollMetadata()
 	go srv.pollOutput()
 

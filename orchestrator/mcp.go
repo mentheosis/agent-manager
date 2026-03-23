@@ -20,8 +20,9 @@ type MCPServer struct {
 	stateFunc   func() string // returns current loop state
 	doneCh      chan string   // signals task completion with summary
 	taskCh      chan string   // receives task from HTTP /task endpoint
-	pauseFunc   func()
-	resumeFunc  func()
+	pauseFunc      func()
+	resumeFunc     func()
+	rediscoverFunc func()
 }
 
 // NewMCPServer creates a new MCP server backed by the claude-squad API.
@@ -59,6 +60,11 @@ func (s *MCPServer) SetPauseFunc(f func()) {
 // SetResumeFunc sets the function called when resume is received via HTTP.
 func (s *MCPServer) SetResumeFunc(f func()) {
 	s.resumeFunc = f
+}
+
+// SetRediscoverFunc sets the function called when rediscover is received via HTTP.
+func (s *MCPServer) SetRediscoverFunc(f func()) {
+	s.rediscoverFunc = f
 }
 
 // SetLogFunc sets a custom log function.
@@ -205,6 +211,7 @@ func (s *MCPServer) RunHTTP(port int) error {
 	mux.HandleFunc("/task", s.handleTask)
 	mux.HandleFunc("/pause", s.handlePause)
 	mux.HandleFunc("/resume", s.handleResume)
+	mux.HandleFunc("/rediscover", s.handleRediscover)
 	mux.HandleFunc("/", s.handleHTTP)
 
 	return http.ListenAndServe(addr, mux)
@@ -263,6 +270,19 @@ func (s *MCPServer) handleResume(w http.ResponseWriter, r *http.Request) {
 	s.log("Resume received via HTTP")
 	if s.resumeFunc != nil {
 		s.resumeFunc()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *MCPServer) handleRediscover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.log("Rediscover received via HTTP")
+	if s.rediscoverFunc != nil {
+		s.rediscoverFunc()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -510,6 +530,7 @@ func (s *MCPServer) toolSendToAgent(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	s.log("%s(%s, %d chars)", colorize(ansiBold+ansiCyan, "send_to_agent"), colorize(ansiBold, params.Agent), len(params.Prompt))
 	if err := s.client.SendToInstance(params.Agent, params.Prompt); err != nil {
 		return "", err
 	}
@@ -529,8 +550,9 @@ func (s *MCPServer) toolReadAgentOutput(args json.RawMessage) (string, error) {
 		return "", err
 	}
 
-	s.log("read_agent_output(%s): pane=%d lines, stable=%d lines, last_input=%q",
-		params.Agent, len(history.Pane), len(history.StableLines), history.LastInput)
+	s.log("%s(%s): pane=%d lines, stable=%d lines",
+		colorize(ansiCyan, "read_agent_output"), colorize(ansiBold, params.Agent),
+		len(history.Pane), len(history.StableLines))
 
 	output := strings.Join(history.Pane, "\n")
 	if output == "" && len(history.StableLines) > 0 {
@@ -567,7 +589,7 @@ func (s *MCPServer) toolRespondToPrompt(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	s.log("respond_to_prompt(%s, key=%q)", params.Agent, params.Key)
+	s.log("%s(%s, key=%q)", colorize(ansiBold+ansiYellow, "respond_to_prompt"), colorize(ansiBold, params.Agent), params.Key)
 
 	if err := s.client.SendKeysToInstance(params.Agent, params.Key); err != nil {
 		return "", err
@@ -583,7 +605,7 @@ func (s *MCPServer) toolMarkTaskDone(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	s.log("mark_task_done: %s", params.Summary)
+	s.log("%s: %s", colorize(ansiBold+ansiGreen, "mark_task_done"), params.Summary)
 
 	select {
 	case s.doneCh <- params.Summary:

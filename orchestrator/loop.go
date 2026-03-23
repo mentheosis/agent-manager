@@ -65,6 +65,8 @@ type Loop struct {
 	doneCh <-chan string
 	// taskCh receives tasks from the MCP HTTP /task endpoint.
 	taskCh <-chan string
+	// rediscoverCh signals the loop to re-discover its agents mid-run.
+	rediscoverCh chan struct{}
 }
 
 // NewLoop creates a new control loop. groupTitle is the title of the loop instance
@@ -77,9 +79,10 @@ func NewLoop(cfg Config, groupTitle string) *Loop {
 		groupTitle: groupTitle,
 		watcher:   NewStatusWatcher(cfg.BaseURL, logFunc),
 		logFunc:   logFunc,
-		pauseCh:   make(chan struct{}, 1),
-		restartCh: make(chan string, 1),
-		state:     LoopStateIdle,
+		pauseCh:      make(chan struct{}, 1),
+		restartCh:    make(chan string, 1),
+		rediscoverCh: make(chan struct{}, 1),
+		state:        LoopStateIdle,
 	}
 }
 
@@ -148,6 +151,44 @@ func (l *Loop) Restart(taskPrompt string) {
 	}
 }
 
+// handleRediscover performs agent re-discovery and logs joins/leaves.
+func (l *Loop) handleRediscover() {
+	oldAgents := make(map[string]bool, len(l.agentTitles))
+	for _, t := range l.agentTitles {
+		oldAgents[t] = true
+	}
+	l.log("Rediscovering agents...")
+	if err := l.discoverAgents(); err != nil {
+		l.log("Rediscovery failed: %v", err)
+		return
+	}
+	// Report joins
+	for _, t := range l.agentTitles {
+		if !oldAgents[t] {
+			l.log("%s %s", colorize(ansiBold+ansiGreen, "▶ Agent joined:"), t)
+		}
+	}
+	// Report leaves
+	newAgents := make(map[string]bool, len(l.agentTitles))
+	for _, t := range l.agentTitles {
+		newAgents[t] = true
+	}
+	for t := range oldAgents {
+		if !newAgents[t] {
+			l.log("%s %s", colorize(ansiBold+ansiYellow, "◀ Agent left:"), t)
+		}
+	}
+	l.log("%s: %d agents=%v", colorize(ansiGreen, "Team updated"), len(l.agentTitles), l.agentTitles)
+}
+
+// Rediscover signals the loop to re-discover its agents (e.g. after reparenting).
+func (l *Loop) Rediscover() {
+	select {
+	case l.rediscoverCh <- struct{}{}:
+	default:
+	}
+}
+
 func (l *Loop) log(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
@@ -168,13 +209,19 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 	if prompt == "" {
 		l.setState(LoopStateIdle)
 		l.log("Waiting for task... Send one via the web UI.")
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case prompt = <-l.restartCh:
-			l.log("Task received (stdin)")
-		case prompt = <-l.taskCh:
-			l.log("Task received (HTTP)")
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case prompt = <-l.restartCh:
+				l.log("Task received (stdin)")
+			case prompt = <-l.taskCh:
+				l.log("Task received (HTTP)")
+			case <-l.rediscoverCh:
+				l.handleRediscover()
+				continue
+			}
+			break
 		}
 	}
 
@@ -184,13 +231,13 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 			l.log("Error discovering agents: %v", err)
 			return fmt.Errorf("failed to discover agents: %w", err)
 		}
-		l.log("Discovered leader: %s, %d sub-agents: %v", l.leaderTitle, len(l.agentTitles), l.agentTitles)
+		l.log("%s: %s, %d sub-agents: %v", colorize(ansiGreen, "Discovered leader"), l.leaderTitle, len(l.agentTitles), l.agentTitles)
 
 		// Send initial prompt to orchestrator if provided
 		if prompt != "" {
 			teamDesc := l.buildTeamDescription()
 			fullPrompt := teamDesc + "\n\n## Task\n\n" + prompt
-			l.log("Sending initial task to orchestrator:\n%s", fullPrompt)
+			l.log("%s\n%s", colorize(ansiBold+ansiCyan, "▶ Sending initial task to orchestrator"), fullPrompt)
 			if err := l.client.SendToInstance(l.leaderTitle, fullPrompt); err != nil {
 				l.log("Error sending to orchestrator: %v", err)
 				return fmt.Errorf("failed to send initial prompt: %w", err)
@@ -207,21 +254,26 @@ func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 		if done {
 			// Orchestrator signaled done — idle and wait for restart
 			l.setState(LoopStateDone)
-			l.log("Orchestration complete. Waiting for user to restart...")
+			l.log(colorize(ansiBold+ansiGreen, "✓ Orchestration complete.") + " Waiting for user to restart...")
 
-			select {
-			case <-ctx.Done():
-				l.log("Context cancelled, shutting down")
-				return ctx.Err()
-			case newPrompt := <-l.restartCh:
-				l.log("Restart requested (stdin)")
-				prompt = newPrompt
-				continue
-			case newPrompt := <-l.taskCh:
-				l.log("Restart requested (HTTP)")
-				prompt = newPrompt
-				continue
+			for {
+				select {
+				case <-ctx.Done():
+					l.log("Context cancelled, shutting down")
+					return ctx.Err()
+				case newPrompt := <-l.restartCh:
+					l.log("Restart requested (stdin)")
+					prompt = newPrompt
+				case newPrompt := <-l.taskCh:
+					l.log("Restart requested (HTTP)")
+					prompt = newPrompt
+				case <-l.rediscoverCh:
+					l.handleRediscover()
+					continue
+				}
+				break
 			}
+			continue
 		} else {
 			// Context was cancelled
 			return ctx.Err()
@@ -306,9 +358,12 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		case <-ctx.Done():
 			return false, ctx.Err()
 
+		case <-l.rediscoverCh:
+			l.handleRediscover()
+
 		case summary := <-doneCh:
 			// Leader called mark_task_done via MCP
-			l.log("Task completed (via MCP): %s", summary)
+			l.log("%s: %s", colorize(ansiBold+ansiGreen, "✓ Task completed (via MCP)"), summary)
 			l.Pause()
 			return true, nil
 
@@ -340,7 +395,7 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 				continue
 			}
 			lastStatus[change.Title] = change.Status
-			l.log("Status change: %s → %s", change.Title, change.Status)
+			l.log("Status change: %s → %s", change.Title, colorize(ansiYellow, change.Status))
 
 			if change.Status == "ready" && !pendingReady[change.Title] {
 				pendingReady[change.Title] = true
@@ -380,11 +435,17 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 			goto dispatch
 
 		case <-allIdleCh:
-			// Heartbeat detected all agents idle — notify the leader
+			// Heartbeat detected all agents idle — only notify if leader is also idle.
+			// If the leader is busy, it's already working on dispatching tasks.
+			leaderStatus := l.watcher.GetStatus(l.leaderTitle)
+			if leaderStatus != "ready" {
+				l.log("All agents idle but leader is %s — skipping notification", colorize(ansiYellow, leaderStatus))
+				continue
+			}
 			idleMsg := "All agents are currently idle (status: ready/waiting). " +
 				"If the task is complete, call the mark_task_done tool with a summary. " +
 				"If more work is needed, use send_to_agent to dispatch the next steps."
-			l.log("All agents idle — notifying orchestrator:\n%s", idleMsg)
+			l.log("%s\n%s", colorize(ansiBold+ansiYellow, "⚠ All agents idle — notifying orchestrator"), colorize(ansiDim, idleMsg))
 			if err := l.client.SendToInstance(l.leaderTitle, idleMsg); err != nil {
 				l.log("Error sending idle notification: %v", err)
 			}
@@ -392,13 +453,34 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		continue
 
 	dispatch:
-		readyAgents := make([]string, 0, len(pendingReady))
-		for t := range pendingReady {
-			readyAgents = append(readyAgents, t)
-		}
 		pendingReady = make(map[string]bool)
 
-		// Collect output and prompt info from all newly-ready agents
+		// Wait for the leader to be idle before sending — avoids queueing
+		// redundant messages while the leader is still processing.
+		leaderStatus := l.watcher.GetStatus(l.leaderTitle)
+		if leaderStatus != "ready" && leaderStatus != "" {
+			l.log("Leader busy (%s), waiting for idle before dispatching...", colorize(ansiYellow, leaderStatus))
+			if err := l.waitForReady(ctx, l.leaderTitle); err != nil {
+				return false, err
+			}
+			l.log("Leader now idle, dispatching")
+		}
+
+		// Collect output from ALL agents that are currently ready (not just
+		// the ones that triggered the dispatch). This naturally batches results
+		// from agents that became ready while we waited for the leader.
+		var readyAgents []string
+		for _, t := range l.agentTitles {
+			s := l.watcher.GetStatus(t)
+			if s == "ready" {
+				readyAgents = append(readyAgents, t)
+			}
+		}
+
+		if len(readyAgents) == 0 {
+			continue // all agents went back to running while we waited
+		}
+
 		update := l.collectResults(readyAgents)
 
 		// Append prompt info for agents that have interactive prompts
@@ -412,7 +494,8 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 		// Send batched status update to orchestrator — the leader will use
 		// MCP tools (send_to_agent, read_agent_output, mark_task_done) to act on it.
 		promptText := update.FormatForPrompt()
-		l.log("Sending batched update to orchestrator (%d agents):\n%s", len(update.Agents), promptText)
+		displayText := update.FormatForDisplay()
+		l.log("%s\n%s", colorize(ansiBold+ansiCyan, fmt.Sprintf("▶ Sending batched update to orchestrator (%d agents)", len(update.Agents))), displayText)
 		if err := l.client.SendToInstance(l.leaderTitle, promptText); err != nil {
 			l.log("Error sending to orchestrator: %v", err)
 		}
@@ -499,10 +582,18 @@ func (l *Loop) printHeartbeat() {
 		meta := allMeta[title]
 		if meta == nil {
 			parts = append(parts, fmt.Sprintf("%s:unknown", title))
-		} else if meta.Prompt != nil && len(meta.Prompt.Actions) > 0 {
-			parts = append(parts, fmt.Sprintf("%s:%s(prompt)", title, meta.Status))
 		} else {
-			parts = append(parts, fmt.Sprintf("%s:%s", title, meta.Status))
+			statusColor := ansiBrightBlk
+			if meta.Status == "running" {
+				statusColor = ansiGreen
+			} else if meta.Status == "ready" {
+				statusColor = ansiYellow
+			}
+			label := meta.Status
+			if meta.Prompt != nil && len(meta.Prompt.Actions) > 0 {
+				label += colorize(ansiYellow, "(prompt)")
+			}
+			parts = append(parts, fmt.Sprintf("%s:%s", title, colorize(statusColor, label)))
 		}
 	}
 	if l.leaderTitle != "" {
@@ -510,7 +601,13 @@ func (l *Loop) printHeartbeat() {
 		if meta == nil {
 			parts = append(parts, fmt.Sprintf("%s:unknown", l.leaderTitle))
 		} else {
-			parts = append(parts, fmt.Sprintf("%s:%s", l.leaderTitle, meta.Status))
+			statusColor := ansiBrightBlk
+			if meta.Status == "running" {
+				statusColor = ansiGreen
+			} else if meta.Status == "ready" {
+				statusColor = ansiYellow
+			}
+			parts = append(parts, fmt.Sprintf("%s:%s", l.leaderTitle, colorize(statusColor, meta.Status)))
 		}
 	}
 	fmt.Println(strings.Join(parts, "  "))

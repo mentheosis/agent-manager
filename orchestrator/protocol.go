@@ -49,10 +49,35 @@ func (u *StatusUpdate) FormatForPrompt() string {
 			for _, act := range a.Prompt.Actions {
 				b.WriteString(fmt.Sprintf("- %s (key: %q)\n", act.Label, act.Key))
 			}
-			b.WriteString("Use `respond_to_prompt` with agent=\"" + a.Name + "\" and the appropriate key.\n")
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("Use your MCP tools to take action: send_to_agent to dispatch work, read_agent_output to check results, respond_to_prompt to handle permission requests, or mark_task_done if complete.\n")
+	return b.String()
+}
+
+// FormatForDisplay formats the status update with ANSI colors for terminal display.
+// Agent output is dimmed and enclosed in a box to de-emphasize it.
+func (u *StatusUpdate) FormatForDisplay() string {
+	var b strings.Builder
+	for _, a := range u.Agents {
+		// Agent header in bold
+		b.WriteString(colorize(ansiBold, fmt.Sprintf("  ┌─ %s [%s]", a.Name, a.Status)))
+		b.WriteString("\n")
+		if a.Output != "" {
+			// Dim the agent output and indent with box border
+			lines := strings.Split(a.Output, "\n")
+			for _, line := range lines {
+				b.WriteString(colorize(ansiBrightBlk, "  │ "+line))
+				b.WriteString("\n")
+			}
+		}
+		if a.Prompt != nil && len(a.Prompt.Actions) > 0 {
+			b.WriteString(colorize(ansiYellow, "  │ ⚠ Interactive prompt — needs response"))
+			b.WriteString("\n")
+		}
+		b.WriteString(colorize(ansiBrightBlk, "  └─"))
+		b.WriteString("\n")
+	}
 	return b.String()
 }

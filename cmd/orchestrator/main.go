@@ -41,9 +41,9 @@ func main() {
 	}()
 
 	// Print banner
-	fmt.Println("╔══════════════════════════════════════════╗")
+	fmt.Println("\033[1;36m╔══════════════════════════════════════════╗")
 	fmt.Println("║        Orchestrator Control Loop         ║")
-	fmt.Println("╚══════════════════════════════════════════╝")
+	fmt.Println("╚══════════════════════════════════════════╝\033[0m")
 	fmt.Printf("  Version:  %s\n", Version)
 	fmt.Printf("  Group:    %s\n", *groupFlag)
 	fmt.Printf("  API:      %s\n", *baseURLFlag)
@@ -64,6 +64,7 @@ func main() {
 		loop.SetTaskCh(mcpServer.TaskCh())
 		mcpServer.SetPauseFunc(loop.Pause)
 		mcpServer.SetResumeFunc(loop.Resume)
+		mcpServer.SetRediscoverFunc(loop.Rediscover)
 		go func() {
 			fmt.Printf("  MCP HTTP: http://localhost:%d\n", *mcpPortFlag)
 			if err := mcpServer.RunHTTP(*mcpPortFlag); err != nil && ctx.Err() == nil {
@@ -100,6 +101,8 @@ func readCommands(ctx context.Context, loop *orchestrator.Loop) {
 			loop.Pause()
 		case line == "__RESUME__":
 			loop.Resume()
+		case line == "__REDISCOVER__":
+			loop.Rediscover()
 		case strings.HasPrefix(line, "__TASK__ "):
 			taskJSON := strings.TrimPrefix(line, "__TASK__ ")
 			var task string

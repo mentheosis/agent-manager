@@ -35,11 +35,13 @@ Every 200ms, for each active instance:
 - Capture visible pane via `inst.Preview()`
 - Query `inst.GetHistorySize()` to detect new scrollback (O(1) metadata check)
 - If scrollback grew, capture only the delta via `inst.CaptureScrollback(delta)`
-- If scrollback shrank (terminal resize), reset tracker without capturing (lines may have rewrapped)
+- If scrollback shrank, reset `lastHistorySize` to the new value (see below)
 - On first sight of an instance with existing scrollback, capture full scrollback to seed history (restart recovery)
 - Feed both into `cl.Ingest(newScrollback, paneContent)`
 
 This delta approach avoids re-reading the entire scrollback buffer every tick.
+
+**Screen clear handling**: Claude CLI periodically clears the scrollback buffer (via `\033[3J` or similar) during screen redraws, causing `history_size` to drop dramatically (e.g. 900 → 100). When it then renders new content, `history_size` grows back and the delta is captured. This means some content is re-captured, but `Ingest()` deduplicates it at the content level (see below). The tracker resets on decrease so that genuinely new content scrolling off after the clear is not missed.
 
 ### 2. Accumulation (convlog.go `ConversationLog`)
 
@@ -49,7 +51,9 @@ ConversationLog maintains two regions:
 
 Lines enter stable **only** via scrollback delta — when tmux reports new scrollback lines, they're appended to stableLines. There is no turn-based promotion (promoting pane to stable on status transitions was tried but caused duplication).
 
-`GetState()` deduplicates at read time via `findOverlap`: if the tail of stableLines matches the head of currentPane (which can happen after a terminal resize pulls lines back from scrollback into the visible pane), the overlapping stable lines are excluded. This is safe because it never mutates stableLines — the WebSocket handler uses `GetRawStableCount()` for delta tracking, which is immune to overlap fluctuations.
+**Ingest-time deduplication**: Before appending new scrollback lines, `Ingest()` calls `findOverlap(stableLines, newLines)` to detect if the captured lines overlap with the tail of existing stable history. This catches re-captured content after screen clears. The overlap detection uses `normalizeLine()` which strips ANSI escape sequences and trailing whitespace before comparing, because Claude CLI re-renders the same text with different ANSI formatting after clears. A 3-line seed match is required to avoid false positives on blank lines.
+
+**Read-time deduplication**: `GetState()` also calls `findOverlap` between the tail of stableLines and the head of currentPane. This handles terminal resize cases where lines move back from scrollback into the visible pane. The WebSocket handler uses `GetRawStableCount()` for delta tracking, which is immune to overlap fluctuations.
 
 Short responses that never scroll off the visible pane remain in `currentPane` and are always visible to the client via pane messages. They enter stableLines naturally when new output eventually displaces them into scrollback.
 
@@ -70,12 +74,18 @@ Two mechanisms:
 
 ### 4. Rendering (convlog.js `ConvLogView`)
 
-The browser maintains two DOM regions:
+The browser maintains two DOM regions per instance:
 - `#output-history` (historyDiv): stable content, appended via `history_append`
 - `#output-live` (paneDiv): volatile pane, replaced on each `pane` message
 - `.last-input` (lastInputDiv): shows most recent user prompt below the pane
 
-A `generation` counter prevents stale callbacks when switching between instances.
+**Client-side caching**: ConvLogView keeps a per-instance cache (`this._cache`) of DOM nodes and WebSocket connections. When switching conversations:
+- The current instance's DOM wrapper is detached (kept in memory) and its WS stays alive in the background, continuing to receive `history_append` and `pane` updates.
+- If switching to a previously viewed instance, the cached DOM is reattached instantly — no REST fetch needed. A WS is reconnected only if the previous one died.
+- First visit to an instance fetches full history via `GET /history`, renders it, and opens a WS.
+- `evict(title)` removes a title from cache and closes its WS (called on kill/delete).
+
+This means background conversations never lose lines, and switching between conversations is instant.
 
 ## Interactive Prompt Detection
 
@@ -101,6 +111,7 @@ These buttons appear in `#action-bar` between the output area and input area. Th
 | `/api/instances/{title}/rules` | GET/PUT | Read/write config files (CLAUDE.md, settings) |
 | `/api/instances/{title}/plans` | GET/PUT | Read/write plan files (.claude/plans/*.md) |
 | `/api/instances/{title}/rename` | POST | Set display_title (UI-only rename) |
+| `/api/instances/{title}/reparent` | POST | Move instance to different parent group |
 | `/api/instances/reorder` | POST | Reorder instance list (persisted) |
 | `/api/statuses/ws` | GET | WebSocket for status broadcasts |
 | `/api/sessions` | GET | List all saved sessions (from state.json) |
@@ -129,8 +140,10 @@ Every 500ms, checks each active instance for activity:
 
 4. **Scrollback-only stable lines**: Lines only move to stable history when they physically scroll off the visible pane (detected via tmux `history_size` delta). There is no turn-based promotion — status transitions do not affect stable lines. This eliminates a class of duplication bugs where promoted pane content would overlap with scrollback delta. Short responses that never scroll off remain in the pane and are visible to clients via pane messages until displaced.
 
-5. **Delta scrollback capture**: Instead of capturing the full scrollback buffer every tick, we track `lastHistorySize` and only capture new lines. This is O(delta) instead of O(total). When `history_size` decreases (terminal resize / line rewrapping), the tracker resets and `findOverlap` in `GetState()` handles the resulting overlap at read time.
+5. **Delta scrollback capture with content-level dedup**: Instead of capturing the full scrollback buffer every tick, we track `lastHistorySize` and only capture new lines. This is O(delta) instead of O(total). When `history_size` decreases (screen clear or resize), the tracker resets so new content isn't missed. Re-captured content is deduplicated at ingest time by `findOverlap`, which normalizes lines (strips ANSI codes and trailing whitespace) before comparing — this is necessary because Claude CLI re-renders the same text with different ANSI formatting after screen clears.
 
-6. **Raw keystroke API**: The `/keys` endpoint sends bytes directly to the PTY, enabling the UI to interact with Claude CLI's interactive prompts (numbered choices, Esc/Tab/ctrl shortcuts) without the server needing to understand the prompt format.
+6. **Paste detection disabled on tmux sessions**: Sessions are created with `paste-time 0` to prevent tmux from treating `send-keys` input as pasted text, which would require a second Enter to confirm. This makes prompt submission reliable without workarounds.
 
-7. **Single HTML file**: All CSS and main application JS live in `index.html`. Only reusable modules (ConvLogView, InputHistory, API wrapper, ANSI parser) are in separate JS files.
+7. **Raw keystroke API**: The `/keys` endpoint sends bytes directly to the PTY, enabling the UI to interact with Claude CLI's interactive prompts (numbered choices, Esc/Tab/ctrl shortcuts) without the server needing to understand the prompt format.
+
+8. **Single HTML file**: All CSS and main application JS live in `index.html`. Only reusable modules (ConvLogView, InputHistory, API wrapper, ANSI parser) are in separate JS files.

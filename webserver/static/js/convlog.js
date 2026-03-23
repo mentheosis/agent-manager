@@ -1,74 +1,96 @@
 import { safeAnsiToHtml, esc } from './ansi.js';
 import { api } from './api.js';
 
-// ConvLogView manages the terminal output display for a single instance.
-// It owns the WS connection and renders stable history + volatile pane.
+// ConvLogView manages the terminal output display for all instances.
+// It keeps a per-instance cache of DOM nodes and WebSocket connections
+// so that background conversations continue receiving updates and
+// switching conversations is instant (no re-fetch).
 export class ConvLogView {
   constructor(container) {
     this.container = container;
-    this.historyDiv = null;
-    this.paneDiv = null;
-    this.lastInputDiv = null;
-    this.ws = null;
-    this.generation = 0;
-    this.stableCount = 0; // number of stable lines rendered
+    this.currentTitle = null;
     this.onStatus = null; // callback(title, status) for sidebar updates
     this.onContent = null; // callback(content) for mode detection etc.
+    // Per-instance state: title -> { wrapper, historyDiv, paneDiv, lastInputDiv, stableCount, ws, gen }
+    this._cache = {};
+    this._genCounter = 0;
   }
 
-  // Connect to an instance: load initial history + start WS stream
+  // Connect to (display) an instance. Keeps previous instance's WS alive in background.
   async connect(title) {
-    this.disconnect();
-    this.generation++;
-    const gen = this.generation;
+    this.currentTitle = title;
 
-    // Set up DOM structure
+    let entry = this._cache[title];
+    if (entry) {
+      // Reattach cached DOM
+      this.container.innerHTML = '';
+      this.container.className = '';
+      this.container.appendChild(entry.wrapper);
+
+      // Fire onContent for action button detection
+      if (this.onContent && entry.paneDiv.textContent) {
+        this.onContent(entry.paneDiv.textContent);
+      }
+
+      this.container.scrollTop = this.container.scrollHeight;
+
+      // If WS died while in background, reconnect it
+      if (!entry.ws || entry.ws.readyState > WebSocket.OPEN) {
+        this._connectWs(title, entry);
+      }
+      return;
+    }
+
+    // Create fresh entry
+    this._genCounter++;
+    const gen = this._genCounter;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'convlog-wrapper';
+    const historyDiv = document.createElement('div');
+    historyDiv.id = 'output-history';
+    const paneDiv = document.createElement('div');
+    paneDiv.id = 'output-live';
+    const lastInputDiv = document.createElement('div');
+    lastInputDiv.className = 'last-input';
+    lastInputDiv.style.display = 'none';
+    wrapper.appendChild(historyDiv);
+    wrapper.appendChild(paneDiv);
+    wrapper.appendChild(lastInputDiv);
+
+    entry = { wrapper, historyDiv, paneDiv, lastInputDiv, stableCount: 0, ws: null, gen };
+    this._cache[title] = entry;
+
     this.container.innerHTML = '';
     this.container.className = '';
-    this.historyDiv = document.createElement('div');
-    this.historyDiv.id = 'output-history';
-    this.paneDiv = document.createElement('div');
-    this.paneDiv.id = 'output-live';
-    this.lastInputDiv = document.createElement('div');
-    this.lastInputDiv.className = 'last-input';
-    this.lastInputDiv.style.display = 'none';
-    this.container.appendChild(this.historyDiv);
-    this.container.appendChild(this.paneDiv);
-    this.container.appendChild(this.lastInputDiv);
-    this.stableCount = 0;
+    this.container.appendChild(wrapper);
 
     // Fetch initial state from server
     let initialState = null;
     try {
       initialState = await api(`/${encodeURIComponent(title)}/history`);
-      if (gen !== this.generation) return;
+      if (entry.gen !== gen) return; // stale
     } catch (e) {
-      if (gen !== this.generation) return;
+      if (entry.gen !== gen) return;
       if (e.message && e.message.includes('Failed to fetch')) {
         this._showError('Cannot connect to Agent Manager server. Is it running?', title);
         return;
       }
     }
 
-    if (gen !== this.generation) return;
-
-    // console.log('initialState', { initialState, gen, title });
+    if (entry.gen !== gen) return;
 
     // Render initial stable lines
     if (initialState && initialState.stable_lines && initialState.stable_lines.length > 0) {
-      this.historyDiv.innerHTML = safeAnsiToHtml(initialState.stable_lines.join('\n'));
-      this.stableCount = initialState.stable_lines.length;
+      historyDiv.innerHTML = safeAnsiToHtml(initialState.stable_lines.join('\n'));
+      entry.stableCount = initialState.stable_lines.length;
     }
 
     // Render initial pane
     if (initialState && initialState.pane && initialState.pane.length > 0) {
-      const paneContent = initialState.pane.join('\n');
-      this.paneDiv.innerHTML = safeAnsiToHtml(paneContent);
+      paneDiv.innerHTML = safeAnsiToHtml(initialState.pane.join('\n'));
     }
 
-    // Fire onContent with the bottom-most visible content for action button detection.
-    // The interactive selector may be in the pane (live) or at the tail of stable lines
-    // (if the pane is empty, e.g. on reconnect to an idle session).
+    // Fire onContent for action button detection
     if (this.onContent) {
       const paneContent = initialState?.pane?.length > 0 ? initialState.pane.join('\n') : null;
       const tailContent = initialState?.stable_lines?.length > 0
@@ -77,108 +99,115 @@ export class ConvLogView {
       if (content) this.onContent(content);
     }
 
-    this._updateLastInput(initialState ? initialState.last_input : '');
-
-    // Scroll to bottom
+    this._updateLastInput(entry, initialState ? initialState.last_input : '');
     this.container.scrollTop = this.container.scrollHeight;
 
-    // Open WebSocket — server seeds from current raw stable count automatically
+    // Open WebSocket
+    this._connectWs(title, entry);
+  }
+
+  _connectWs(title, entry) {
+    if (entry.ws) { entry.ws.close(); entry.ws = null; }
+    entry.gen = ++this._genCounter;
+    const gen = entry.gen;
+
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let newWs;
+    let ws;
     try {
-      newWs = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
+      ws = new WebSocket(`${proto}//${location.host}/api/instances/${encodeURIComponent(title)}/ws`);
     } catch (e) {
-      if (gen !== this.generation) return;
-      this._showError('Cannot connect to Agent Manager server. Is it running?', title);
+      if (this.currentTitle === title) {
+        this._showError('Cannot connect to Agent Manager server. Is it running?', title);
+      }
       return;
     }
+    entry.ws = ws;
 
-    if (gen !== this.generation) {
-      newWs.close();
-      return;
-    }
-    this.ws = newWs;
-
-    newWs.onmessage = (e) => {
-      if (gen !== this.generation) { newWs.close(); return; }
+    ws.onmessage = (e) => {
+      if (entry.gen !== gen) { ws.close(); return; }
       const msg = JSON.parse(e.data);
-      this._handleMessage(msg, gen, title);
+      this._handleMessage(msg, title, entry);
     };
 
-    newWs.onerror = () => {
-      if (gen !== this.generation) return;
-      this._showError('Connection to server lost. The server may have stopped.', title);
+    ws.onerror = () => {
+      if (entry.gen !== gen) return;
+      if (this.currentTitle === title) {
+        this._showError('Connection to server lost. The server may have stopped.', title);
+      }
     };
 
-    newWs.onclose = () => {
-      if (gen === this.generation) this.ws = null;
+    ws.onclose = () => {
+      if (entry.gen === gen) entry.ws = null;
     };
   }
 
+  // Disconnect from the currently displayed instance (hide it)
   disconnect() {
-    if (this.ws) { this.ws.close(); this.ws = null; }
-    this.historyDiv = null;
-    this.paneDiv = null;
-    this.lastInputDiv = null;
-    this.stableCount = 0;
+    this.currentTitle = null;
   }
 
-  _updateLastInput(lastInput) {
-    if (!this.lastInputDiv) return;
-    if (lastInput) {
-      this.lastInputDiv.style.display = '';
-      this.lastInputDiv.textContent = '\u276f ' + lastInput;
-    } else {
-      this.lastInputDiv.style.display = 'none';
+  // Remove a title from the cache and close its WS
+  evict(title) {
+    const entry = this._cache[title];
+    if (entry) {
+      if (entry.ws) { entry.ws.close(); entry.ws = null; }
+      entry.gen = -1; // invalidate any in-flight callbacks
+      delete this._cache[title];
     }
   }
 
-  _handleMessage(msg, gen, title) {
-    if (gen !== this.generation) return;
+  _updateLastInput(entry, lastInput) {
+    if (!entry.lastInputDiv) return;
+    if (lastInput) {
+      entry.lastInputDiv.style.display = '';
+      entry.lastInputDiv.textContent = '\u276f ' + lastInput;
+    } else {
+      entry.lastInputDiv.style.display = 'none';
+    }
+  }
 
-    // console.log('msg', msg.type, { msg, gen, title });
-
-    const wasAtBottom = this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < 30;
+  _handleMessage(msg, title, entry) {
+    const isVisible = (this.currentTitle === title);
+    const wasAtBottom = isVisible &&
+      (this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < 30);
 
     if (msg.type === 'history_append') {
-      // Append new stable lines to historyDiv using DOM insertion (not innerHTML +=)
-      if (msg.lines && msg.lines.length > 0 && this.historyDiv) {
+      if (msg.lines && msg.lines.length > 0 && entry.historyDiv) {
         const newHtml = safeAnsiToHtml(msg.lines.join('\n'));
         const fragment = document.createElement('span');
         fragment.innerHTML = newHtml;
 
-        if (this.stableCount > 0) {
-          // Add a newline text node before appending new content
-          this.historyDiv.appendChild(document.createTextNode('\n'));
+        if (entry.stableCount > 0) {
+          entry.historyDiv.appendChild(document.createTextNode('\n'));
         }
-        // Move all child nodes from fragment into historyDiv
         while (fragment.firstChild) {
-          this.historyDiv.appendChild(fragment.firstChild);
+          entry.historyDiv.appendChild(fragment.firstChild);
         }
-        this.stableCount += msg.lines.length;
+        entry.stableCount += msg.lines.length;
       }
     } else if (msg.type === 'pane') {
-      // Replace volatile pane content
-      if (this.paneDiv) {
+      if (entry.paneDiv) {
         const hasContent = msg.content && msg.content.trim();
-        this.paneDiv.innerHTML = hasContent ? safeAnsiToHtml(msg.content) : '';
-        this.paneDiv.style.display = hasContent ? '' : 'none';
+        entry.paneDiv.innerHTML = hasContent ? safeAnsiToHtml(msg.content) : '';
+        entry.paneDiv.style.display = hasContent ? '' : 'none';
       }
 
-      this._updateLastInput(msg.last_input);
+      this._updateLastInput(entry, msg.last_input);
 
-      // Notify about status changes
+      // Notify about status changes (always, even for background instances)
       if (msg.status && this.onStatus) {
         this.onStatus(title, msg.status);
       }
 
-      // Notify about content for mode detection
-      if (msg.content && this.onContent) {
+      // Notify about content for mode detection (only for visible instance)
+      if (isVisible && msg.content && this.onContent) {
         this.onContent(msg.content);
       }
     }
 
-    if (wasAtBottom) this.container.scrollTop = this.container.scrollHeight;
+    if (isVisible && wasAtBottom) {
+      this.container.scrollTop = this.container.scrollHeight;
+    }
   }
 
   _showError(message, title) {
