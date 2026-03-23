@@ -696,15 +696,29 @@ func (i *Instance) SetTmuxSession(session *tmux.TmuxSession) {
 	i.tmuxSession = session
 }
 
-// SendKeys sends keys to the tmux session
+// SendRawKeys sends raw keys to tmux (no literal interpretation)
+func (i *Instance) SendRawKeys(keys string) error {
+	if !i.started || i.Status == Paused {
+		return fmt.Errorf("cannot send keys to instance that has not been started or is paused")
+	}
+	return i.tmuxSession.SendRawKeys(keys)
+}
+
+// SendKey sends a key name to the tmux session
+func (i *Instance) SendKey(keyName string) error {
+	if !i.started || i.Status == Paused {
+		return fmt.Errorf("instance not started or paused")
+	}
+	return i.tmuxSession.SendKey(keyName)
+}
+
+// SendKeys sends keys to the tmux session (literal)
 func (i *Instance) SendKeys(keys string) error {
 	if !i.started || i.Status == Paused {
 		return fmt.Errorf("cannot send keys to instance that has not been started or is paused")
 	}
 	return i.tmuxSession.SendKeys(keys)
 }
-
-// RespawnPane kills the current process in the tmux pane and starts a new one.
 func (i *Instance) RespawnPane(program string) error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("no tmux session")

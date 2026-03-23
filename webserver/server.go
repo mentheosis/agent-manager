@@ -899,13 +899,23 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		} else {
 			var body struct {
 				Keys string `json:"keys"`
+				Type string `json:"type"` // "raw", "key", or "" (default)
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := inst.SendKeys(body.Keys); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+			var sendErr error
+			switch body.Type {
+			case "raw":
+				sendErr = inst.SendRawKeys(body.Keys)
+			case "key":
+				sendErr = inst.SendKey(body.Keys)
+			default:
+				sendErr = inst.SendKeys(body.Keys)
+			}
+			if sendErr != nil {
+				http.Error(w, sendErr.Error(), http.StatusInternalServerError)
 				return
 			}
 		}

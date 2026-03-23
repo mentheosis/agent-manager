@@ -236,8 +236,24 @@ func (t *TmuxSession) TapDAndEnter() error {
 	return nil
 }
 
+// SendKey sends a tmux key name (e.g. "PageUp", "Enter", "Up") to the session (no literal interpretation).
+func (t *TmuxSession) SendKey(keyName string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, keyName)
+	_, err := t.cmdExec.Output(cmd)
+	return err
+}
+
+// SendKeys sends keys directly to tmux using send-keys -l.
 func (t *TmuxSession) SendKeys(keys string) error {
-	_, err := t.ptmx.Write([]byte(keys))
+	cmd := exec.Command("tmux", "send-keys", "-l", "-t", t.sanitizedName, keys)
+	_, err := t.cmdExec.Output(cmd)
+	return err
+}
+
+// SendRawKeys sends raw keys to tmux (no literal interpretation)
+func (t *TmuxSession) SendRawKeys(keys string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, keys)
+	_, err := t.cmdExec.Output(cmd)
 	return err
 }
 
