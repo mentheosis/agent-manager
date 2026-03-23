@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -577,6 +578,63 @@ func writeMCPConfig(workDir, mcpURL string) {
 	log.InfoLog.Printf("[MCP] Wrote %s → %s", mcpPath, mcpURL)
 }
 
+// orchestratorSectionRe matches [mcp_servers.orchestrator] and any nested
+// subtables (e.g. [mcp_servers.orchestrator.headers]), plus their key-value lines.
+// Known limitation: breaks on multiline strings that contain a line starting
+// with '['. Don't put multiline strings in MCP server config.
+var orchestratorSectionRe = regexp.MustCompile(
+	`(?m)^\[mcp_servers\.orchestrator(?:\.[^\]]+)?\]\s*\n(?:[^\[\n][^\n]*\n?)*`)
+
+// multiBlankRe collapses runs of 3+ newlines down to 2 (one blank line).
+var multiBlankRe = regexp.MustCompile(`\n{3,}`)
+
+// writeCodexMCPConfig upserts [mcp_servers.orchestrator] into .codex/config.toml.
+// Strategy: strip ALL existing orchestrator sections, then append a fresh one.
+// This avoids any detect-then-replace edge cases (duplicate sections, duplicate
+// keys, invalid TOML, etc.) and preserves comments and other config as-is.
+func writeCodexMCPConfig(workDir, mcpURL string) {
+	codexDir := filepath.Join(workDir, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		log.ErrorLog.Printf("[MCP] failed to create .codex dir: %v", err)
+		return
+	}
+	configPath := filepath.Join(codexDir, "config.toml")
+	newSection := fmt.Sprintf("[mcp_servers.orchestrator]\nurl = %q\n", mcpURL)
+
+	// No file — just create it with the section.
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		if err := os.WriteFile(configPath, []byte(newSection), 0644); err != nil {
+			log.ErrorLog.Printf("[MCP] failed to write .codex/config.toml: %v", err)
+		}
+		log.InfoLog.Printf("[MCP] Wrote %s -> %s", configPath, mcpURL)
+		return
+	}
+
+	// Strip ALL existing orchestrator sections (handles duplicates from bugs).
+	cleaned := orchestratorSectionRe.ReplaceAllString(string(raw), "")
+	// Collapse any leftover blank-line runs.
+	cleaned = multiBlankRe.ReplaceAllString(cleaned, "\n\n")
+	cleaned = strings.TrimRight(cleaned, "\n \t")
+
+	// Append the fresh section.
+	if len(cleaned) > 0 {
+		cleaned += "\n\n"
+	}
+	cleaned += newSection
+
+	if err := os.WriteFile(configPath, []byte(cleaned), 0644); err != nil {
+		log.ErrorLog.Printf("[MCP] failed to write .codex/config.toml: %v", err)
+		return
+	}
+	log.InfoLog.Printf("[MCP] Wrote %s -> %s", configPath, mcpURL)
+}
+
+// isCodexProgram returns true if the program string refers to the Codex CLI.
+func isCodexProgram(program string) bool {
+	return strings.Contains(program, "codex")
+}
+
 // applyPresetSettings merges the preset's default permissions into settings.local.json.
 func applyPresetSettings(workDir string, preset orchestrator.AgentPreset) {
 	settingsPath := filepath.Join(workDir, ".claude", "settings.local.json")
@@ -731,9 +789,12 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
 			log.InfoLog.Printf("[Orchestrator] Writing MCP config for leader %q → %s", body.Title, mcpURL)
 			writeMCPConfig(inst.Path, mcpURL)
+			if isCodexProgram(s.program) {
+				writeCodexMCPConfig(inst.Path, mcpURL)
+			}
 
 			// Wait for MCP server to be reachable before starting the leader,
-			// so Claude's MCP init handshake doesn't fail.
+			// so the MCP init handshake doesn't fail.
 			waitForMCPServer(mcpURL, 10*time.Second)
 		} else {
 			log.WarningLog.Printf("[Orchestrator] Parent %q has no MCP port, skipping .mcp.json for leader %q", body.Parent, body.Title)
@@ -752,6 +813,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 				mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
 				log.InfoLog.Printf("[Orchestrator] Writing MCP config to worktree for leader %q → %s", body.Title, mcpURL)
 				writeMCPConfig(wt, mcpURL)
+				if isCodexProgram(s.program) {
+					writeCodexMCPConfig(wt, mcpURL)
+				}
 			}
 		}
 	}
@@ -1334,6 +1398,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 				{".claude/settings.json", filepath.Join(workDir, ".claude", "settings.json"), true},
 				{".claude/settings.local.json", filepath.Join(workDir, ".claude", "settings.local.json"), true},
 				{".mcp.json", filepath.Join(workDir, ".mcp.json"), true},
+				{".codex/config.toml", filepath.Join(workDir, ".codex", "config.toml"), true},
 			}
 
 			var result []configFile

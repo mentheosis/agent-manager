@@ -3024,7 +3024,7 @@ function parseActions(plain) {
   // lines, identify which one has the cursor, then include all options connected
   // to it where the gap between consecutive options is ≤ 15 lines.
   const lines = plain.split('\n');
-  const optionLineRe = /^\s*([❯>])?\s*(\d+)\.\s*(.+)/;
+  const optionLineRe = /^\s*([❯>›])?\s*(\d+)\.\s*(.+)/;
 
   // Collect all numbered option lines with their indices
   const allOptions = [];

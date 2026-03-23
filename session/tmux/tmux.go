@@ -24,6 +24,7 @@ const ProgramClaude = "claude"
 
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
+const ProgramCodex = "codex"
 
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
@@ -292,13 +293,14 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool, paneContent st
 
 	paneContent = content
 
-	// Only set hasPrompt for claude and aider. Use these strings to check for a prompt.
-	if t.program == ProgramClaude {
+	if strings.Contains(t.program, ProgramClaude) {
 		hasPrompt = strings.Contains(content, "No, and tell Claude what to do differently")
-	} else if strings.HasPrefix(t.program, ProgramAider) {
+	} else if strings.Contains(t.program, ProgramAider) {
 		hasPrompt = strings.Contains(content, "(Y)es/(N)o/(D)on't ask again")
-	} else if strings.HasPrefix(t.program, ProgramGemini) {
+	} else if strings.Contains(t.program, ProgramGemini) {
 		hasPrompt = strings.Contains(content, "Yes, allow once")
+	} else if strings.Contains(t.program, ProgramCodex) {
+		hasPrompt = strings.Contains(content, "No, and tell Codex what to do differently")
 	}
 
 	if !bytes.Equal(t.monitor.hash(content), t.monitor.prevOutputHash) {

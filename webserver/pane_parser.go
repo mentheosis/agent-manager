@@ -35,7 +35,7 @@ func stripANSI(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
 }
 
-var optionLineRe = regexp.MustCompile(`^\s*([❯>])?\s*(\d+)\.\s*(.+)`)
+var optionLineRe = regexp.MustCompile(`^\s*([❯>›])?\s*(\d+)\.\s*(.+)`)
 var hintRe = regexp.MustCompile(`(?i)(Esc|Tab|ctrl\+\w)\s+to\s+(\w+)`)
 
 // parsePaneActions extracts interactive options and shortcut hints from pane content.
