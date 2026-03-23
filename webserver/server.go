@@ -37,8 +37,8 @@ type Server struct {
 
 	// Status broadcast: pollMetadata writes, status WS clients read
 	statusMu      sync.Mutex
-	lastAgentMeta map[string]*AgentMeta     // title -> last broadcast metadata
-	statusClients map[*websocket.Conn]bool  // connected status WS clients
+	lastAgentMeta map[string]*AgentMeta    // title -> last broadcast metadata
+	statusClients map[*websocket.Conn]bool // connected status WS clients
 
 	// port is the port the web server is running on (set during Run)
 	port int
@@ -92,6 +92,7 @@ type instanceJSON struct {
 	Children     []string `json:"children,omitempty"`
 	InstanceType string   `json:"instance_type,omitempty"`
 	AgentPreset  string   `json:"agent_preset,omitempty"`
+	CLIType      string   `json:"cli_type,omitempty"`
 	MCPPort      int      `json:"mcp_port,omitempty"`
 }
 
@@ -117,12 +118,12 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 		Title:        inst.Title,
 		DisplayTitle: inst.DisplayTitle,
 		Status:       statusString(inst.Status),
-		Branch:    inst.Branch,
-		Program:   inst.Program,
-		Path:      inst.Path,
-		WorkDir:   inst.GetWorktreePath(),
-		GitMode:   inst.GitMode,
-		CreatedAt: inst.CreatedAt.Format(time.RFC3339),
+		Branch:       inst.Branch,
+		Program:      inst.Program,
+		Path:         inst.Path,
+		WorkDir:      inst.GetWorktreePath(),
+		GitMode:      inst.GitMode,
+		CreatedAt:    inst.CreatedAt.Format(time.RFC3339),
 	}
 	// For non-git mode, work_dir is just the path
 	if j.WorkDir == "" {
@@ -136,6 +137,7 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 	j.Children = inst.Children
 	j.InstanceType = inst.InstanceType
 	j.AgentPreset = inst.AgentPreset
+	j.CLIType = inst.CLIType
 	j.MCPPort = inst.MCPPort
 	return j
 }
@@ -620,16 +622,19 @@ func fileExists(path string) bool {
 
 func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title       string `json:"title"`
-		Prompt      string `json:"prompt"`
-		Path        string `json:"path"`
-		GitMode     bool   `json:"git_mode"`
-		RepoPath    string `json:"repo_path"`
-		Branch      string `json:"branch"`
+		Title        string `json:"title"`
+		Prompt       string `json:"prompt"`
+		Path         string `json:"path"`
+		GitMode      bool   `json:"git_mode"`
+		RepoPath     string `json:"repo_path"`
+		Branch       string `json:"branch"`
 		Parent       string `json:"parent,omitempty"`
 		AgentPreset  string `json:"agent_preset,omitempty"`
 		InstanceType string `json:"instance_type,omitempty"`
-		MCPPort      int    `json:"-"` // internal use, not from request body
+		CLIType      string `json:"cli_type,omitempty"`
+		MCPPort      int    `json:"-"`      // internal use, not from request body
+		Height       int    `json:"height"` // tmux pane height for opencode sessions
+		Width        int    `json:"width"`  // tmux pane width for opencode sessions
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -654,7 +659,17 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 	// Determine the program to run: loop instances run the orchestrator binary,
 	// regular instances run the configured CLI program (e.g. claude).
 	program := s.program
+	if body.CLIType == "opencode" {
+		// Look for opencode in the PATH
+		path, err := exec.LookPath("opencode")
+		if err != nil {
+			http.Error(w, "opencode not found in PATH", http.StatusInternalServerError)
+			return
+		}
+		program = path
+	}
 	if body.InstanceType == "loop" {
+
 		// Find the orchestrator binary: check bin/ next to the server binary first,
 		// then fall back to same directory as the server binary.
 		selfBin, err := os.Executable()
@@ -692,57 +707,35 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		Program:  program,
 		AutoYes:  s.autoYes,
 		GitMode:  body.GitMode,
+		Height:   body.Height,
+		Width:    body.Width,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Set orchestrator fields if provided
-	if body.AgentPreset != "" {
-		inst.AgentPreset = body.AgentPreset
-	}
-	if body.InstanceType != "" {
-		inst.InstanceType = body.InstanceType
-	}
-	if body.MCPPort != 0 {
-		inst.MCPPort = body.MCPPort
-	}
-	if body.Parent != "" {
-		inst.Parent = body.Parent
-		// Add to parent's children list
-		if parent := s.findInstance(body.Parent); parent != nil {
-			parent.Children = append(parent.Children, body.Title)
-		}
-	}
-
-	// Ensure .claude/settings.local.json exists with local plans directory
-	ensureLocalPlansDir(inst.Path)
-
-	// Apply preset settings (permissions) to settings.local.json
-	if body.AgentPreset != "" {
-		applyPresetSettings(inst.Path, orchestrator.AgentPreset(body.AgentPreset))
-	}
-
-	// Write .mcp.json for orchestrator leader BEFORE Start() so Claude sees it at init.
-	// Also wait for the MCP HTTP server to be reachable so Claude can connect.
-	if body.AgentPreset == "orchestrator" && body.Parent != "" {
-		if parent := s.findInstance(body.Parent); parent != nil && parent.MCPPort != 0 {
-			mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
-			log.InfoLog.Printf("[Orchestrator] Writing MCP config for leader %q → %s", body.Title, mcpURL)
-			writeMCPConfig(inst.Path, mcpURL)
-
-			// Wait for MCP server to be reachable before starting the leader,
-			// so Claude's MCP init handshake doesn't fail.
-			waitForMCPServer(mcpURL, 10*time.Second)
-		} else {
-			log.WarningLog.Printf("[Orchestrator] Parent %q has no MCP port, skipping .mcp.json for leader %q", body.Parent, body.Title)
-		}
-	}
-
+	// Start the instance (creates tmux session)
 	if err := inst.Start(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Store CLIType on the instance
+	if body.CLIType != "" {
+		inst.CLIType = body.CLIType
+	}
+
+	// Set tmux pane size for opencode sessions if specified
+	log.InfoLog.Printf("[opencode] CLIType=%s Height=%d Width=%d for %s", body.CLIType, body.Height, body.Width, body.Title)
+	if body.CLIType == "opencode" && (body.Height > 0 || body.Width > 0) {
+		// Delay to ensure session is fully initialized
+		time.Sleep(200 * time.Millisecond)
+		if err := inst.SetSize(body.Height, body.Width); err != nil {
+			log.WarningLog.Printf("failed to set tmux pane size for %s: %v", body.Title, err)
+		}
+	} else {
+		log.InfoLog.Printf("[opencode] Skipping resize: Height=%d Width=%d", body.Height, body.Width)
 	}
 
 	// For git worktree mode, also write .mcp.json into the worktree directory
@@ -906,13 +899,23 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		} else {
 			var body struct {
 				Keys string `json:"keys"`
+				Type string `json:"type"` // "raw", "key", or "" (default)
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := inst.SendKeys(body.Keys); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+			var sendErr error
+			switch body.Type {
+			case "raw":
+				sendErr = inst.SendRawKeys(body.Keys)
+			case "key":
+				sendErr = inst.SendKey(body.Keys)
+			default:
+				sendErr = inst.SendKeys(body.Keys)
+			}
+			if sendErr != nil {
+				http.Error(w, sendErr.Error(), http.StatusInternalServerError)
 				return
 			}
 		}
@@ -947,6 +950,22 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		// Ensure convLog exists for resumed instance
 		s.getOrCreateConvLog(title)
 		_ = s.save()
+		w.WriteHeader(http.StatusOK)
+
+	case "resize":
+		var body struct {
+			Height int `json:"height"`
+			Width  int `json:"width"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.InfoLog.Printf("[resize] title=%s height=%d width=%d", title, body.Height, body.Width)
+		if err := inst.SetSize(body.Height, body.Width); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 
 	case "kill":
@@ -1135,9 +1154,9 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		if err := checkCmd.Run(); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"is_git":  false,
-				"status":  "",
-				"branch":  "",
+				"is_git": false,
+				"status": "",
+				"branch": "",
 			})
 			return
 		}
@@ -1154,9 +1173,9 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"is_git":  true,
-			"status":  string(statusOutput),
-			"branch":  strings.TrimSpace(string(branchOutput)),
+			"is_git": true,
+			"status": string(statusOutput),
+			"branch": strings.TrimSpace(string(branchOutput)),
 		})
 
 	case "memory":
@@ -1702,4 +1721,3 @@ func Run(program string, autoYes bool, port int) error {
 	fmt.Printf("Claude Squad Web UI running at http://localhost%s\n", addr)
 	return http.ListenAndServe(addr, mux)
 }
-

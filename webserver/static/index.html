@@ -27,6 +27,7 @@
     height: 100vh;
     display: flex;
     overflow: hidden;
+    min-width: 800px;
   }
 
   /* Sidebar */
@@ -85,10 +86,10 @@
   .orchestrator-badge.orchestrator { background: rgba(255,158,100,0.2); color: var(--orange); }
   .orchestrator-badge.loop { background: rgba(224,175,104,0.2); color: var(--yellow); }
 
-  /* Type selector in modal */
-  .type-option { background: var(--bg); }
-  .type-option:hover { border-color: var(--text-dim) !important; }
-  .type-option.active { border-color: var(--accent) !important; background: rgba(122,162,247,0.08); }
+  /* Type/CLI selector in modal */
+  .type-option, .cli-option { background: var(--bg); }
+  .type-option:hover, .cli-option:hover { border-color: var(--text-dim) !important; }
+  .type-option.active, .cli-option.active { border-color: var(--accent) !important; background: rgba(122,162,247,0.08); }
 
   /* Loop controls in toolbar */
   #instance-list {
@@ -308,6 +309,13 @@
     background: var(--bg);
     tab-size: 8;
     position: relative;
+  }
+  #output-area.opencode {
+    padding: 0;
+    line-height: 1;
+  }
+  #output-area.opencode span {
+    line-height: 1;
   }
   #output-area * {
     max-width: 100%;
@@ -593,7 +601,8 @@
   .last-input {
     color: var(--yellow);
     font-size: 12px;
-    padding: 2px 8px;
+    padding: 4px 8px;
+    margin-top:4px;
     opacity: 0.8;
     white-space: nowrap;
     overflow: hidden;
@@ -1158,6 +1167,19 @@
     <h2 id="modal-heading">New Instance</h2>
     <input type="hidden" id="modal-parent" value="">
 
+    <!-- CLI Type selector -->
+    <div id="cli-selector" style="margin-bottom:14px">
+      <label style="display:block;margin-bottom:4px;font-size:11px;color:var(--text-dim)">CLI Type</label>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div class="cli-option active" data-cli="claude" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:13px;font-weight:600">Claude</div>
+        </div>
+        <div class="cli-option" data-cli="opencode" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all 0.15s">
+          <div style="font-size:13px;font-weight:600">OpenCode</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Type selector (hidden when adding agent to existing orchestrator) -->
     <div id="type-selector" style="margin-bottom:14px">
       <div style="display:flex;gap:8px;margin-bottom:8px">
@@ -1385,6 +1407,7 @@ const inputHistory = new InputHistory(
 async function refreshList() {
   try {
     const instances = await api('');
+    // console.log('[opencode] refreshList: instances=', instances.map(i => ({title: i.title, cli_type: i.cli_type})));
     renderList(instances);
   } catch (e) {
     console.error('Failed to refresh:', e);
@@ -1757,7 +1780,7 @@ function findGroupEndIndex(titles, groupTitle) {
 // Initialize drag handlers on the instance list
 setupListDragHandlers(document.getElementById('instance-list'));
 
-function selectInstance(title) {
+async function selectInstance(title) {
   selectedTitle = title;
   hideSessions();
   diffGeneration++;
@@ -1766,17 +1789,45 @@ function selectInstance(title) {
   memoryGeneration++;
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('active-view').classList.add('visible');
-  refreshList();
+  await refreshList(); // Await to ensure cachedInstances is updated
   updatePausedState();
   updateToolbarTitle();
 
   // Show/hide loop-specific buttons
   document.getElementById('btn-restart-loop').style.display = isLoopInstance() ? '' : 'none';
 
+  // Toggle opencode styling (tighter line spacing for opencode sessions)
+  const inst = cachedInstances && cachedInstances.find(i => i.title === title);
+  const isOpencode = inst && inst.cli_type === 'opencode';
+  document.getElementById('output-area').classList.toggle('opencode', isOpencode);
+
+  console.log('[opencode] selectInstance: isOpencode=', isOpencode, 'className=', outputArea.className);
+
   // Load input history for this instance
   loadInputHistory(title);
 
   switchTab(activeTab);
+  console.log('[opencode] after switchTab: className=', document.getElementById('output-area').className);
+
+  // Resize opencode pane to fit the available space
+  if (isOpencode) {
+    resizeOpencodePane(title, true);
+  }
+}
+
+async function resizeOpencodePane(title, resizeHeight = false) {
+  // Wait for layout to complete before measuring
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const height = resizeHeight ? calculateTerminalHeightInRows() : 0;
+      const width = calculateTerminalWidthInCols();
+      console.log('[opencode] resizeOpencodePane: height=', height, 'width=', width, 'resizeHeight=', resizeHeight);
+      api(`/${encodeURIComponent(title)}/resize`, {
+        method: 'POST',
+        body: JSON.stringify({ height, width }),
+      }).catch(e => console.error('[opencode] Failed to resize pane:', e));
+    });
+  });
 }
 
 async function loadInputHistory(title) {
@@ -1825,6 +1876,11 @@ function switchTab(tab) {
     inputArea.style.display = 'flex';
     actionBar.style.display = '';
     convLog.connect(selectedTitle);
+    // Re-apply opencode class
+    const instForTab = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+    const isOpencodeForTab = instForTab && instForTab.cli_type === 'opencode';
+    document.getElementById('output-area').classList.toggle('opencode', isOpencodeForTab);
+    
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
     outputWrapper.style.display = '';
@@ -2753,6 +2809,7 @@ document.getElementById('btn-start-orchestration').addEventListener('click', asy
 
 // --- Modal ---
 let modalSelectedType = 'agent';
+let modalSelectedCLIType = 'claude';
 
 function showNewModal(mode, parent) {
   document.getElementById('modal-parent').value = parent || '';
@@ -2766,6 +2823,7 @@ function showNewModal(mode, parent) {
   document.getElementById('modal-orch-config').value = '';
   document.getElementById('git-options').style.display = 'none';
   document.getElementById('orch-config-section').style.display = 'none';
+  selectCLIType('claude');
 
   if (parent) {
     // Adding agent to existing orchestrator — hide type selector, show preset
@@ -2783,6 +2841,17 @@ function showNewModal(mode, parent) {
   }
   setTimeout(() => document.getElementById('modal-title').focus(), 100);
 }
+
+function selectCLIType(type) {
+  modalSelectedCLIType = type;
+  document.querySelectorAll('.cli-option').forEach(el => {
+    el.classList.toggle('active', el.dataset.cli === type);
+  });
+}
+
+document.querySelectorAll('.cli-option').forEach(el => {
+  el.addEventListener('click', () => selectCLIType(el.dataset.cli));
+});
 
 function selectType(type) {
   modalSelectedType = type;
@@ -2821,6 +2890,52 @@ function hideModal() {
   document.getElementById('modal-overlay').classList.remove('visible');
 }
 
+function calculateTerminalHeightInRows() {
+  const outputWrapper = document.getElementById('output-wrapper');
+  let availableHeight;
+  if (outputWrapper && outputWrapper.clientHeight > 0) {
+    // Leave ~15px of space at the bottom for the last entered prompt
+    availableHeight = outputWrapper.clientHeight - 16;
+    console.log("Available height", availableHeight)
+  } else {
+    // Fallback if output-wrapper is not visible
+    const tabsHeight = 40;
+    const toolbarHeight = 48;
+    const inputAreaHeight = 60; // Approximate height of input area
+    availableHeight = window.innerHeight - tabsHeight - toolbarHeight - inputAreaHeight - 16;
+    console.log("Fallback available height", availableHeight)
+  }
+  
+  // Try to measure actual char height from rendered content
+  const outputLive = document.getElementById('output-live');
+  let charHeight = 0;
+  if (outputLive) {
+    const children = outputLive.querySelectorAll('span, div');
+    for (const child of children) {
+      const childRect = child.getBoundingClientRect();
+      if (childRect.height > 0 && childRect.height < 30) {
+        charHeight = childRect.height-2;
+        break;
+      }
+    }
+  }
+  
+  if (charHeight === 0) {
+    charHeight = 14;
+  }
+  
+  const result = Math.floor(availableHeight / charHeight);
+  console.log('[opencode] calculateTerminalHeightInRows: availableHeight=', availableHeight, 'charHeight=', charHeight, 'result=', result);
+  return result;
+}
+
+function calculateTerminalWidthInCols() {
+  const CHAR_WIDTH = 8;
+  const sidebarWidth = 280;
+  const mainWidth = Math.min(window.innerWidth - sidebarWidth, 1500);
+  return Math.floor(mainWidth / CHAR_WIDTH);
+}
+
 async function createInstance() {
   const parent = document.getElementById('modal-parent').value;
   let title = document.getElementById('modal-title').value.trim();
@@ -2857,6 +2972,9 @@ async function createInstance() {
   hideModal();
 
   try {
+    const paneHeight = modalSelectedCLIType === 'opencode' ? calculateTerminalHeightInRows() : 0;
+    const paneWidth = modalSelectedCLIType === 'opencode' ? calculateTerminalWidthInCols() : 0;
+
     if (modalSelectedType === 'orchestrator' && !parent) {
       // Create orchestrator group:
       // 1. Create the control loop instance (top-level, instance_type=loop)
@@ -2869,6 +2987,9 @@ async function createInstance() {
           git_mode: false,
           agent_preset: 'loop',
           instance_type: 'loop',
+          cli_type: modalSelectedCLIType,
+          height: paneHeight,
+          width: paneWidth,
         }),
       });
 
@@ -2885,6 +3006,7 @@ async function createInstance() {
           branch,
           parent: loopTitle,
           agent_preset: 'orchestrator',
+          cli_type: modalSelectedCLIType,
         }),
       });
 
@@ -2913,7 +3035,7 @@ async function createInstance() {
         }
       }
 
-      selectInstance(loopTitle);
+      await selectInstance(loopTitle);
       refreshList();
     } else {
       // Create a normal agent, optionally as a child of an orchestrator
@@ -2930,9 +3052,12 @@ async function createInstance() {
           branch,
           parent: parent || undefined,
           agent_preset: agent_preset || undefined,
+          cli_type: modalSelectedCLIType,
+          height: paneHeight,
+          width: paneWidth,
         }),
       });
-      selectInstance(title);
+      await selectInstance(title);
       refreshList();
     }
   } catch (e) { alert('Error: ' + e.message); }
@@ -3320,8 +3445,51 @@ function connectStatusWS() {
 connectStatusWS();
 
 // --- Poll (fallback, less frequent since status WS handles real-time) ---
-setInterval(refreshList, 5000);
+// NOTE: i dont think we need to poll? should be actively set now?
+// setInterval(refreshList, 5000);
 refreshList();
+
+// --- Window resize handler for opencode pane ---
+let resizeTimeout;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+    if (inst && inst.cli_type === 'opencode') {
+      // Resize width and height on resize
+      resizeOpencodePane(selectedTitle, true);
+    }
+  }, 500);
+});
+
+// --- Scroll handler for opencode pane ---
+let scrollAccumulatorY = 0;
+let scrollPendingKeys = '';
+let scrollFlushTimeout = null;
+
+const outputAreaEl = document.getElementById('output-area');
+if (outputAreaEl) {
+  outputAreaEl.addEventListener('wheel', (e) => {
+    const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+    if (!inst || inst.cli_type !== 'opencode') return;
+
+    e.preventDefault();
+
+    const now = Date.now();
+    if (now - (window.lastScrollTime || 0) < 10) return;
+    window.lastScrollTime = now;
+
+    const isDown = e.deltaY > 0;
+    // Map scroll to line-based keybinds as specified in tui.json
+    const keyToSend = isDown ? 'C-M-e' : 'C-M-y';
+
+    api(`/${encodeURIComponent(selectedTitle)}/keys`, {
+      method: 'POST',
+      body: JSON.stringify({ keys: keyToSend, type: 'key' })
+    }).catch(err => console.error('[opencode] Failed to send scroll keys:', err));
+  }, { passive: false });
+}
 </script>
 </body>
 </html>
+

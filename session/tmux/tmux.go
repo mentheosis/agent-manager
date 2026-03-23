@@ -236,8 +236,24 @@ func (t *TmuxSession) TapDAndEnter() error {
 	return nil
 }
 
+// SendKey sends a tmux key name (e.g. "PageUp", "Enter", "Up") to the session (no literal interpretation).
+func (t *TmuxSession) SendKey(keyName string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, keyName)
+	_, err := t.cmdExec.Output(cmd)
+	return err
+}
+
+// SendKeys sends keys directly to tmux using send-keys -l.
 func (t *TmuxSession) SendKeys(keys string) error {
-	_, err := t.ptmx.Write([]byte(keys))
+	cmd := exec.Command("tmux", "send-keys", "-l", "-t", t.sanitizedName, keys)
+	_, err := t.cmdExec.Output(cmd)
+	return err
+}
+
+// SendRawKeys sends raw keys to tmux (no literal interpretation)
+func (t *TmuxSession) SendRawKeys(keys string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", t.sanitizedName, keys)
+	_, err := t.cmdExec.Output(cmd)
 	return err
 }
 
@@ -550,6 +566,71 @@ func (t *TmuxSession) GetHistorySize() (int, error) {
 		return 0, fmt.Errorf("error parsing history size %q: %v", string(output), err)
 	}
 	return size, nil
+}
+
+// SetWindowHeight resizes the tmux window to the specified height in rows.
+func (t *TmuxSession) SetWindowHeight(height int) error {
+	return t.ResizeWindow(height, 0)
+}
+
+// ResizeWindow resizes the tmux window to the specified dimensions.
+// If width or height is 0, that dimension is left unchanged.
+func (t *TmuxSession) ResizeWindow(height, width int) error {
+	log.InfoLog.Printf("[TmuxSession.ResizeWindow] session=%s height=%d width=%d", t.sanitizedName, height, width)
+
+	if height <= 0 && width <= 0 {
+		return nil
+	}
+
+	args := []string{"resize-window", "-t", t.sanitizedName}
+	if width > 0 {
+		args = append(args, "-x", strconv.Itoa(width))
+	}
+	if height > 0 {
+		args = append(args, "-y", strconv.Itoa(height))
+	}
+
+	cmd := exec.Command("tmux", args...)
+	if err := t.cmdExec.Run(cmd); err != nil {
+		return fmt.Errorf("error resizing tmux window: %w", err)
+	}
+
+	// Update the PTY size so tmux and our PTY handler are in sync
+	// Use current dimensions for any that were left as 0
+	if width <= 0 || height <= 0 {
+		currentRows, currentCols, err := pty.Getsize(t.ptmx)
+		if err == nil {
+			if height <= 0 {
+				height = currentRows
+			}
+			if width <= 0 {
+				width = currentCols
+			}
+		} else {
+			log.WarningLog.Printf("error getting current pty size: %v", err)
+			// If we can't get the current size, don't update with 0s as that breaks the terminal
+			if width <= 0 || height <= 0 {
+				return nil
+			}
+		}
+	}
+
+	if err := t.updateWindowSize(width, height); err != nil {
+		log.WarningLog.Printf("error updating PTY window size: %v", err)
+	}
+
+	log.InfoLog.Printf("[TmuxSession.ResizeWindow] successfully resized to %dx%d", width, height)
+	return nil
+}
+
+// ClearScrollback clears the tmux pane scrollback buffer.
+func (t *TmuxSession) ClearScrollback() error {
+	cmd := exec.Command("tmux", "clear-history", "-t", t.sanitizedName)
+	if err := t.cmdExec.Run(cmd); err != nil {
+		return fmt.Errorf("error clearing scrollback: %w", err)
+	}
+	log.InfoLog.Printf("[TmuxSession.ClearScrollback] cleared scrollback for %s", t.sanitizedName)
+	return nil
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"

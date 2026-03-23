@@ -13,4 +13,7 @@ go build -ldflags "-X main.Version=${BUILD_VERSION}" -o bin/claude-squad-orchest
 echo "Build complete."
 echo ""
 
+# Ensure opencode is in PATH
+export PATH="$HOME/.opencode/bin:$HOME/bin:$PATH"
+
 exec bin/claude-squad serve "$@"

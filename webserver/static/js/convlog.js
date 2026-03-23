@@ -24,7 +24,6 @@ export class ConvLogView {
     if (entry) {
       // Reattach cached DOM
       this.container.innerHTML = '';
-      this.container.className = '';
       this.container.appendChild(entry.wrapper);
 
       // Fire onContent for action button detection
