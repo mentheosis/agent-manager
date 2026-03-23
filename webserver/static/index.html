@@ -601,7 +601,8 @@
   .last-input {
     color: var(--yellow);
     font-size: 12px;
-    padding: 2px 8px;
+    padding: 4px 8px;
+    margin-top:4px;
     opacity: 0.8;
     white-space: nowrap;
     overflow: hidden;
@@ -2890,11 +2891,20 @@ function hideModal() {
 }
 
 function calculateTerminalHeightInRows() {
-  // Use window height minus known UI elements
-  // tabs (~40px) + toolbar (~48px) = ~88px total
-  const tabsHeight = 40;
-  const toolbarHeight = 48;
-  const availableHeight = window.innerHeight - tabsHeight - toolbarHeight;
+  const outputWrapper = document.getElementById('output-wrapper');
+  let availableHeight;
+  if (outputWrapper && outputWrapper.clientHeight > 0) {
+    // Leave ~15px of space at the bottom for the last entered prompt
+    availableHeight = outputWrapper.clientHeight - 16;
+    console.log("Available height", availableHeight)
+  } else {
+    // Fallback if output-wrapper is not visible
+    const tabsHeight = 40;
+    const toolbarHeight = 48;
+    const inputAreaHeight = 60; // Approximate height of input area
+    availableHeight = window.innerHeight - tabsHeight - toolbarHeight - inputAreaHeight - 16;
+    console.log("Fallback available height", availableHeight)
+  }
   
   // Try to measure actual char height from rendered content
   const outputLive = document.getElementById('output-live');
@@ -2904,7 +2914,7 @@ function calculateTerminalHeightInRows() {
     for (const child of children) {
       const childRect = child.getBoundingClientRect();
       if (childRect.height > 0 && childRect.height < 30) {
-        charHeight = childRect.height;
+        charHeight = childRect.height-2;
         break;
       }
     }
@@ -2922,7 +2932,7 @@ function calculateTerminalHeightInRows() {
 function calculateTerminalWidthInCols() {
   const CHAR_WIDTH = 8;
   const sidebarWidth = 280;
-  const mainWidth = window.innerWidth - sidebarWidth;
+  const mainWidth = Math.min(window.innerWidth - sidebarWidth, 1500);
   return Math.floor(mainWidth / CHAR_WIDTH);
 }
 
