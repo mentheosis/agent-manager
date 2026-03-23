@@ -552,6 +552,32 @@ func (t *TmuxSession) GetHistorySize() (int, error) {
 	return size, nil
 }
 
+// SetWindowHeight resizes the tmux window to the specified height in rows.
+func (t *TmuxSession) SetWindowHeight(height int) error {
+	return t.ResizeWindow(height, 0)
+}
+
+// ResizeWindow resizes the tmux window to the specified dimensions.
+// If width or height is 0, that dimension is left unchanged.
+func (t *TmuxSession) ResizeWindow(height, width int) error {
+	log.InfoLog.Printf("[TmuxSession.ResizeWindow] session=%s height=%d width=%d", t.sanitizedName, height, width)
+	if height > 0 {
+		cmd := exec.Command("tmux", "resize-window", "-t", t.sanitizedName, "-y", strconv.Itoa(height))
+		if err := t.cmdExec.Run(cmd); err != nil {
+			return fmt.Errorf("error resizing tmux window height: %w", err)
+		}
+		log.InfoLog.Printf("[TmuxSession.ResizeWindow] successfully resized height to %d", height)
+	}
+	if width > 0 {
+		cmd := exec.Command("tmux", "resize-window", "-t", t.sanitizedName, "-x", strconv.Itoa(width))
+		if err := t.cmdExec.Run(cmd); err != nil {
+			return fmt.Errorf("error resizing tmux window width: %w", err)
+		}
+		log.InfoLog.Printf("[TmuxSession.ResizeWindow] successfully resized width to %d", width)
+	}
+	return nil
+}
+
 // CleanupSessions kills all tmux sessions that start with "session-"
 func CleanupSessions(cmdExec cmd.Executor) error {
 	// First try to list sessions

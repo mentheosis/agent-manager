@@ -149,3 +149,5 @@ Every 500ms, checks each active instance for activity:
 8. **Single HTML file**: All CSS and main application JS live in `index.html`. Only reusable modules (ConvLogView, InputHistory, API wrapper, ANSI parser) are in separate JS files.
 
 9. **Multiple CLI programs**: The server supports starting different CLI programs (e.g., `claude` or `opencode`). The `/api/instances` POST endpoint accepts an optional `cli_type` parameter to select the program.
+
+10. **OpenCode pane sizing**: When creating an opencode session from the web UI, the tmux pane size is automatically set to match the browser viewport minus the fixed UI elements (sidebar, tabs, toolbar, input area). The height is calculated as `(windowHeight - 152) / 16` rows and width as `(windowWidth - 280) / 8` columns. The frontend calculates these using `calculateTerminalHeightInRows()` and `calculateTerminalWidthInCols()` and sends them via the `height` and `width` parameters in the create instance request. The server then calls `tmux resize-window -t <session> -y <height> -x <width>` after starting the session.

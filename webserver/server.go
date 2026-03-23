@@ -92,6 +92,7 @@ type instanceJSON struct {
 	Children     []string `json:"children,omitempty"`
 	InstanceType string   `json:"instance_type,omitempty"`
 	AgentPreset  string   `json:"agent_preset,omitempty"`
+	CLIType      string   `json:"cli_type,omitempty"`
 	MCPPort      int      `json:"mcp_port,omitempty"`
 }
 
@@ -136,6 +137,7 @@ func (s *Server) toJSON(inst *session.Instance) instanceJSON {
 	j.Children = inst.Children
 	j.InstanceType = inst.InstanceType
 	j.AgentPreset = inst.AgentPreset
+	j.CLIType = inst.CLIType
 	j.MCPPort = inst.MCPPort
 	return j
 }
@@ -630,7 +632,9 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		AgentPreset  string `json:"agent_preset,omitempty"`
 		InstanceType string `json:"instance_type,omitempty"`
 		CLIType      string `json:"cli_type,omitempty"`
-		MCPPort      int    `json:"-"` // internal use, not from request body
+		MCPPort      int    `json:"-"`      // internal use, not from request body
+		Height       int    `json:"height"` // tmux pane height for opencode sessions
+		Width        int    `json:"width"`  // tmux pane width for opencode sessions
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -703,57 +707,35 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		Program:  program,
 		AutoYes:  s.autoYes,
 		GitMode:  body.GitMode,
+		Height:   body.Height,
+		Width:    body.Width,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Set orchestrator fields if provided
-	if body.AgentPreset != "" {
-		inst.AgentPreset = body.AgentPreset
-	}
-	if body.InstanceType != "" {
-		inst.InstanceType = body.InstanceType
-	}
-	if body.MCPPort != 0 {
-		inst.MCPPort = body.MCPPort
-	}
-	if body.Parent != "" {
-		inst.Parent = body.Parent
-		// Add to parent's children list
-		if parent := s.findInstance(body.Parent); parent != nil {
-			parent.Children = append(parent.Children, body.Title)
-		}
-	}
-
-	// Ensure .claude/settings.local.json exists with local plans directory
-	ensureLocalPlansDir(inst.Path)
-
-	// Apply preset settings (permissions) to settings.local.json
-	if body.AgentPreset != "" {
-		applyPresetSettings(inst.Path, orchestrator.AgentPreset(body.AgentPreset))
-	}
-
-	// Write .mcp.json for orchestrator leader BEFORE Start() so Claude sees it at init.
-	// Also wait for the MCP HTTP server to be reachable so Claude can connect.
-	if body.AgentPreset == "orchestrator" && body.Parent != "" {
-		if parent := s.findInstance(body.Parent); parent != nil && parent.MCPPort != 0 {
-			mcpURL := fmt.Sprintf("http://localhost:%d", parent.MCPPort)
-			log.InfoLog.Printf("[Orchestrator] Writing MCP config for leader %q → %s", body.Title, mcpURL)
-			writeMCPConfig(inst.Path, mcpURL)
-
-			// Wait for MCP server to be reachable before starting the leader,
-			// so Claude's MCP init handshake doesn't fail.
-			waitForMCPServer(mcpURL, 10*time.Second)
-		} else {
-			log.WarningLog.Printf("[Orchestrator] Parent %q has no MCP port, skipping .mcp.json for leader %q", body.Parent, body.Title)
-		}
-	}
-
+	// Start the instance (creates tmux session)
 	if err := inst.Start(true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Store CLIType on the instance
+	if body.CLIType != "" {
+		inst.CLIType = body.CLIType
+	}
+
+	// Set tmux pane size for opencode sessions if specified
+	log.InfoLog.Printf("[opencode] CLIType=%s Height=%d Width=%d for %s", body.CLIType, body.Height, body.Width, body.Title)
+	if body.CLIType == "opencode" && (body.Height > 0 || body.Width > 0) {
+		// Delay to ensure session is fully initialized
+		time.Sleep(200 * time.Millisecond)
+		if err := inst.SetSize(body.Height, body.Width); err != nil {
+			log.WarningLog.Printf("failed to set tmux pane size for %s: %v", body.Title, err)
+		}
+	} else {
+		log.InfoLog.Printf("[opencode] Skipping resize: Height=%d Width=%d", body.Height, body.Width)
 	}
 
 	// For git worktree mode, also write .mcp.json into the worktree directory
@@ -958,6 +940,22 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		// Ensure convLog exists for resumed instance
 		s.getOrCreateConvLog(title)
 		_ = s.save()
+		w.WriteHeader(http.StatusOK)
+
+	case "resize":
+		var body struct {
+			Height int `json:"height"`
+			Width  int `json:"width"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.InfoLog.Printf("[resize] title=%s height=%d width=%d", title, body.Height, body.Width)
+		if err := inst.SetSize(body.Height, body.Width); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 
 	case "kill":

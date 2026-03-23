@@ -69,6 +69,8 @@ type Instance struct {
 	InstanceType string
 	// AgentPreset is the agent's permission preset: "coder", "researcher", or "orchestrator".
 	AgentPreset string
+	// CLIType is the CLI program type: "claude" (default) or "opencode".
+	CLIType string
 	// MCPPort is the HTTP port for the orchestrator's MCP server (only set on loop instances).
 	MCPPort int
 
@@ -97,6 +99,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		CreatedAt:    i.CreatedAt,
 		UpdatedAt:    time.Now(),
 		Program:      i.Program,
+		CLIType:      i.CLIType,
 		AutoYes:      i.AutoYes,
 		GitMode:      i.GitMode,
 		Parent:       i.Parent,
@@ -131,6 +134,14 @@ func (i *Instance) ToInstanceData() InstanceData {
 
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
+	// Infer CLIType from program path if not stored
+	cliType := data.CLIType
+	if cliType == "" && data.Program != "" {
+		if strings.Contains(data.Program, "opencode") {
+			cliType = "opencode"
+		}
+	}
+
 	instance := &Instance{
 		Title:        data.Title,
 		DisplayTitle: data.DisplayTitle,
@@ -147,6 +158,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Children:     data.Children,
 		InstanceType: data.InstanceType,
 		AgentPreset:  data.AgentPreset,
+		CLIType:      cliType,
 		MCPPort:      data.MCPPort,
 	}
 
@@ -199,6 +211,10 @@ type InstanceOptions struct {
 	AutoYes bool
 	// GitMode enables git worktree isolation. When false, runs directly in Path.
 	GitMode bool
+	// Height sets the initial tmux pane height in rows (0 = default tmux sizing).
+	Height int
+	// Width sets the initial tmux pane width in columns (0 = default tmux sizing).
+	Width int
 }
 
 // expandHome expands a leading ~ to the user's home directory.
@@ -242,8 +258,8 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Program:   opts.Program,
 		GitMode:   opts.GitMode,
 		RepoPath:  repoPath,
-		Height:    0,
-		Width:     0,
+		Height:    opts.Height,
+		Width:     opts.Width,
 		CreatedAt: t,
 		UpdatedAt: t,
 		AutoYes:   false,
@@ -695,4 +711,21 @@ func (i *Instance) RespawnPane(program string) error {
 	}
 	i.Program = program
 	return i.tmuxSession.RespawnPane(program)
+}
+
+// SetHeight resizes the tmux pane to the specified height in rows.
+func (i *Instance) SetHeight(height int) error {
+	if !i.started || i.tmuxSession == nil {
+		return fmt.Errorf("instance not started or no tmux session")
+	}
+	return i.tmuxSession.ResizeWindow(height, i.Width)
+}
+
+// SetSize resizes the tmux pane to the specified dimensions.
+func (i *Instance) SetSize(height, width int) error {
+	if !i.started || i.tmuxSession == nil {
+		return fmt.Errorf("instance not started or no tmux session")
+	}
+	log.InfoLog.Printf("[Instance.SetSize] title=%s height=%d width=%d", i.Title, height, width)
+	return i.tmuxSession.ResizeWindow(height, width)
 }

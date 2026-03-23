@@ -9,17 +9,17 @@ import (
 
 // InstanceData represents the serializable data of an Instance
 type InstanceData struct {
-	Title        string `json:"title"`
-	DisplayTitle string `json:"display_title,omitempty"`
-	Path         string `json:"path"`
-	Branch    string    `json:"branch"`
-	Status    Status    `json:"status"`
-	Height    int       `json:"height"`
-	Width     int       `json:"width"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	AutoYes   bool      `json:"auto_yes"`
-	GitMode   bool      `json:"git_mode"`
+	Title        string    `json:"title"`
+	DisplayTitle string    `json:"display_title,omitempty"`
+	Path         string    `json:"path"`
+	Branch       string    `json:"branch"`
+	Status       Status    `json:"status"`
+	Height       int       `json:"height"`
+	Width        int       `json:"width"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	AutoYes      bool      `json:"auto_yes"`
+	GitMode      bool      `json:"git_mode"`
 
 	Program   string          `json:"program"`
 	Worktree  GitWorktreeData `json:"worktree"`
@@ -30,6 +30,7 @@ type InstanceData struct {
 	Children     []string `json:"children,omitempty"`
 	InstanceType string   `json:"instance_type,omitempty"`
 	AgentPreset  string   `json:"agent_preset,omitempty"`
+	CLIType      string   `json:"cli_type,omitempty"`
 	MCPPort      int      `json:"mcp_port,omitempty"`
 }
 

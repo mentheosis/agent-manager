@@ -309,6 +309,20 @@
     tab-size: 8;
     position: relative;
   }
+  #output-area.opencode {
+    padding: 0;
+  }
+  #output-area.opencode,
+  #output-area.opencode .convlog-wrapper,
+  #output-area.opencode #output-history,
+  #output-area.opencode #output-live {
+    line-height: 1 !important;
+  }
+  #output-area.opencode #output-history span,
+  #output-area.opencode #output-live span {
+    line-height: 1 !important;
+    display: inline !important;
+  }
   #output-area * {
     max-width: 100%;
   }
@@ -1398,6 +1412,7 @@ const inputHistory = new InputHistory(
 async function refreshList() {
   try {
     const instances = await api('');
+    console.log('[opencode] refreshList: instances=', instances.map(i => ({title: i.title, cli_type: i.cli_type})));
     renderList(instances);
   } catch (e) {
     console.error('Failed to refresh:', e);
@@ -1770,7 +1785,7 @@ function findGroupEndIndex(titles, groupTitle) {
 // Initialize drag handlers on the instance list
 setupListDragHandlers(document.getElementById('instance-list'));
 
-function selectInstance(title) {
+async function selectInstance(title) {
   selectedTitle = title;
   hideSessions();
   diffGeneration++;
@@ -1779,17 +1794,46 @@ function selectInstance(title) {
   memoryGeneration++;
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('active-view').classList.add('visible');
-  refreshList();
+  await refreshList(); // Await to ensure cachedInstances is updated
   updatePausedState();
   updateToolbarTitle();
 
   // Show/hide loop-specific buttons
   document.getElementById('btn-restart-loop').style.display = isLoopInstance() ? '' : 'none';
 
+  // Toggle opencode styling (tighter line spacing for opencode sessions)
+  // Note: This will be re-applied after switchTab() since convLog.connect() clears className
+  const inst = cachedInstances && cachedInstances.find(i => i.title === title);
+  console.log('[opencode] selectInstance: title=', title, 'cachedInstances=', cachedInstances.map(i => ({title: i.title, cli_type: i.cli_type})));
+  console.log('[opencode] selectInstance: inst=', inst, 'cli_type=', inst?.cli_type);
+  const isOpencode = inst && inst.cli_type === 'opencode';
+  document.getElementById('output-area').classList.toggle('opencode', isOpencode);
+
   // Load input history for this instance
   loadInputHistory(title);
 
   switchTab(activeTab);
+  console.log('[opencode] after switchTab: className=', document.getElementById('output-area').className);
+
+  // Resize opencode pane to fit the available space
+  if (isOpencode) {
+    resizeOpencodePane(title);
+  }
+}
+
+async function resizeOpencodePane(title) {
+  const height = calculateTerminalHeightInRows();
+  const width = calculateTerminalWidthInCols();
+  console.log('[opencode] resizeOpencodePane: calculated height=', height, 'width=', width);
+  try {
+    await api(`/${encodeURIComponent(title)}/resize`, {
+      method: 'POST',
+      body: JSON.stringify({ height, width }),
+    });
+    console.log('[opencode] after resize: className=', document.getElementById('output-area').className);
+  } catch (e) {
+    console.error('[opencode] Failed to resize pane:', e);
+  }
 }
 
 async function loadInputHistory(title) {
@@ -1838,6 +1882,11 @@ function switchTab(tab) {
     inputArea.style.display = 'flex';
     actionBar.style.display = '';
     convLog.connect(selectedTitle);
+    // Re-apply opencode class after connect() since it clears className
+    const instForTab = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+    const isOpencodeForTab = instForTab && instForTab.cli_type === 'opencode';
+    document.getElementById('output-area').classList.toggle('opencode', isOpencodeForTab);
+    console.log('[opencode] switchTab terminal: isOpencode=', isOpencodeForTab, 'className=', document.getElementById('output-area').className);
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
     outputWrapper.style.display = '';
@@ -2847,6 +2896,40 @@ function hideModal() {
   document.getElementById('modal-overlay').classList.remove('visible');
 }
 
+function calculateTerminalHeightInRows() {
+  const CHAR_HEIGHT = 16;
+  const windowHeight = window.innerHeight;
+  
+  // Try to use the actual output-wrapper height if it's visible
+  const outputWrapper = document.getElementById('output-wrapper');
+  const wrapperRect = outputWrapper ? outputWrapper.getBoundingClientRect() : null;
+  
+  // Use the wrapper height if it's > 0 (visible), otherwise calculate
+  let terminalHeight;
+  if (wrapperRect && wrapperRect.height > 0) {
+    // Use actual wrapper height
+    terminalHeight = wrapperRect.height;
+  } else {
+    // Calculate based on window height minus the fixed UI elements
+    // tabs (~40px) + toolbar (~48px) + input area (~64px)
+    const tabsHeight = 40;
+    const toolbarHeight = 48;
+    const inputAreaHeight = 64;
+    terminalHeight = windowHeight - tabsHeight - toolbarHeight - inputAreaHeight;
+  }
+  
+  const result = Math.floor(terminalHeight / CHAR_HEIGHT);
+  console.log('[opencode] calculateTerminalHeightInRows: windowHeight=', windowHeight, 'wrapperHeight=', wrapperRect?.height, 'terminalHeight=', terminalHeight, 'CHAR_HEIGHT=', CHAR_HEIGHT, 'result=', result);
+  return result;
+}
+
+function calculateTerminalWidthInCols() {
+  const CHAR_WIDTH = 8;
+  const sidebarWidth = 280;
+  const mainWidth = window.innerWidth - sidebarWidth;
+  return Math.floor(mainWidth / CHAR_WIDTH);
+}
+
 async function createInstance() {
   const parent = document.getElementById('modal-parent').value;
   let title = document.getElementById('modal-title').value.trim();
@@ -2883,6 +2966,9 @@ async function createInstance() {
   hideModal();
 
   try {
+    const paneHeight = modalSelectedCLIType === 'opencode' ? calculateTerminalHeightInRows() : 0;
+    const paneWidth = modalSelectedCLIType === 'opencode' ? calculateTerminalWidthInCols() : 0;
+
     if (modalSelectedType === 'orchestrator' && !parent) {
       // Create orchestrator group:
       // 1. Create the control loop instance (top-level, instance_type=loop)
@@ -2896,6 +2982,8 @@ async function createInstance() {
           agent_preset: 'loop',
           instance_type: 'loop',
           cli_type: modalSelectedCLIType,
+          height: paneHeight,
+          width: paneWidth,
         }),
       });
 
@@ -2941,7 +3029,7 @@ async function createInstance() {
         }
       }
 
-      selectInstance(loopTitle);
+      await selectInstance(loopTitle);
       refreshList();
     } else {
       // Create a normal agent, optionally as a child of an orchestrator
@@ -2959,9 +3047,11 @@ async function createInstance() {
           parent: parent || undefined,
           agent_preset: agent_preset || undefined,
           cli_type: modalSelectedCLIType,
+          height: paneHeight,
+          width: paneWidth,
         }),
       });
-      selectInstance(title);
+      await selectInstance(title);
       refreshList();
     }
   } catch (e) { alert('Error: ' + e.message); }
