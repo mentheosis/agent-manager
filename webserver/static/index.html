@@ -27,6 +27,7 @@
     height: 100vh;
     display: flex;
     overflow: hidden;
+    min-width: 800px;
   }
 
   /* Sidebar */
@@ -311,17 +312,10 @@
   }
   #output-area.opencode {
     padding: 0;
+    line-height: 1;
   }
-  #output-area.opencode,
-  #output-area.opencode .convlog-wrapper,
-  #output-area.opencode #output-history,
-  #output-area.opencode #output-live {
-    line-height: 1 !important;
-  }
-  #output-area.opencode #output-history span,
-  #output-area.opencode #output-live span {
-    line-height: 1 !important;
-    display: inline !important;
+  #output-area.opencode span {
+    line-height: 1;
   }
   #output-area * {
     max-width: 100%;
@@ -1802,12 +1796,11 @@ async function selectInstance(title) {
   document.getElementById('btn-restart-loop').style.display = isLoopInstance() ? '' : 'none';
 
   // Toggle opencode styling (tighter line spacing for opencode sessions)
-  // Note: This will be re-applied after switchTab() since convLog.connect() clears className
   const inst = cachedInstances && cachedInstances.find(i => i.title === title);
-  console.log('[opencode] selectInstance: title=', title, 'cachedInstances=', cachedInstances.map(i => ({title: i.title, cli_type: i.cli_type})));
-  console.log('[opencode] selectInstance: inst=', inst, 'cli_type=', inst?.cli_type);
   const isOpencode = inst && inst.cli_type === 'opencode';
   document.getElementById('output-area').classList.toggle('opencode', isOpencode);
+
+  console.log('[opencode] selectInstance: isOpencode=', isOpencode, 'className=', outputArea.className);
 
   // Load input history for this instance
   loadInputHistory(title);
@@ -1817,23 +1810,23 @@ async function selectInstance(title) {
 
   // Resize opencode pane to fit the available space
   if (isOpencode) {
-    resizeOpencodePane(title);
+    resizeOpencodePane(title, true);
   }
 }
 
-async function resizeOpencodePane(title) {
-  const height = calculateTerminalHeightInRows();
-  const width = calculateTerminalWidthInCols();
-  console.log('[opencode] resizeOpencodePane: calculated height=', height, 'width=', width);
-  try {
-    await api(`/${encodeURIComponent(title)}/resize`, {
-      method: 'POST',
-      body: JSON.stringify({ height, width }),
+async function resizeOpencodePane(title, resizeHeight = false) {
+  // Wait for layout to complete before measuring
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const height = resizeHeight ? calculateTerminalHeightInRows() : 0;
+      const width = calculateTerminalWidthInCols();
+      console.log('[opencode] resizeOpencodePane: height=', height, 'width=', width, 'resizeHeight=', resizeHeight);
+      api(`/${encodeURIComponent(title)}/resize`, {
+        method: 'POST',
+        body: JSON.stringify({ height, width }),
+      }).catch(e => console.error('[opencode] Failed to resize pane:', e));
     });
-    console.log('[opencode] after resize: className=', document.getElementById('output-area').className);
-  } catch (e) {
-    console.error('[opencode] Failed to resize pane:', e);
-  }
+  });
 }
 
 async function loadInputHistory(title) {
@@ -1882,11 +1875,11 @@ function switchTab(tab) {
     inputArea.style.display = 'flex';
     actionBar.style.display = '';
     convLog.connect(selectedTitle);
-    // Re-apply opencode class after connect() since it clears className
+    // Re-apply opencode class
     const instForTab = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
     const isOpencodeForTab = instForTab && instForTab.cli_type === 'opencode';
     document.getElementById('output-area').classList.toggle('opencode', isOpencodeForTab);
-    console.log('[opencode] switchTab terminal: isOpencode=', isOpencodeForTab, 'className=', document.getElementById('output-area').className);
+    
     setTimeout(() => document.getElementById('prompt-input').focus(), 50);
   } else if (tab === 'diff') {
     outputWrapper.style.display = '';
@@ -2897,29 +2890,32 @@ function hideModal() {
 }
 
 function calculateTerminalHeightInRows() {
-  const CHAR_HEIGHT = 16;
-  const windowHeight = window.innerHeight;
+  // Use window height minus known UI elements
+  // tabs (~40px) + toolbar (~48px) = ~88px total
+  const tabsHeight = 40;
+  const toolbarHeight = 48;
+  const availableHeight = window.innerHeight - tabsHeight - toolbarHeight;
   
-  // Try to use the actual output-wrapper height if it's visible
-  const outputWrapper = document.getElementById('output-wrapper');
-  const wrapperRect = outputWrapper ? outputWrapper.getBoundingClientRect() : null;
-  
-  // Use the wrapper height if it's > 0 (visible), otherwise calculate
-  let terminalHeight;
-  if (wrapperRect && wrapperRect.height > 0) {
-    // Use actual wrapper height
-    terminalHeight = wrapperRect.height;
-  } else {
-    // Calculate based on window height minus the fixed UI elements
-    // tabs (~40px) + toolbar (~48px) + input area (~64px)
-    const tabsHeight = 40;
-    const toolbarHeight = 48;
-    const inputAreaHeight = 64;
-    terminalHeight = windowHeight - tabsHeight - toolbarHeight - inputAreaHeight;
+  // Try to measure actual char height from rendered content
+  const outputLive = document.getElementById('output-live');
+  let charHeight = 0;
+  if (outputLive) {
+    const children = outputLive.querySelectorAll('span, div');
+    for (const child of children) {
+      const childRect = child.getBoundingClientRect();
+      if (childRect.height > 0 && childRect.height < 30) {
+        charHeight = childRect.height;
+        break;
+      }
+    }
   }
   
-  const result = Math.floor(terminalHeight / CHAR_HEIGHT);
-  console.log('[opencode] calculateTerminalHeightInRows: windowHeight=', windowHeight, 'wrapperHeight=', wrapperRect?.height, 'terminalHeight=', terminalHeight, 'CHAR_HEIGHT=', CHAR_HEIGHT, 'result=', result);
+  if (charHeight === 0) {
+    charHeight = 14;
+  }
+  
+  const result = Math.floor(availableHeight / charHeight);
+  console.log('[opencode] calculateTerminalHeightInRows: availableHeight=', availableHeight, 'charHeight=', charHeight, 'result=', result);
   return result;
 }
 
@@ -3441,6 +3437,19 @@ connectStatusWS();
 // --- Poll (fallback, less frequent since status WS handles real-time) ---
 setInterval(refreshList, 5000);
 refreshList();
+
+// --- Window resize handler for opencode pane ---
+let resizeTimeout;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    const inst = cachedInstances && cachedInstances.find(i => i.title === selectedTitle);
+    if (inst && inst.cli_type === 'opencode') {
+      // Resize width and height on resize
+      resizeOpencodePane(selectedTitle, true);
+    }
+  }, 500);
+});
 </script>
 </body>
 </html>

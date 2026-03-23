@@ -566,15 +566,30 @@ func (t *TmuxSession) ResizeWindow(height, width int) error {
 		if err := t.cmdExec.Run(cmd); err != nil {
 			return fmt.Errorf("error resizing tmux window height: %w", err)
 		}
-		log.InfoLog.Printf("[TmuxSession.ResizeWindow] successfully resized height to %d", height)
 	}
 	if width > 0 {
 		cmd := exec.Command("tmux", "resize-window", "-t", t.sanitizedName, "-x", strconv.Itoa(width))
 		if err := t.cmdExec.Run(cmd); err != nil {
 			return fmt.Errorf("error resizing tmux window width: %w", err)
 		}
-		log.InfoLog.Printf("[TmuxSession.ResizeWindow] successfully resized width to %d", width)
 	}
+
+	// Update the PTY size so tmux and our PTY handler are in sync
+	if err := t.updateWindowSize(width, height); err != nil {
+		log.WarningLog.Printf("error updating PTY window size: %v", err)
+	}
+
+	log.InfoLog.Printf("[TmuxSession.ResizeWindow] successfully resized to %dx%d", width, height)
+	return nil
+}
+
+// ClearScrollback clears the tmux pane scrollback buffer.
+func (t *TmuxSession) ClearScrollback() error {
+	cmd := exec.Command("tmux", "clear-history", "-t", t.sanitizedName)
+	if err := t.cmdExec.Run(cmd); err != nil {
+		return fmt.Errorf("error clearing scrollback: %w", err)
+	}
+	log.InfoLog.Printf("[TmuxSession.ClearScrollback] cleared scrollback for %s", t.sanitizedName)
 	return nil
 }
 

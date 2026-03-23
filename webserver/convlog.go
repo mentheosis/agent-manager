@@ -35,6 +35,17 @@ func NewConversationLog() *ConversationLog {
 	return &ConversationLog{}
 }
 
+// Clear resets the ConversationLog to empty state (used after pane resize).
+func (cl *ConversationLog) Clear() {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	cl.stableLines = nil
+	cl.currentPane = nil
+	cl.stableSeqNo = 0
+	cl.lastStatus = ""
+	cl.lastInput = ""
+}
+
 // slicesEqual reports whether two string slices have identical contents.
 func slicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
