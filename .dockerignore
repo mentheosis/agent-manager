@@ -1,0 +1,14 @@
+.venv
+venv
+__pycache__
+*.egg-info
+.git
+.gitignore
+.pytest_cache
+.mypy_cache
+.ruff_cache
+build
+dist
+.DS_Store
+*.log
+tests/

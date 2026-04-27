@@ -1,0 +1,25 @@
+services:
+  agent-manager:
+    build: .
+    image: agent-manager:latest
+    container_name: agent-manager
+    ports:
+      # Bind to loopback only — this is a dev tool, not a network service
+      - "127.0.0.1:8787:8787"
+    environment:
+      AGENT_MANAGER_HOST: 0.0.0.0
+      AGENT_MANAGER_PORT: "8787"
+    volumes:
+      # Persist Claude auth across rebuilds. Auth is written by the in-container
+      # `claude login` flow (triggered from the UI), not inherited from the host.
+      - claude-auth:/root/.claude
+      # Persist instance metadata + per-instance event logs across rebuilds.
+      # Conversation continuity comes from Claude's own session jsonl (under
+      # /root/.claude/projects/) which lives in the claude-auth volume — we
+      # only persist the session_id and our UI event stream here.
+      - agent-manager-state:/var/lib/agent-manager
+    restart: unless-stopped
+
+volumes:
+  claude-auth:
+  agent-manager-state:

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Legs (back pair) -->
+  <path d="M10 22 Q4 14 2 8" stroke="#f7768e" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M54 22 Q60 14 62 8" stroke="#f7768e" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- Legs (middle pair) -->
+  <path d="M12 30 Q4 28 1 24" stroke="#f7768e" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M52 30 Q60 28 63 24" stroke="#f7768e" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- Legs (front pair) -->
+  <path d="M14 38 Q6 42 2 40" stroke="#f7768e" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M50 38 Q58 42 62 40" stroke="#f7768e" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- Claws -->
+  <path d="M16 46 Q8 54 4 52 Q2 50 6 48 Q3 56 8 56 Q12 55 16 48" fill="#f7768e"/>
+  <path d="M48 46 Q56 54 60 52 Q62 50 58 48 Q61 56 56 56 Q52 55 48 48" fill="#f7768e"/>
+  <!-- Body -->
+  <ellipse cx="32" cy="32" rx="20" ry="18" fill="#ff9e64"/>
+  <!-- Shell shine -->
+  <ellipse cx="28" cy="26" rx="10" ry="7" fill="#ffbf88" opacity="0.5"/>
+  <!-- Eyes -->
+  <circle cx="24" cy="28" r="4" fill="white"/>
+  <circle cx="40" cy="28" r="4" fill="white"/>
+  <circle cx="25" cy="28" r="2.2" fill="#1a1b26"/>
+  <circle cx="41" cy="28" r="2.2" fill="#1a1b26"/>
+  <!-- Eye shine -->
+  <circle cx="26" cy="27" r="0.9" fill="white"/>
+  <circle cx="42" cy="27" r="0.9" fill="white"/>
+  <!-- Mouth (happy) -->
+  <path d="M28 35 Q32 39 36 35" stroke="#1a1b26" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+</svg>
