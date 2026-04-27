@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Manager</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="auth-banner" hidden>
+        <span>Claude is not authenticated in the container.</span>
+        <button id="login-btn" type="button">Log in</button>
+    </div>
+
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <h1><img src="/favicon.svg" alt=""> Agent Manager</h1>
+            <button id="btn-new" type="button">+ New</button>
+        </div>
+        <div id="instance-list"></div>
+    </div>
+
+    <div id="main">
+        <div id="empty-state">Select or create an instance to get started.</div>
+
+        <div id="active-view">
+            <div id="tabs">
+                <div class="tab active" data-tab="terminal">Terminal</div>
+                <div class="tab" data-tab="diff">Diff</div>
+                <div class="tab" data-tab="settings">Settings</div>
+                <div class="tab" data-tab="plans">Plans</div>
+                <div class="tab" data-tab="memory">Memory</div>
+            </div>
+
+            <div id="toolbar">
+                <div class="mode-selector">
+                    <span>Mode:</span>
+                    <button class="mode-btn" id="mode-agent" type="button">Agent</button>
+                    <button class="mode-btn" id="mode-plan" type="button">Plan</button>
+                </div>
+                <div class="toolbar-divider"></div>
+                <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
+                <div style="flex:1"></div>
+                <button class="toolbar-btn" id="btn-pause" type="button">Pause</button>
+                <button class="toolbar-btn" id="btn-resume" type="button">Resume</button>
+                <button class="toolbar-btn danger" id="btn-kill" type="button">Kill</button>
+            </div>
+
+            <div id="tab-content">
+                <div class="tab-pane active" data-pane="terminal">
+                    <div id="output-area" aria-live="polite"></div>
+                    <div id="working-indicator" hidden>
+                        <div class="spinner" aria-hidden="true"></div>
+                        <span>Claude is working…</span>
+                    </div>
+                    <form id="prompt-form">
+                        <textarea
+                            id="prompt-input"
+                            placeholder="Send a prompt (Enter to send, Shift+Enter for newline)…"
+                            rows="3"
+                            disabled></textarea>
+                        <button type="submit" id="send-btn" disabled>Send</button>
+                    </form>
+                </div>
+                <div class="tab-pane" data-pane="diff">
+                    <div class="placeholder">Diff view — not yet implemented in v0.</div>
+                </div>
+                <div class="tab-pane" data-pane="settings">
+                    <div class="placeholder">Settings editor (CLAUDE.md, settings.local.json) — not yet implemented in v0.</div>
+                </div>
+                <div class="tab-pane" data-pane="plans">
+                    <div class="placeholder">Plans browser (.claude/plans) — not yet implemented in v0.</div>
+                </div>
+                <div class="tab-pane" data-pane="memory">
+                    <div class="placeholder">Memory browser — not yet implemented in v0.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <dialog id="new-dialog">
+        <form method="dialog" id="new-form">
+            <h2>New instance</h2>
+            <label>
+                Name
+                <input name="name" required autocomplete="off" placeholder="My cool project">
+                <small class="hint">Used as the display label. A snake_case ID is generated for storage; duplicates auto-suffix with _2, _3, …</small>
+            </label>
+            <label>
+                Working directory
+                <input name="path" value="~" required autocomplete="off">
+            </label>
+            <label>
+                Permission mode
+                <select name="permission_mode">
+                    <option value="acceptEdits" selected>acceptEdits</option>
+                    <option value="default">default</option>
+                    <option value="plan">plan</option>
+                    <option value="bypassPermissions">bypassPermissions</option>
+                </select>
+            </label>
+            <menu>
+                <button type="submit" value="cancel" formnovalidate>Cancel</button>
+                <button type="submit" value="create" id="create-btn">Create</button>
+            </menu>
+        </form>
+    </dialog>
+
+    <dialog id="login-dialog">
+        <h2>Authenticate Claude Code</h2>
+        <p class="hint">
+            Running <code>claude login</code> inside the container. On first run you'll see
+            the setup wizard (theme picker, folder trust) — use Enter / arrow keys below to
+            drive it. Once the authorization URL appears, open it in your browser, copy the
+            code Anthropic shows, and paste it below.
+        </p>
+        <pre id="login-output" aria-live="polite"></pre>
+        <div id="login-controls">
+            <div class="key-row">
+                <button type="button" class="key-btn" data-key="[A">↑</button>
+                <button type="button" class="key-btn" data-key="[B">↓</button>
+                <button type="button" class="key-btn" data-key="[D">←</button>
+                <button type="button" class="key-btn" data-key="[C">→</button>
+                <button type="button" class="key-btn key-enter" data-key="\r">Enter</button>
+            </div>
+            <form id="login-form" method="dialog">
+                <input
+                    name="text"
+                    id="login-text"
+                    placeholder="Type text or paste code, then Send (Enter key = submit)"
+                    autocomplete="off"
+                    spellcheck="false">
+                <button type="submit" id="login-submit">Send</button>
+            </form>
+        </div>
+        <menu id="login-actions">
+            <button type="button" id="login-cancel">Cancel</button>
+        </menu>
+    </dialog>
+
+    <script src="/app.js" type="module"></script>
+</body>
+</html>
