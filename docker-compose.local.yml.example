@@ -1,0 +1,39 @@
+# Local override file — bind-mount specific host directories into the container
+# so the agent can read/write your real project files.
+#
+# Setup (one-time):
+#
+#   cp docker-compose.local.yml.example docker-compose.local.yml
+#   # edit docker-compose.local.yml — list the projects you want exposed
+#
+# Run:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+#
+# Both files merge: the base file's claude-auth + agent-manager-state volumes
+# are preserved; this file only ADDS extra bind mounts to the same service.
+#
+# Path convention: mount at the SAME absolute path inside the container as on
+# the host. That way the path you paste in the UI's "Working directory" field
+# is identical on both sides, with no translation. Type the full absolute path
+# (e.g. /Users/kris-w/wrk/myproject) — the container's HOME is /root, so `~`
+# in the UI does NOT mean your host home.
+#
+# docker-compose.local.yml is gitignored; this *.example file is the template.
+
+services:
+  agent-manager:
+    volumes:
+      # Add one line per host directory you want exposed. Format:
+      #   <host absolute path>:<container path>:<options>
+      #
+      # Examples (uncomment + edit, or add your own):
+
+      # A specific project, read/write:
+      # - ${HOME}/wrk/my-project:${HOME}/wrk/my-project
+
+      # An entire workspace folder so all projects under it are accessible:
+      # - ${HOME}/wrk:${HOME}/wrk
+
+      # Read-only mount (e.g. reference docs the agent should read but not modify):
+      # - ${HOME}/docs:${HOME}/docs:ro
