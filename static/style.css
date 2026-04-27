@@ -484,9 +484,19 @@ body:has(#auth-banner:not([hidden])) #main {
 
 .turn > .turn-header {
     display: block;
-    padding: 4px 0 4px 12px;
+    padding: 6px 0 6px 12px;
     border-left: 3px solid var(--text-dim);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
     user-select: text;
+    /* Pin the current turn's header to the top of the scroll viewport so the
+       prompt that produced the visible events stays in sight. The pin lasts
+       only as long as this .turn is the one being scrolled — when the next
+       turn comes into view its header takes over the top slot. */
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
 }
 
 /* The chevron is the only clickable thing that toggles the turn. */
