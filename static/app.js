@@ -163,10 +163,10 @@ function openStreamWs(title, stream) {
     };
     ws.onclose = () => {
         stream.ws = null;
-        if (!stream.evicting) appendNoteIn(stream.outputDiv, "connection closed");
+        if (!stream.evicting) appendNoteToStream(stream, "connection closed");
     };
     ws.onerror = () => {
-        if (!stream.evicting) appendNoteIn(stream.outputDiv, "connection error");
+        if (!stream.evicting) appendNoteToStream(stream, "connection error");
     };
 }
 
@@ -199,6 +199,7 @@ function attachStreamView(title) {
 function handleStreamEvent(title, event) {
     const stream = streams.get(title);
     if (!stream) return;
+
     if (event.type === "status") {
         stream.status = event.status;
         if (currentTitle === title) {
@@ -206,14 +207,25 @@ function handleStreamEvent(title, event) {
             setWorkingIndicator(event.status === "running");
         }
         if (event.status === "ready" && !hasMeaningfulOutputIn(stream.outputDiv)) {
-            appendNoteIn(stream.outputDiv, "Claude is ready. Send a prompt to get started.");
+            appendNoteToStream(stream, "Claude is ready. Send a prompt to get started.");
         }
-        // Refresh sidebar to update status dot/label.
         renderSidebar();
         return;
     }
+
+    if (event.type === "user_prompt") {
+        const turn = startUserTurn(stream, event);
+        if (currentTitle === title) turn.scrollIntoView({ block: "end" });
+        return;
+    }
+
+    // Everything else nests into the current turn (creating a session turn if
+    // no user prompt has happened yet).
+    const body = getOrCreateCurrentTurnBody(stream);
+
+    let el;
     if (event.type === "system_init") {
-        const el = document.createElement("details");
+        el = document.createElement("details");
         el.className = "event event-system_init";
         const summary = document.createElement("summary");
         summary.appendChild(makeLabelSpan("system · init", event.ts));
@@ -221,18 +233,71 @@ function handleStreamEvent(title, event) {
         const pre = document.createElement("pre");
         pre.textContent = JSON.stringify(event.data ?? {}, null, 2);
         el.appendChild(pre);
-        stream.outputDiv.appendChild(el);
-        if (currentTitle === title) el.scrollIntoView({ block: "end" });
-        return;
+    } else {
+        el = document.createElement("div");
+        el.className = `event event-${event.type}`;
+        el.appendChild(makeLabelSpan(labelFor(event), event.ts));
+        const bodyEl = document.createElement("pre");
+        bodyEl.textContent = bodyFor(event);
+        el.appendChild(bodyEl);
     }
-    const el = document.createElement("div");
-    el.className = `event event-${event.type}`;
-    el.appendChild(makeLabelSpan(labelFor(event), event.ts));
-    const bodyEl = document.createElement("pre");
-    bodyEl.textContent = bodyFor(event);
-    el.appendChild(bodyEl);
-    stream.outputDiv.appendChild(el);
+
+    body.appendChild(el);
     if (currentTitle === title) el.scrollIntoView({ block: "end" });
+}
+
+function startUserTurn(stream, event) {
+    const turn = document.createElement("div");
+    turn.className = "turn turn-user open";
+
+    const header = document.createElement("div");
+    header.className = "turn-header";
+
+    header.appendChild(makeToggleButton(turn));
+    header.appendChild(makeLabelSpan("user", event.ts));
+    const pre = document.createElement("pre");
+    pre.textContent = event.text ?? "";
+    header.appendChild(pre);
+
+    const body = document.createElement("div");
+    body.className = "turn-body";
+
+    turn.appendChild(header);
+    turn.appendChild(body);
+    stream.outputDiv.appendChild(turn);
+    return turn;
+}
+
+function makeToggleButton(turn) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "turn-toggle";
+    btn.setAttribute("aria-label", "Toggle turn");
+    btn.textContent = "▾";
+    btn.addEventListener("click", () => {
+        turn.classList.toggle("open");
+    });
+    return btn;
+}
+
+function getOrCreateCurrentTurnBody(stream) {
+    const last = stream.outputDiv.lastElementChild;
+    if (last && last.classList.contains("turn")) {
+        return last.querySelector(":scope > .turn-body");
+    }
+    // No turn yet — synthesize a "session" turn for pre-prompt events.
+    const turn = document.createElement("div");
+    turn.className = "turn turn-session open";
+    const header = document.createElement("div");
+    header.className = "turn-header";
+    header.appendChild(makeToggleButton(turn));
+    header.appendChild(makeLabelSpan("session", null));
+    const body = document.createElement("div");
+    body.className = "turn-body";
+    turn.appendChild(header);
+    turn.appendChild(body);
+    stream.outputDiv.appendChild(turn);
+    return body;
 }
 
 function makeLabelSpan(text, ts) {
@@ -256,23 +321,34 @@ function formatTimestamp(iso) {
 }
 
 function hasMeaningfulOutputIn(outputDiv) {
+    // "Meaningful" = anything that's a turn (user or session) with content,
+    // since notes live inside turns now. Walk one level deep.
     for (const child of outputDiv.children) {
-        if (!child.classList.contains("event-note")) return true;
+        if (child.classList.contains("turn-user")) return true;
+        if (child.classList.contains("turn-session")) {
+            const body = child.querySelector(":scope > .turn-body");
+            if (body) {
+                for (const grand of body.children) {
+                    if (!grand.classList.contains("event-note")) return true;
+                }
+            }
+        }
     }
     return false;
 }
 
-function appendNoteIn(outputDiv, text) {
+function appendNoteToStream(stream, text) {
+    const body = getOrCreateCurrentTurnBody(stream);
     const el = document.createElement("div");
     el.className = "event event-note";
     el.textContent = text;
-    outputDiv.appendChild(el);
+    body.appendChild(el);
 }
 
 function appendNote(text) {
     if (!currentTitle) return;
     const stream = streams.get(currentTitle);
-    if (stream) appendNoteIn(stream.outputDiv, text);
+    if (stream) appendNoteToStream(stream, text);
 }
 
 function setWorkingIndicator(visible) {
