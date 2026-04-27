@@ -14,3 +14,7 @@ venv/
 # Local state
 state.json
 .agent-manager/
+
+# Per-developer docker-compose overrides (mount your own host paths)
+docker-compose.local.yml
+docker-compose.override.yml
