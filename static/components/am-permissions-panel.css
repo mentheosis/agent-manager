@@ -94,6 +94,22 @@
 
 .permissions-panel .dir-remove:hover { color: var(--red); }
 
+.permissions-panel .dir-working {
+    border-style: solid;
+    background: var(--bg-surface);
+}
+
+.permissions-panel .dir-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    background: var(--bg-highlight);
+    border-radius: 3px;
+    white-space: nowrap;
+}
+
 .permissions-panel .dir-add-row {
     display: flex;
     gap: 6px;

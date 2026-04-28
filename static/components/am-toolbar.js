@@ -21,6 +21,7 @@ class AmToolbar extends HTMLElement {
             <div class="toolbar-divider"></div>
             <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
             <div style="flex:1"></div>
+            <button class="toolbar-btn" id="btn-scroll-bottom" type="button" title="Jump to bottom">↓ Bottom</button>
             <button class="toolbar-btn" id="btn-pause" type="button">Pause</button>
             <button class="toolbar-btn" id="btn-resume" type="button">Resume</button>
             <button class="toolbar-btn danger" id="btn-kill" type="button">Kill</button>
@@ -52,6 +53,11 @@ class AmToolbar extends HTMLElement {
                 }
                 titleInput.blur();
             }
+        });
+
+        // Jump to bottom
+        this.querySelector('#btn-scroll-bottom').addEventListener('click', () => {
+            this.dispatchEvent(new CustomEvent('scroll-to-bottom', { bubbles: true }));
         });
 
         // Action buttons (placeholders)

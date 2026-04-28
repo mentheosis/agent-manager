@@ -16,6 +16,18 @@ import './am-file-editor.js';
 import './am-new-dialog.js';
 import './am-login-dialog.js';
 
+// Map internal tab names to URL-friendly names
+const TAB_TO_URL = {
+    terminal: 'conversation',
+    diff: 'diff',
+    settings: 'settings',
+    plans: 'plans',
+    memory: 'memory',
+};
+const URL_TO_TAB = Object.fromEntries(
+    Object.entries(TAB_TO_URL).map(([k, v]) => [v, k])
+);
+
 class AmApp extends HTMLElement {
     constructor() {
         super();
@@ -23,6 +35,7 @@ class AmApp extends HTMLElement {
         this.currentTitle = null;
         this.currentInst = null;
         this.activeTab = 'terminal';
+        this._skipUrlUpdate = false;  // Flag to prevent URL update during restore
     }
 
     connectedCallback() {
@@ -128,15 +141,26 @@ class AmApp extends HTMLElement {
         this.addEventListener('auth-changed', () => {
             this.checkAuth();
         });
+
+        // Scroll terminal to bottom
+        this.addEventListener('scroll-to-bottom', () => {
+            this.querySelector('am-terminal-pane').scrollToBottom();
+        });
     }
 
     async init() {
         this.initSidebarState();
 
+        // Listen for browser back/forward
+        window.addEventListener('popstate', () => this.restoreFromURL());
+
         await Promise.all([
             this.checkAuth(),
             this.loadInstances(),
         ]);
+
+        // Restore state from URL after instances are loaded
+        this.restoreFromURL();
 
         // Polling (reduced frequency)
         setInterval(() => this.loadInstances(), 30000);
@@ -205,6 +229,9 @@ class AmApp extends HTMLElement {
 
         // Load active tab content
         this.onTabActivated(this.activeTab);
+
+        // Update URL
+        this.updateURL();
     }
 
     deselectInstance() {
@@ -226,6 +253,9 @@ class AmApp extends HTMLElement {
         const terminal = this.querySelector('am-terminal-pane');
         terminal.instance = null;
         terminal.disablePrompt();
+
+        // Update URL
+        this.updateURL();
     }
 
     setActiveTab(name) {
@@ -242,6 +272,9 @@ class AmApp extends HTMLElement {
         }
 
         this.onTabActivated(name);
+
+        // Update URL
+        this.updateURL();
     }
 
     onTabActivated(name) {
@@ -297,6 +330,62 @@ class AmApp extends HTMLElement {
             // Ensure class state matches on desktop
             this.classList.remove('sidebar-collapsed');
         }
+    }
+
+    // URL routing
+    updateURL() {
+        if (this._skipUrlUpdate) return;
+
+        let path = '/';
+        if (this.currentTitle) {
+            const tabUrl = TAB_TO_URL[this.activeTab] || 'conversation';
+            path = `/${encodeURIComponent(this.currentTitle)}/${tabUrl}`;
+        }
+
+        // Only push if path changed
+        if (window.location.pathname !== path) {
+            history.pushState({ title: this.currentTitle, tab: this.activeTab }, '', path);
+        }
+    }
+
+    restoreFromURL() {
+        const path = window.location.pathname;
+        const parts = path.split('/').filter(Boolean);
+
+        if (parts.length === 0) {
+            // Root path - deselect if something is selected
+            if (this.currentTitle) {
+                this._skipUrlUpdate = true;
+                this.deselectInstance();
+                this._skipUrlUpdate = false;
+            }
+            return;
+        }
+
+        const title = decodeURIComponent(parts[0]);
+        const tabUrl = parts[1] || 'conversation';
+        const tab = URL_TO_TAB[tabUrl] || 'terminal';
+
+        // Find the instance
+        const inst = this.instances.find(i => i.title === title);
+        if (!inst) {
+            // Instance not found - go to root
+            history.replaceState(null, '', '/');
+            return;
+        }
+
+        // Restore state without updating URL
+        this._skipUrlUpdate = true;
+
+        if (this.currentTitle !== title) {
+            this.selectInstance(inst);
+        }
+
+        if (this.activeTab !== tab) {
+            this.setActiveTab(tab);
+        }
+
+        this._skipUrlUpdate = false;
     }
 
     // Public method to get current instance

@@ -446,6 +446,40 @@ def build_app() -> FastAPI:
     static_dir = _find_static_dir()
     if static_dir:
         log.info("serving static files from %s", static_dir)
+        index_html = static_dir / "index.html"
+
+        # SPA tabs for client-side routing
+        _SPA_TABS = {"conversation", "diff", "settings", "plans", "memory"}
+
+        def _is_spa_route(path: str) -> bool:
+            """Check if path is a client-side SPA route."""
+            parts = path.strip("/").split("/")
+            if len(parts) == 0 or parts[0] == "":
+                return False
+            # /{instance} - single segment, no dots (not a file)
+            if len(parts) == 1:
+                return "." not in parts[0] and parts[0] != "api"
+            # /{instance}/{tab} - two segments, tab must be valid
+            if len(parts) == 2:
+                return parts[1] in _SPA_TABS
+            return False
+
+        # Middleware to handle SPA routes - runs AFTER StaticFiles would 404
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.types import ASGIApp
+
+        class SPAMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                response = await call_next(request)
+                # If StaticFiles returned 404 and path looks like SPA route, serve index.html
+                if response.status_code == 404 and _is_spa_route(request.url.path):
+                    return Response(
+                        content=index_html.read_text(encoding="utf-8"),
+                        media_type="text/html",
+                    )
+                return response
+
+        app.add_middleware(SPAMiddleware)
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
     else:
         log.error(

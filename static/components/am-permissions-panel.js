@@ -8,6 +8,7 @@ class AmPermissionsPanel extends HTMLElement {
     constructor() {
         super();
         this._title = null;
+        this.workingDir = '';  // The instance's working directory
         this.permission_mode = 'acceptEdits';
         this.model = '';
         this.dirs = [];
@@ -37,7 +38,7 @@ class AmPermissionsPanel extends HTMLElement {
             </div>
 
             <div class="perm-section">
-                <label class="perm-label">Allowed directories (in addition to working dir)</label>
+                <label class="perm-label">Allowed directories</label>
                 <ul class="dirs-list"></ul>
                 <div class="dir-add-row">
                     <input class="dir-add-input" type="text" placeholder="/absolute/path" autocomplete="off" spellcheck="false">
@@ -101,6 +102,7 @@ class AmPermissionsPanel extends HTMLElement {
                 api.fetchModels(),
             ]);
 
+            this.workingDir = inst.path || '';
             this.permission_mode = inst.permission_mode || 'acceptEdits';
             this.model = inst.model || '';
             this.dirs = (inst.add_dirs || []).slice();
@@ -145,14 +147,25 @@ class AmPermissionsPanel extends HTMLElement {
         const list = this.querySelector('.dirs-list');
         list.innerHTML = '';
 
-        if (this.dirs.length === 0) {
+        // Always show working directory first (not removable)
+        if (this.workingDir) {
             const li = document.createElement('li');
-            li.className = 'dirs-empty';
-            li.textContent = 'Only the working directory is accessible. Add paths below to extend.';
+            li.className = 'dir-working';
+
+            const span = document.createElement('span');
+            span.className = 'dir-path';
+            span.textContent = this.workingDir;
+
+            const label = document.createElement('span');
+            label.className = 'dir-label';
+            label.textContent = 'working dir';
+
+            li.appendChild(span);
+            li.appendChild(label);
             list.appendChild(li);
-            return;
         }
 
+        // Show additional directories (removable)
         for (let i = 0; i < this.dirs.length; i++) {
             const li = document.createElement('li');
 
