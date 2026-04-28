@@ -13,12 +13,6 @@ class AmToolbar extends HTMLElement {
     connectedCallback() {
         this.id = 'toolbar';
         this.innerHTML = `
-            <div class="mode-selector">
-                <span>Mode:</span>
-                <button class="mode-btn" id="mode-agent" type="button">Agent</button>
-                <button class="mode-btn" id="mode-plan" type="button">Plan</button>
-            </div>
-            <div class="toolbar-divider"></div>
             <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
             <div style="flex:1"></div>
             <button class="toolbar-btn" id="btn-scroll-bottom" type="button" title="Jump to bottom">↓ Bottom</button>
@@ -31,14 +25,6 @@ class AmToolbar extends HTMLElement {
     }
 
     setupEventListeners() {
-        // Mode buttons (placeholder - not fully implemented)
-        this.querySelector('#mode-agent').addEventListener('click', () => {
-            alert('Mode switching mid-session isn\'t implemented yet — set the mode when creating the instance.');
-        });
-        this.querySelector('#mode-plan').addEventListener('click', () => {
-            alert('Mode switching mid-session isn\'t implemented yet — set the mode when creating the instance.');
-        });
-
         // Title input - rename on blur/enter
         const titleInput = this.querySelector('#toolbar-title');
         titleInput.addEventListener('blur', () => this.commitRename());
@@ -67,9 +53,7 @@ class AmToolbar extends HTMLElement {
         this.querySelector('#btn-resume').addEventListener('click', () => {
             alert('Resume not implemented yet.');
         });
-        this.querySelector('#btn-kill').addEventListener('click', () => {
-            alert('Kill not implemented yet.');
-        });
+        this.querySelector('#btn-kill').addEventListener('click', () => this.killInstance());
     }
 
     get instance() {
@@ -107,6 +91,25 @@ class AmToolbar extends HTMLElement {
         } catch (err) {
             alert(`Failed to rename: ${err.message}`);
             titleInput.value = currentDisplay;
+        }
+    }
+
+    async killInstance() {
+        if (!this._instance) return;
+
+        const name = this._instance.display_title || this._instance.title;
+        if (!confirm(`Delete "${name}"? This will stop the session and remove all history.`)) {
+            return;
+        }
+
+        try {
+            await api.deleteInstance(this._instance.title);
+            this.dispatchEvent(new CustomEvent('instance-deleted', {
+                bubbles: true,
+                detail: { title: this._instance.title }
+            }));
+        } catch (err) {
+            alert(`Failed to delete: ${err.message}`);
         }
     }
 }

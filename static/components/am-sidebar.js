@@ -103,7 +103,6 @@ class AmSidebar extends HTMLElement {
             <div style="display:flex;align-items:center;gap:6px">
                 <span class="status-dot ${status}"></span>
                 <span class="instance-title">${this.escapeHtml(this.displayName(inst))}</span>
-                <button class="instance-delete" type="button" title="Delete">×</button>
             </div>
             <div class="instance-path" title="${this.escapeHtml(inst.path)}">${this.escapeHtml(inst.path)}</div>
             <div class="instance-meta">
@@ -127,27 +126,11 @@ class AmSidebar extends HTMLElement {
         this._unsubscribers.push(unsub);
 
         // Click to select
-        item.addEventListener('click', (e) => {
-            if (e.target.classList.contains('instance-delete')) return;
+        item.addEventListener('click', () => {
             this.dispatchEvent(new CustomEvent('instance-selected', {
                 bubbles: true,
                 detail: { instance: inst }
             }));
-        });
-
-        // Delete button
-        item.querySelector('.instance-delete').addEventListener('click', async (e) => {
-            e.stopPropagation();
-            if (!confirm(`Delete "${this.displayName(inst)}"?`)) return;
-            try {
-                await api.deleteInstance(inst.title);
-                this.dispatchEvent(new CustomEvent('instance-deleted', {
-                    bubbles: true,
-                    detail: { title: inst.title }
-                }));
-            } catch (err) {
-                alert(`Failed to delete: ${err.message}`);
-            }
         });
 
         // Drag events
