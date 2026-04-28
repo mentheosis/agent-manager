@@ -20,12 +20,21 @@ class AmSidebar extends HTMLElement {
             <div id="sidebar-header">
                 <h1><img src="/favicon.svg" alt=""> Agent Manager</h1>
                 <button id="btn-new" type="button">+ New</button>
+                <button id="sidebar-collapse" type="button" title="Hide sidebar" aria-label="Hide sidebar">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M10.5 3L5.5 8l5 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
             </div>
             <div id="instance-list"></div>
         `;
 
         this.querySelector('#btn-new').addEventListener('click', () => {
             this.dispatchEvent(new CustomEvent('open-new-dialog', { bubbles: true }));
+        });
+
+        this.querySelector('#sidebar-collapse').addEventListener('click', () => {
+            this.dispatchEvent(new CustomEvent('close-sidebar', { bubbles: true }));
         });
 
         // Drag-to-reorder listeners on the list container

@@ -28,8 +28,17 @@ class AmApp extends HTMLElement {
     connectedCallback() {
         this.innerHTML = `
             <am-auth-banner></am-auth-banner>
+            <div id="sidebar-backdrop"></div>
             <am-sidebar></am-sidebar>
             <div id="main">
+                <div id="main-header">
+                    <button id="sidebar-expand" type="button" title="Show sidebar" aria-label="Show sidebar">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M5.5 3L10.5 8l-5 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                    <h1 id="main-header-brand"><img src="/favicon.svg" alt=""> Agent Manager</h1>
+                </div>
                 <div id="empty-state">Select or create an instance to get started.</div>
                 <div id="active-view">
                     <am-tabs></am-tabs>
@@ -52,9 +61,26 @@ class AmApp extends HTMLElement {
     }
 
     setupEventListeners() {
+        // Sidebar expand (only visible when sidebar is hidden)
+        this.querySelector('#sidebar-expand').addEventListener('click', () => {
+            this.openSidebar();
+        });
+
+        this.querySelector('#sidebar-backdrop').addEventListener('click', () => {
+            this.closeSidebar();
+        });
+
+        this.addEventListener('close-sidebar', () => {
+            this.closeSidebar();
+        });
+
         // Instance selection
         this.addEventListener('instance-selected', (e) => {
             this.selectInstance(e.detail.instance);
+            // Auto-close sidebar on mobile after selection
+            if (window.innerWidth <= 768) {
+                this.closeSidebar();
+            }
         });
 
         // Instance created
@@ -105,6 +131,8 @@ class AmApp extends HTMLElement {
     }
 
     async init() {
+        this.initSidebarState();
+
         await Promise.all([
             this.checkAuth(),
             this.loadInstances(),
@@ -232,6 +260,42 @@ class AmApp extends HTMLElement {
                 const editor = this.querySelector(`am-file-editor[data-pane="${name}"]`);
                 editor.load(this.currentTitle);
                 break;
+        }
+    }
+
+    // Sidebar visibility
+    toggleSidebar() {
+        const sidebar = this.querySelector('am-sidebar');
+        if (sidebar.classList.contains('collapsed')) {
+            this.openSidebar();
+        } else {
+            this.closeSidebar();
+        }
+    }
+
+    closeSidebar() {
+        const sidebar = this.querySelector('am-sidebar');
+        const backdrop = this.querySelector('#sidebar-backdrop');
+        sidebar.classList.add('collapsed');
+        backdrop.classList.remove('visible');
+        this.classList.add('sidebar-collapsed');  // For CSS fallback
+    }
+
+    openSidebar() {
+        const sidebar = this.querySelector('am-sidebar');
+        const backdrop = this.querySelector('#sidebar-backdrop');
+        sidebar.classList.remove('collapsed');
+        backdrop.classList.add('visible');
+        this.classList.remove('sidebar-collapsed');  // For CSS fallback
+    }
+
+    initSidebarState() {
+        // Start collapsed on mobile
+        if (window.innerWidth <= 768) {
+            this.closeSidebar();
+        } else {
+            // Ensure class state matches on desktop
+            this.classList.remove('sidebar-collapsed');
         }
     }
 

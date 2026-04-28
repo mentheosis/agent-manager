@@ -10,6 +10,55 @@
     overflow: hidden;
 }
 
+/* Main header with sidebar expand button */
+#main-header {
+    display: none;  /* Hidden by default when sidebar is visible */
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    min-height: 44px;
+}
+
+/* Show header only when sidebar is collapsed */
+am-app:has(#sidebar.collapsed) #main-header,
+am-app.sidebar-collapsed #main-header {
+    display: flex;
+}
+
+#sidebar-expand {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    padding: 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#sidebar-expand:hover {
+    background: var(--bg-highlight);
+    color: var(--text);
+}
+
+#main-header-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 0;
+}
+
+#main-header-brand img {
+    width: 24px;
+    height: 24px;
+}
+
 #empty-state {
     flex: 1;
     display: flex;
