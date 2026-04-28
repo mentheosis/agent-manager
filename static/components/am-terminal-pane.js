@@ -418,8 +418,8 @@ class AmTerminalPane extends HTMLElement {
             ? JSON.stringify(event.data ?? {}, null, 2)
             : this.bodyFor(event);
 
-        // Preview for tool events
-        if (event.type === 'tool_use' || event.type === 'tool_result') {
+        // Preview for collapsed events
+        if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'result') {
             const preview = document.createElement('span');
             preview.className = 'event-preview';
             preview.textContent = this.shortPreview(bodyText);
@@ -435,7 +435,7 @@ class AmTerminalPane extends HTMLElement {
     }
 
     defaultOpenForEvent(type) {
-        return type !== 'tool_use' && type !== 'tool_result' && type !== 'system_init';
+        return type !== 'tool_use' && type !== 'tool_result' && type !== 'system_init' && type !== 'result';
     }
 
     labelFor(event) {
@@ -460,14 +460,20 @@ class AmTerminalPane extends HTMLElement {
                 return JSON.stringify(event.input ?? {}, null, 2);
             case 'tool_result':
                 return event.output ?? '';
-            case 'result':
+            case 'result': {
+                const usage = event.usage || event.data?.usage;
                 return [
                     event.subtype && `subtype: ${event.subtype}`,
                     event.duration_ms != null && `duration: ${event.duration_ms}ms`,
                     event.num_turns != null && `turns: ${event.num_turns}`,
+                    usage?.input_tokens != null && `input tokens: ${usage.input_tokens.toLocaleString()}`,
+                    usage?.output_tokens != null && `output tokens: ${usage.output_tokens.toLocaleString()}`,
+                    (usage?.cache_read_input_tokens || usage?.cache_read) && `cache read: ${(usage.cache_read_input_tokens || usage.cache_read).toLocaleString()}`,
+                    (usage?.cache_creation_input_tokens || usage?.cache_creation) && `cache creation: ${(usage.cache_creation_input_tokens || usage.cache_creation).toLocaleString()}`,
                     event.total_cost_usd != null && `cost: $${event.total_cost_usd.toFixed(4)}`,
                     event.session_id && `session: ${event.session_id}`,
                 ].filter(Boolean).join('\n');
+            }
             case 'error':
                 return event.message ?? JSON.stringify(event);
             default:

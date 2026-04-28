@@ -8,7 +8,7 @@ class AmTabs extends HTMLElement {
         this._activeTab = 'terminal';
         this.tabs = ['terminal', 'diff', 'settings', 'plans', 'memory'];
         this.labels = {
-            terminal: 'Terminal',
+            terminal: 'Conversation',
             diff: 'Diff',
             settings: 'Settings',
             plans: 'Plans',

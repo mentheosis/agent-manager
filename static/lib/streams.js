@@ -85,7 +85,7 @@ class Stream {
             this.totals.cache_creation += usage.cache_creation_input_tokens || usage.cache_creation || 0;
         }
         if (typeof event.total_cost_usd === 'number') {
-            this.totals.cost = event.total_cost_usd;
+            this.totals.cost += event.total_cost_usd;
         }
         this.totals.turns += 1;
     }
