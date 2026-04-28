@@ -113,7 +113,7 @@ class AmPermissionsPanel extends HTMLElement {
             this.renderDirs();
 
             statusEl.textContent = '';
-            applyBtn.disabled = true;
+            this.refreshDirty();  // Update button state (always enabled)
         } catch (e) {
             statusEl.textContent = `error: ${e.message}`;
         }
@@ -203,8 +203,10 @@ class AmPermissionsPanel extends HTMLElement {
         const applyBtn = this.querySelector('.perm-apply-btn');
         const statusEl = this.querySelector('.perm-apply-status');
 
-        applyBtn.disabled = !dirty;
+        // Button always enabled - allows restart even without changes
+        applyBtn.disabled = false;
         applyBtn.classList.toggle('dirty', dirty);
+        applyBtn.textContent = dirty ? 'Restart and apply' : 'Restart session';
         if (dirty) statusEl.textContent = 'unsaved';
     }
 
