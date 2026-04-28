@@ -522,9 +522,10 @@ body:has(#auth-banner:not([hidden])) #main {
 .file-tab {
     background: transparent;
     color: var(--text-dim);
-    border: 0;
-    padding: 6px 10px;
+    border: 1px solid var(--border);
     border-bottom: 2px solid transparent;
+    border-radius: 4px 4px 0 0;
+    padding: 6px 10px;
     cursor: pointer;
     font-family: inherit;
     font-size: 11px;
@@ -769,7 +770,6 @@ body:has(#auth-banner:not([hidden])) #main {
 }
 
 .file-tab.perm-tab {
-    margin-left: auto;
     color: var(--purple);
 }
 
