@@ -50,9 +50,19 @@
             <div id="tab-content">
                 <div class="tab-pane active" data-pane="terminal">
                     <div id="output-area" aria-live="polite"></div>
-                    <div id="working-indicator" hidden>
-                        <div class="spinner" aria-hidden="true"></div>
-                        <span>Claude is working…</span>
+                    <div id="status-bar">
+                        <div class="status-icon">
+                            <div class="spinner" aria-hidden="true"></div>
+                            <span class="status-dot" aria-hidden="true"></span>
+                        </div>
+                        <span class="status-text">idle</span>
+                        <span class="status-spacer"></span>
+                        <span class="status-totals">
+                            <span class="totals-tokens" title="cumulative input / output tokens">0 in / 0 out</span>
+                            <span class="totals-cache" title="cached input tokens (read / created)" hidden>0 cached</span>
+                            <span class="totals-cost" title="cumulative session cost in USD">$0.0000</span>
+                            <span class="totals-turns">0 turns</span>
+                        </span>
                     </div>
                     <form id="prompt-form">
                         <textarea
@@ -64,16 +74,73 @@
                     </form>
                 </div>
                 <div class="tab-pane" data-pane="diff">
-                    <div class="placeholder">Diff view — not yet implemented in v0.</div>
+                    <div class="pane-toolbar">
+                        <span class="pane-label">git diff (working tree vs. HEAD)</span>
+                        <button type="button" class="pane-refresh-btn" data-pane-target="diff">Refresh</button>
+                    </div>
+                    <pre class="diff-content" data-empty="No diff."></pre>
                 </div>
-                <div class="tab-pane" data-pane="settings">
-                    <div class="placeholder">Settings editor (CLAUDE.md, settings.local.json) — not yet implemented in v0.</div>
+
+                <div class="tab-pane file-editor-pane" data-pane="settings" data-endpoint="rules" data-has-permissions="true">
+                    <div class="file-tabs"></div>
+                    <div class="file-toolbar">
+                        <span class="file-path"></span>
+                        <span class="file-status"></span>
+                        <button type="button" class="file-refresh-btn">Refresh</button>
+                        <button type="button" class="file-save-btn" disabled>Save</button>
+                    </div>
+                    <textarea class="file-editor" spellcheck="false" placeholder="Select a file above…"></textarea>
+
+                    <div class="permissions-panel" hidden>
+                        <div class="perm-section">
+                            <label class="perm-label">Permission mode</label>
+                            <select class="perm-mode">
+                                <option value="default">default</option>
+                                <option value="acceptEdits">acceptEdits</option>
+                                <option value="plan">plan</option>
+                                <option value="bypassPermissions">bypassPermissions</option>
+                            </select>
+                        </div>
+
+                        <div class="perm-section">
+                            <label class="perm-label">Allowed directories (in addition to working dir)</label>
+                            <ul class="dirs-list"></ul>
+                            <div class="dir-add-row">
+                                <input class="dir-add-input" type="text" placeholder="/absolute/path" autocomplete="off" spellcheck="false">
+                                <button type="button" class="dir-add-btn">Add</button>
+                            </div>
+                            <small class="hint">Each directory must also be mounted into the container via <code>docker-compose.local.yml</code>.</small>
+                        </div>
+
+                        <div class="perm-actions">
+                            <button type="button" class="perm-apply-btn">Restart and apply</button>
+                            <span class="perm-apply-status"></span>
+                        </div>
+
+                        <small class="hint">Applying restarts the SDK session. Conversation history is preserved via session resume; any in-flight turn will be cancelled.</small>
+                    </div>
                 </div>
-                <div class="tab-pane" data-pane="plans">
-                    <div class="placeholder">Plans browser (.claude/plans) — not yet implemented in v0.</div>
+
+                <div class="tab-pane file-editor-pane" data-pane="plans" data-endpoint="plans">
+                    <div class="file-tabs"></div>
+                    <div class="file-toolbar">
+                        <span class="file-path"></span>
+                        <span class="file-status"></span>
+                        <button type="button" class="file-refresh-btn">Refresh</button>
+                        <button type="button" class="file-save-btn" disabled>Save</button>
+                    </div>
+                    <textarea class="file-editor" spellcheck="false" placeholder="No plan files yet — agent writes them to .claude/plans/ when you run /plan."></textarea>
                 </div>
-                <div class="tab-pane" data-pane="memory">
-                    <div class="placeholder">Memory browser — not yet implemented in v0.</div>
+
+                <div class="tab-pane file-editor-pane" data-pane="memory" data-endpoint="memory">
+                    <div class="file-tabs"></div>
+                    <div class="file-toolbar">
+                        <span class="file-path"></span>
+                        <span class="file-status"></span>
+                        <button type="button" class="file-refresh-btn">Refresh</button>
+                        <button type="button" class="file-save-btn" disabled>Save</button>
+                    </div>
+                    <textarea class="file-editor" spellcheck="false" placeholder="Memory files appear here as Claude writes them."></textarea>
                 </div>
             </div>
         </div>
@@ -99,6 +166,11 @@
                     <option value="plan">plan</option>
                     <option value="bypassPermissions">bypassPermissions</option>
                 </select>
+            </label>
+            <label>
+                Additional allowed directories (one per line, optional)
+                <textarea name="add_dirs" rows="3" autocomplete="off" spellcheck="false" placeholder="/Users/you/wrk/other-project"></textarea>
+                <small class="hint">Paths the agent can read/write outside of its working directory. Each must also be mounted in docker-compose.local.yml.</small>
             </label>
             <menu>
                 <button type="submit" value="cancel" formnovalidate>Cancel</button>

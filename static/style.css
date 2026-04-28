@@ -400,6 +400,358 @@ body:has(#auth-banner:not([hidden])) #main {
     text-align: center;
 }
 
+/* ----- Tab pane chrome ----- */
+
+.pane-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+    font-size: 12px;
+}
+
+.pane-label {
+    flex: 1;
+    color: var(--text-dim);
+}
+
+.pane-refresh-btn,
+.file-refresh-btn,
+.file-save-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+}
+
+.pane-refresh-btn:hover,
+.file-refresh-btn:hover,
+.file-save-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+.file-save-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.file-save-btn.dirty {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+}
+
+/* ----- Diff pane ----- */
+
+.diff-content {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 16px;
+    margin: 0;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre;
+    background: var(--bg);
+}
+
+.diff-content:empty::before {
+    content: attr(data-empty);
+    color: var(--text-dim);
+    font-style: italic;
+    font-family: inherit;
+    font-size: 13px;
+}
+
+.diff-content .add { color: var(--green); }
+.diff-content .del { color: var(--red); }
+.diff-content .hunk { color: var(--accent); }
+.diff-content .meta { color: var(--text-dim); }
+
+/* ----- File editor panes ----- */
+
+.file-editor-pane {
+    flex: 1;
+    min-height: 0;
+}
+
+.file-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 6px 12px 0 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    overflow-x: auto;
+    flex-shrink: 0;
+}
+
+.file-tab {
+    background: transparent;
+    color: var(--text-dim);
+    border: 0;
+    padding: 6px 10px;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.file-tab:hover { color: var(--text); }
+
+.file-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+.file-tab.missing { opacity: 0.5; font-style: italic; }
+.file-tab.dirty::after {
+    content: " ●";
+    color: var(--accent);
+}
+
+.file-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.file-path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.file-status {
+    color: var(--text-dim);
+}
+
+.file-status.saved { color: var(--green); }
+.file-status.unsaved { color: var(--yellow); }
+.file-status.error { color: var(--red); }
+
+.file-editor {
+    flex: 1;
+    min-height: 0;
+    padding: 12px 16px;
+    background: var(--bg);
+    color: var(--text);
+    border: 0;
+    outline: 0;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    width: 100%;
+}
+
+.file-editor:disabled {
+    opacity: 0.6;
+}
+
+.file-editor[hidden] { display: none; }
+.file-toolbar[hidden] { display: none; }
+
+/* ----- Permissions panel (inside Settings tab) ----- */
+
+.permissions-panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    background: var(--bg);
+}
+
+.permissions-panel[hidden] { display: none; }
+
+.permissions-panel .perm-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.permissions-panel .perm-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+}
+
+.permissions-panel .perm-mode {
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+    max-width: 280px;
+}
+
+.permissions-panel .perm-mode:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.permissions-panel .dirs-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.permissions-panel .dirs-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.permissions-panel .dirs-list li.dirs-empty {
+    color: var(--text-dim);
+    font-style: italic;
+    border-style: dashed;
+    background: transparent;
+}
+
+.permissions-panel .dir-path {
+    flex: 1;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.permissions-panel .dir-remove {
+    background: transparent;
+    color: var(--text-dim);
+    border: 0;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 6px;
+    cursor: pointer;
+}
+
+.permissions-panel .dir-remove:hover { color: var(--red); }
+
+.permissions-panel .dir-add-row {
+    display: flex;
+    gap: 6px;
+}
+
+.permissions-panel .dir-add-input {
+    flex: 1;
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    border-radius: 4px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+}
+
+.permissions-panel .dir-add-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.permissions-panel .dir-add-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 0 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+}
+
+.permissions-panel .dir-add-btn:hover { border-color: var(--accent); }
+
+.permissions-panel .perm-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 4px;
+}
+
+.permissions-panel .perm-apply-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.permissions-panel .perm-apply-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+.permissions-panel .perm-apply-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.permissions-panel .perm-apply-btn.dirty {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+}
+
+.permissions-panel .perm-apply-status {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.permissions-panel .hint code {
+    background: var(--bg-surface);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+}
+
+.file-tab.perm-tab {
+    margin-left: auto;
+    color: var(--purple);
+}
+
+.file-tab.perm-tab.active {
+    color: var(--purple);
+    border-bottom-color: var(--purple);
+}
+
 /* ----- Output area ----- */
 
 #output-area {
@@ -567,47 +919,38 @@ body:has(#auth-banner:not([hidden])) #main {
     margin-bottom: 8px;
 }
 
-/* system_init renders as <details> — collapsed by default */
-.event-system_init {
-    border-left-color: var(--cyan);
-    padding: 4px 0 4px 12px;
-    margin-bottom: 14px;
-    cursor: default;
-}
-
-.event-system_init summary {
-    cursor: pointer;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--cyan);
-    list-style: none;
-    user-select: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.event-system_init summary::-webkit-details-marker { display: none; }
-
-.event-system_init summary::before {
-    content: "▸";
-    font-size: 10px;
-    transition: transform 0.1s;
-    display: inline-block;
-}
-
-.event-system_init[open] summary::before {
-    transform: rotate(90deg);
-}
-
+.event-system_init { border-left-color: var(--cyan); }
+.event-system_init .label { color: var(--cyan); }
 .event-system_init pre {
-    margin: 6px 0 0 0;
-    font-family: inherit;
     font-size: 12px;
     color: var(--text-dim);
-    white-space: pre-wrap;
-    word-break: break-word;
+}
+
+/* Per-event collapse toggle — same .turn-toggle button reused. */
+.event:not(.open) > pre {
+    display: none;
+}
+.event:not(.open) > .label .turn-toggle {
+    transform: rotate(-90deg);
+}
+
+/* Inline preview shown only while the event is collapsed (tool_use / tool_result). */
+.event-preview {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    font-style: italic;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.event.open > .label > .event-preview {
+    display: none;
 }
 
 .event-note {
@@ -617,31 +960,77 @@ body:has(#auth-banner:not([hidden])) #main {
     font-size: 12px;
 }
 
-/* ----- Working indicator ("Claude is working...") ----- */
+/* ----- Status bar (persistent footer for the terminal pane) ----- */
 
-#working-indicator {
+#status-bar {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 16px;
+    padding: 6px 14px;
     color: var(--text-dim);
-    font-size: 12px;
+    font-size: 11px;
     border-top: 1px solid var(--border);
     background: var(--bg-surface);
     flex-shrink: 0;
 }
 
-#working-indicator[hidden] { display: none; }
-
-.spinner {
+#status-bar .status-icon {
     width: 14px;
     height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+#status-bar .spinner {
+    width: 12px;
+    height: 12px;
     border: 2px solid var(--border);
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
-    flex-shrink: 0;
 }
+
+#status-bar .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+}
+
+#status-bar .status-dot.running { background: var(--green); animation: pulse-dot 1.5s ease-in-out infinite; }
+#status-bar .status-dot.ready { background: var(--yellow); }
+#status-bar .status-dot.creating,
+#status-bar .status-dot.loading { background: var(--orange); }
+#status-bar .status-dot.error { background: var(--red); animation: pulse-dot 0.8s ease-in-out infinite; }
+#status-bar .status-dot.paused { background: var(--text-dim); }
+
+#status-bar .status-text {
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+#status-bar .status-text.running { color: var(--green); }
+#status-bar .status-text.ready { color: var(--yellow); }
+#status-bar .status-text.creating,
+#status-bar .status-text.loading { color: var(--orange); }
+#status-bar .status-text.error { color: var(--red); }
+#status-bar .status-text.paused { color: var(--text-dim); }
+
+#status-bar .status-spacer { flex: 1; }
+
+#status-bar .status-totals {
+    display: flex;
+    gap: 14px;
+    font-variant-numeric: tabular-nums;
+}
+
+#status-bar .totals-tokens { color: var(--text-dim); }
+#status-bar .totals-cache { color: var(--cyan); }
+#status-bar .totals-cost { color: var(--green); }
+#status-bar .totals-turns { color: var(--text-dim); }
 
 @keyframes spin {
     to { transform: rotate(360deg); }

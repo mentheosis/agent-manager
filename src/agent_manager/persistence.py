@@ -29,6 +29,11 @@ class InstanceRecord:
     display_title: str | None = None
     session_id: str | None = None
     created_at: str = ""
+    add_dirs: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.add_dirs is None:
+            self.add_dirs = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +43,7 @@ class InstanceRecord:
             "display_title": self.display_title,
             "session_id": self.session_id,
             "created_at": self.created_at,
+            "add_dirs": list(self.add_dirs or []),
         }
 
     @classmethod
@@ -49,6 +55,7 @@ class InstanceRecord:
             display_title=d.get("display_title"),
             session_id=d.get("session_id"),
             created_at=d.get("created_at") or "",
+            add_dirs=list(d.get("add_dirs") or []),
         )
 
 
