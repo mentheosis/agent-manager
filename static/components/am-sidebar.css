@@ -100,8 +100,32 @@
 /* Drag-to-reorder */
 .instance-item[draggable="true"] { user-select: none; }
 .instance-item.dragging { opacity: 0.35; }
-.instance-item.drop-before { box-shadow: inset 0 3px 0 0 var(--accent); }
-.instance-item.drop-after { box-shadow: inset 0 -3px 0 0 var(--accent); }
+
+/* Drop indicator - blue line showing where item will be placed */
+.instance-item.drop-before,
+.instance-item.drop-after {
+    position: relative;
+}
+
+.instance-item.drop-before::before,
+.instance-item.drop-after::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--accent);
+    border-radius: 2px;
+    box-shadow: 0 0 6px var(--accent);
+}
+
+.instance-item.drop-before::before {
+    top: -2px;
+}
+
+.instance-item.drop-after::after {
+    bottom: -2px;
+}
 
 .instance-title {
     font-size: 13px;
