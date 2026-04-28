@@ -117,6 +117,16 @@ class Persistence:
                 out.append(InstanceRecord.from_dict(d))
             except Exception as e:
                 log.warning("skipping malformed instance record: %s", e)
+        # Log orphaned event files (exist in events/ but not in instances.json)
+        titles_in_registry = {r.title for r in out}
+        try:
+            event_files = list(self.events_dir.glob("*.jsonl"))
+            for ef in event_files:
+                title = ef.stem
+                if title not in titles_in_registry:
+                    log.warning("orphaned event file: %s (no matching instance in registry)", ef.name)
+        except OSError:
+            pass
         return out
 
     async def save_instances(self, records: list[InstanceRecord]) -> None:

@@ -64,6 +64,7 @@ class Instance:
         if self.model:
             opts["model"] = self.model
         options = ClaudeAgentOptions(**opts)
+        log.info("instance %s: starting SDK client (session_id=%s)", self.title, self.session_id)
         try:
             async with ClaudeSDKClient(options=options) as client:
                 await self._set_status("ready")

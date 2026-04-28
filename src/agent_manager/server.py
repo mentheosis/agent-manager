@@ -29,6 +29,42 @@ from .state import Registry
 
 log = logging.getLogger(__name__)
 
+# Claude Code config paths
+_CLAUDE_CONFIG = Path.home() / ".claude.json"
+_CLAUDE_BACKUPS_DIR = Path.home() / ".claude" / "backups"
+
+
+def _restore_claude_config_if_missing() -> None:
+    """Restore .claude.json from backup if it doesn't exist.
+
+    The Docker volume persists ~/.claude/ (including backups) but not ~/.claude.json.
+    On container restart, restore from the latest backup to avoid CLI warnings.
+    """
+    if _CLAUDE_CONFIG.exists():
+        return
+
+    if not _CLAUDE_BACKUPS_DIR.is_dir():
+        # No backups dir — create minimal config
+        log.info("creating minimal %s (no backups found)", _CLAUDE_CONFIG)
+        _CLAUDE_CONFIG.write_text("{}\n", encoding="utf-8")
+        return
+
+    # Find latest backup by modification time
+    backups = list(_CLAUDE_BACKUPS_DIR.glob(".claude.json.backup.*"))
+    if not backups:
+        log.info("creating minimal %s (backup dir empty)", _CLAUDE_CONFIG)
+        _CLAUDE_CONFIG.write_text("{}\n", encoding="utf-8")
+        return
+
+    latest = max(backups, key=lambda p: p.stat().st_mtime)
+    try:
+        content = latest.read_text(encoding="utf-8")
+        _CLAUDE_CONFIG.write_text(content, encoding="utf-8")
+        log.info("restored %s from %s", _CLAUDE_CONFIG, latest.name)
+    except OSError as e:
+        log.warning("failed to restore claude config: %s", e)
+        _CLAUDE_CONFIG.write_text("{}\n", encoding="utf-8")
+
 
 def _find_static_dir() -> Path | None:
     env = os.environ.get("AGENT_MANAGER_STATIC_DIR")
@@ -142,6 +178,8 @@ def build_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Restore Claude CLI config from backup if missing (Docker volume edge case)
+        _restore_claude_config_if_missing()
         try:
             await registry.load_from_disk()
         except Exception:

@@ -54,9 +54,11 @@ class Registry:
         if self.persistence is None:
             return
         records = await self.persistence.load_instances()
+        log.info("load_from_disk: found %d persisted instance(s)", len(records))
         if not records:
             return
         for rec in records:
+            log.info("  -> loading instance %r (session_id=%s)", rec.title, rec.session_id)
             inst = Instance(
                 title=rec.title,
                 path=rec.path,
