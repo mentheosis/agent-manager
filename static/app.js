@@ -150,6 +150,7 @@ function getOrCreateStream(title) {
         status: null,
         evicting: false,
         totals: makeEmptyTotals(),
+        activeModel: null,
     };
     streams.set(title, stream);
     openStreamWs(title, stream);
@@ -165,6 +166,10 @@ function makeEmptyTotals() {
         cache_creation: 0,
         turns: 0,
     };
+}
+
+function streamActiveModel(stream) {
+    return stream.activeModel || null;
 }
 
 function openStreamWs(title, stream) {
@@ -230,6 +235,15 @@ function handleStreamEvent(title, event) {
         return;
     }
 
+    if (event.type === "system_init") {
+        const model = event.data && event.data.model;
+        if (model) {
+            stream.activeModel = model;
+            if (currentTitle === title) updateStatusBar(stream);
+        }
+        // fall through — still render the system_init event
+    }
+
     if (event.type === "result") {
         accumulateTotals(stream.totals, event);
         if (currentTitle === title) updateStatusBar(stream);
@@ -274,7 +288,7 @@ function handleStreamEvent(title, event) {
     if (currentTitle === title) el.scrollIntoView({ block: "end" });
 }
 
-function shortPreview(text, max = 50) {
+function shortPreview(text, max = 80) {
     if (typeof text !== "string") text = String(text ?? "");
     const compact = text.replace(/\s+/g, " ").trim();
     if (compact.length <= max) return compact;
@@ -285,14 +299,59 @@ function startUserTurn(stream, event) {
     const turn = document.createElement("div");
     turn.className = "turn turn-user open";
 
+    const text = event.text ?? "";
+    const isLong = text.length > 200;
+
+    if (isLong) {
+        turn.classList.add("turn-long-prompt");
+    }
+
     const header = document.createElement("div");
     header.className = "turn-header";
 
     header.appendChild(makeToggleButton(turn));
     header.appendChild(makeLabelSpan("user", event.ts));
+
     const pre = document.createElement("pre");
-    pre.textContent = event.text ?? "";
-    header.appendChild(pre);
+    if (isLong) {
+        // Truncate at ~200 chars, preferring a word boundary
+        let truncated = text.slice(0, 200);
+        const lastSpace = truncated.lastIndexOf(" ");
+        if (lastSpace > 150) truncated = truncated.slice(0, lastSpace);
+        truncated += "…";
+
+        pre.textContent = truncated;
+        pre.dataset.fullText = text;
+        pre.dataset.truncatedText = truncated;
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "prompt-toggle";
+        toggle.textContent = "show more";
+        toggle.addEventListener("click", () => {
+            const isExpanded = pre.classList.toggle("prompt-expanded");
+            pre.textContent = isExpanded ? pre.dataset.fullText : pre.dataset.truncatedText;
+            toggle.textContent = isExpanded ? "show less" : "show more";
+
+            if (isExpanded) {
+                // Set header height for sticky offset when expanded
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        header.style.setProperty("--header-height", header.offsetHeight + "px");
+                    });
+                });
+            } else {
+                // Clear variable when collapsed - falls back to 0px, giving top: 0
+                header.style.removeProperty("--header-height");
+            }
+        });
+
+        header.appendChild(pre);
+        header.appendChild(toggle);
+    } else {
+        pre.textContent = text;
+        header.appendChild(pre);
+    }
 
     const body = document.createElement("div");
     body.className = "turn-body";
@@ -430,6 +489,15 @@ function updateStatusBar(stream) {
     dot.className = `status-dot ${status}`;
     text.className = `status-text ${status}`;
     text.textContent = statusLabel(status);
+
+    const modelEl = bar.querySelector(".status-model");
+    const activeModel = streamActiveModel(stream);
+    if (activeModel) {
+        modelEl.textContent = activeModel;
+        modelEl.hidden = false;
+    } else {
+        modelEl.hidden = true;
+    }
 
     const t = (stream && stream.totals) || makeEmptyTotals();
     bar.querySelector(".totals-cost").textContent = `$${t.cost.toFixed(4)}`;
@@ -758,25 +826,68 @@ let lastDiffTitle = null;
 
 async function loadDiff(title) {
     const pane = document.querySelector('.tab-pane[data-pane="diff"]');
+    const statusEl = pane.querySelector(".status-content");
     const out = pane.querySelector(".diff-content");
     out.textContent = "loading…";
     out.className = "diff-content";
+    statusEl.textContent = "";
     try {
-        const r = await fetch(`/api/instances/${encodeURIComponent(title)}/diff`);
-        if (!r.ok) {
-            out.textContent = `error: ${r.status} ${await r.text()}`;
+        const [diffRes, statusRes] = await Promise.all([
+            fetch(`/api/instances/${encodeURIComponent(title)}/diff`),
+            fetch(`/api/instances/${encodeURIComponent(title)}/git-status`),
+        ]);
+        if (!diffRes.ok) {
+            out.textContent = `error: ${diffRes.status} ${await diffRes.text()}`;
             return;
         }
-        const { content, error, returncode } = await r.json();
+        const { content, error, returncode } = await diffRes.json();
         if (returncode !== 0 && !content) {
             out.textContent = error || `git diff exited ${returncode}`;
             return;
+        }
+        if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            renderStatus(statusEl, statusData);
         }
         renderDiff(out, content);
         lastDiffTitle = title;
     } catch (e) {
         out.textContent = `error: ${e}`;
     }
+}
+
+function renderStatus(el, { is_git, branch, status }) {
+    el.textContent = "";
+    if (!is_git) return;
+    const frag = document.createDocumentFragment();
+
+    // Branch line
+    const branchSpan = document.createElement("span");
+    branchSpan.className = "branch";
+    branchSpan.textContent = `On branch ${branch}\n`;
+    frag.appendChild(branchSpan);
+
+    // Status lines
+    if (!status || !status.trim()) {
+        const clean = document.createElement("span");
+        clean.className = "st-clean";
+        clean.textContent = "nothing to commit, working tree clean";
+        frag.appendChild(clean);
+    } else {
+        for (const line of status.split("\n")) {
+            if (!line) continue;
+            const span = document.createElement("span");
+            const code = line[0] !== " " ? line[0] : line[1]; // XY format: index then worktree
+            if (code === "M") span.className = "st-M";
+            else if (code === "A") span.className = "st-A";
+            else if (code === "D") span.className = "st-D";
+            else if (code === "R") span.className = "st-R";
+            else if (code === "?") span.className = "st-Q";
+            span.textContent = line + "\n";
+            frag.appendChild(span);
+        }
+    }
+    el.appendChild(frag);
 }
 
 function renderDiff(out, content) {
@@ -877,6 +988,11 @@ class FileEditor {
                 // Stay on permissions tab; just refresh tabs (file list might have changed).
                 return;
             }
+            // Default to SDK Settings tab if this pane has it and no file is selected yet
+            if (this.hasPermissionsTab && this.activeIndex < 0) {
+                await this.selectPermissions();
+                return;
+            }
             if (this.files.length) {
                 this.selectFile(this.activeIndex >= 0 && this.activeIndex < this.files.length ? this.activeIndex : 0);
             } else {
@@ -892,6 +1008,16 @@ class FileEditor {
 
     renderTabs() {
         this.tabsEl.innerHTML = "";
+        // Render SDK Settings tab first if this pane has it
+        if (this.hasPermissionsTab) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "file-tab perm-tab";
+            btn.classList.toggle("active", this.activeIndex === PERMISSIONS_TAB_INDEX);
+            btn.textContent = "SDK Settings";
+            btn.addEventListener("click", () => this.selectPermissions());
+            this.tabsEl.appendChild(btn);
+        }
         for (let i = 0; i < this.files.length; i++) {
             const f = this.files[i];
             const btn = document.createElement("button");
@@ -901,15 +1027,6 @@ class FileEditor {
             if (f.exists === false) btn.classList.add("missing");
             btn.textContent = f.name;
             btn.addEventListener("click", () => this.selectFile(i));
-            this.tabsEl.appendChild(btn);
-        }
-        if (this.hasPermissionsTab) {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "file-tab perm-tab";
-            btn.classList.toggle("active", this.activeIndex === PERMISSIONS_TAB_INDEX);
-            btn.textContent = "Allowed directories";
-            btn.addEventListener("click", () => this.selectPermissions());
             this.tabsEl.appendChild(btn);
         }
     }
@@ -1003,6 +1120,7 @@ class FileEditor {
 class PermissionsPanel {
     constructor(el) {
         this.el = el;
+        this.modelEl = el.querySelector(".perm-model");
         this.modeEl = el.querySelector(".perm-mode");
         this.dirsListEl = el.querySelector(".dirs-list");
         this.addInputEl = el.querySelector(".dir-add-input");
@@ -1013,8 +1131,10 @@ class PermissionsPanel {
         this.title = null;
         this.dirs = [];
         this.permission_mode = "acceptEdits";
+        this.model = "";
         // Track dirty so we know whether to enable Apply.
         this.savedMode = "acceptEdits";
+        this.savedModel = "";
         this.savedDirs = [];
 
         this.addBtnEl.addEventListener("click", () => this.addDir());
@@ -1023,6 +1143,10 @@ class PermissionsPanel {
                 e.preventDefault();
                 this.addDir();
             }
+        });
+        this.modelEl.addEventListener("change", () => {
+            this.model = this.modelEl.value;
+            this.refreshDirty();
         });
         this.modeEl.addEventListener("change", () => {
             this.permission_mode = this.modeEl.value;
@@ -1037,23 +1161,49 @@ class PermissionsPanel {
         this.applyStatusEl.textContent = "loading…";
         this.applyBtnEl.disabled = true;
         try {
-            const r = await fetch(`/api/instances/${encodeURIComponent(title)}`);
-            if (!r.ok) {
-                this.applyStatusEl.textContent = `error: ${r.status}`;
+            const [instRes, modelsRes] = await Promise.all([
+                fetch(`/api/instances/${encodeURIComponent(title)}`),
+                fetch("/api/models"),
+            ]);
+            if (!instRes.ok) {
+                this.applyStatusEl.textContent = `error: ${instRes.status}`;
                 return;
             }
-            const inst = await r.json();
+            const inst = await instRes.json();
+            const models = modelsRes.ok ? await modelsRes.json() : [];
             this.permission_mode = inst.permission_mode || "acceptEdits";
+            this.model = inst.model || "";
             this.dirs = (inst.add_dirs || []).slice();
             this.savedMode = this.permission_mode;
+            this.savedModel = this.model;
             this.savedDirs = this.dirs.slice();
             this.modeEl.value = this.permission_mode;
+            this.populateModelDropdown(models, this.model);
             this.renderDirs();
             this.applyStatusEl.textContent = "";
             this.applyBtnEl.disabled = true;
         } catch (e) {
             this.applyStatusEl.textContent = `error: ${e}`;
         }
+    }
+
+    populateModelDropdown(models, currentModel) {
+        // Rebuild options: keep the "SDK default" sentinel, then add API models.
+        this.modelEl.innerHTML = '<option value="">SDK default</option>';
+        for (const id of models) {
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = id;
+            this.modelEl.appendChild(opt);
+        }
+        // If the saved model isn't in the list (e.g. a custom/old ID), add it.
+        if (currentModel && !this.modelEl.querySelector(`option[value="${CSS.escape(currentModel)}"]`)) {
+            const opt = document.createElement("option");
+            opt.value = currentModel;
+            opt.textContent = `${currentModel} (custom)`;
+            this.modelEl.appendChild(opt);
+        }
+        this.modelEl.value = currentModel;
     }
 
     renderDirs() {
@@ -1102,6 +1252,7 @@ class PermissionsPanel {
 
     refreshDirty() {
         const dirty = this.permission_mode !== this.savedMode
+            || this.model !== this.savedModel
             || !sameStringList(this.dirs, this.savedDirs);
         this.applyBtnEl.disabled = !dirty;
         this.applyBtnEl.classList.toggle("dirty", dirty);
@@ -1118,6 +1269,7 @@ class PermissionsPanel {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     permission_mode: this.permission_mode,
+                    model: this.model || null,
                     add_dirs: this.dirs,
                 }),
             });
@@ -1128,10 +1280,13 @@ class PermissionsPanel {
             }
             const inst = await r.json();
             this.permission_mode = inst.permission_mode || "acceptEdits";
+            this.model = inst.model || "";
             this.dirs = (inst.add_dirs || []).slice();
             this.savedMode = this.permission_mode;
+            this.savedModel = this.model;
             this.savedDirs = this.dirs.slice();
             this.modeEl.value = this.permission_mode;
+            this.modelEl.value = this.model;
             this.renderDirs();
             this.applyStatusEl.textContent = "applied · session restarted";
             this.applyBtnEl.classList.remove("dirty");
@@ -1266,5 +1421,5 @@ $("#prompt-input").addEventListener("keydown", (e) => {
 
 checkAuth();
 loadInstances();
-setInterval(loadInstances, 5000);
-setInterval(checkAuth, 5000);
+setInterval(loadInstances, 30000);
+setInterval(checkAuth, 30000);

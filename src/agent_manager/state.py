@@ -61,6 +61,7 @@ class Registry:
                 title=rec.title,
                 path=rec.path,
                 permission_mode=rec.permission_mode,
+                model=rec.model or None,
                 display_title=rec.display_title,
                 session_id=rec.session_id,
                 created_at=rec.created_at,
@@ -94,6 +95,7 @@ class Registry:
         name: str,
         path: str,
         permission_mode: str = "acceptEdits",
+        model: str | None = None,
         add_dirs: list[str] | None = None,
     ) -> Instance:
         """Create an instance from a free-form display name.
@@ -115,6 +117,7 @@ class Registry:
                 title=title,
                 path=expanded,
                 permission_mode=permission_mode,
+                model=model or None,
                 display_title=display_title,
                 created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                 add_dirs=resolved_dirs,
@@ -129,15 +132,18 @@ class Registry:
         self,
         title: str,
         permission_mode: str | None = None,
+        model: str | None = None,
         add_dirs: list[str] | None = None,
     ) -> Instance | None:
-        """Update permission_mode / add_dirs and reload the SDK session."""
+        """Update permission_mode / model / add_dirs and reload the SDK session."""
         async with self._lock:
             inst = self._instances.get(title)
             if inst is None:
                 return None
             if permission_mode is not None:
                 inst.permission_mode = permission_mode
+            if model is not None:
+                inst.model = model if model else None
             if add_dirs is not None:
                 inst.add_dirs = _normalize_dirs(add_dirs)
         await self._save_records()
@@ -210,6 +216,7 @@ class Registry:
                     title=i.title,
                     path=i.path,
                     permission_mode=i.permission_mode,
+                    model=i.model or None,
                     display_title=i.display_title,
                     session_id=i.session_id,
                     created_at=i.created_at,

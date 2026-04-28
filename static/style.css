@@ -478,6 +478,30 @@ body:has(#auth-banner:not([hidden])) #main {
 .diff-content .hunk { color: var(--accent); }
 .diff-content .meta { color: var(--text-dim); }
 
+.status-content {
+    flex: 0 0 auto;
+    overflow: auto;
+    padding: 10px 16px;
+    margin: 0;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.status-content:empty { display: none; }
+
+.status-content .branch  { color: var(--accent); font-weight: 600; }
+.status-content .st-M    { color: var(--yellow); }
+.status-content .st-A    { color: var(--green); }
+.status-content .st-D    { color: var(--red); }
+.status-content .st-R    { color: var(--cyan); }
+.status-content .st-Q    { color: var(--text-dim); }
+.status-content .st-clean { color: var(--text-dim); font-style: italic; }
+
 /* ----- File editor panes ----- */
 
 .file-editor-pane {
@@ -598,7 +622,8 @@ body:has(#auth-banner:not([hidden])) #main {
     color: var(--text-dim);
 }
 
-.permissions-panel .perm-mode {
+.permissions-panel .perm-mode,
+.permissions-panel .perm-model {
     background: var(--bg-surface);
     color: var(--text);
     border: 1px solid var(--border);
@@ -609,7 +634,8 @@ body:has(#auth-banner:not([hidden])) #main {
     max-width: 280px;
 }
 
-.permissions-panel .perm-mode:focus {
+.permissions-panel .perm-mode:focus,
+.permissions-panel .perm-model:focus {
     outline: none;
     border-color: var(--accent);
 }
@@ -853,21 +879,25 @@ body:has(#auth-banner:not([hidden])) #main {
 
 /* The chevron is the only clickable thing that toggles the turn. */
 .turn-toggle {
-    background: transparent;
-    border: 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
     color: var(--text-dim);
     cursor: pointer;
-    padding: 0 6px 0 0;
-    margin: 0;
-    font-size: 11px;
+    padding: 2px 6px;
+    margin: 0 6px 0 0;
+    font-size: 14px;
     line-height: 1;
     user-select: none;
-    transition: transform 0.1s, color 0.1s;
-    vertical-align: baseline;
+    transition: transform 0.15s, color 0.1s, border-color 0.1s;
+    vertical-align: middle;
 }
 
-.turn-toggle:hover { color: var(--text); }
-.turn-toggle:focus-visible { outline: 1px solid var(--accent); border-radius: 2px; }
+.turn-toggle:hover {
+    color: var(--text);
+    border-color: var(--accent);
+}
+.turn-toggle:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
 
 .turn:not(.open) > .turn-header > .turn-toggle {
     transform: rotate(-90deg);
@@ -891,6 +921,32 @@ body:has(#auth-banner:not([hidden])) #main {
     color: var(--text);
     user-select: text;
     cursor: text;
+}
+
+/* Long prompts: sticky offset so only the tail is visible when stuck */
+.turn-long-prompt > .turn-header {
+    /* Use negative top offset: show only bottom ~6em when stuck at viewport top.
+       Clamp to max 0 so short/collapsed prompts still stick at top normally. */
+    top: min(0px, calc(-1 * var(--header-height, 0px) + 6em));
+}
+
+/* Show more / show less toggle for long prompts */
+.prompt-toggle {
+    display: inline-block;
+    margin-left: 18px;
+    margin-top: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    cursor: pointer;
+    user-select: none;
+}
+.prompt-toggle:hover {
+    background: var(--accent);
+    color: var(--bg);
 }
 
 .turn-session > .turn-header .label {
@@ -1020,6 +1076,17 @@ body:has(#auth-banner:not([hidden])) #main {
 #status-bar .status-text.paused { color: var(--text-dim); }
 
 #status-bar .status-spacer { flex: 1; }
+
+#status-bar .status-model {
+    font-size: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--bg);
+    background: var(--accent);
+    border-radius: 3px;
+    padding: 1px 6px;
+    margin-right: 6px;
+    opacity: 0.85;
+}
 
 #status-bar .status-totals {
     display: flex;

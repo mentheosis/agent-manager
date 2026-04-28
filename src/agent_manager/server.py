@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import httpx
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -49,6 +52,7 @@ class CreateInstanceBody(BaseModel):
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     permission_mode: str = "acceptEdits"
+    model: str | None = None
     add_dirs: list[str] = Field(default_factory=list)
 
 
@@ -75,6 +79,7 @@ class FileWriteBody(BaseModel):
 
 class PermissionsBody(BaseModel):
     permission_mode: str | None = None
+    model: str | None = None
     add_dirs: list[str] | None = None
 
 
@@ -84,10 +89,49 @@ def _summary(inst: Instance) -> dict[str, Any]:
         "display_title": inst.display_title,
         "path": inst.path,
         "permission_mode": inst.permission_mode,
+        "model": inst.model or None,
         "status": inst.status,
         "created_at": inst.created_at,
         "add_dirs": list(inst.add_dirs or []),
     }
+
+
+_FALLBACK_MODELS = [
+    "claude-opus-4-7",
+    "claude-sonnet-4-7",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-3-5",
+]
+
+_models_cache: list[str] | None = None
+
+
+async def _fetch_models() -> list[str]:
+    """Fetch available models from the Anthropic API, caching after the first call."""
+    global _models_cache
+    if _models_cache is not None:
+        return _models_cache
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        log.info("ANTHROPIC_API_KEY not set; using fallback model list")
+        return _FALLBACK_MODELS
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.anthropic.com/v1/models",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            ids = [m["id"] for m in data.get("data", []) if m.get("type") == "model"]
+            if ids:
+                _models_cache = ids
+                log.info("fetched %d model(s) from Anthropic API", len(ids))
+                return ids
+    except Exception:
+        log.warning("failed to fetch models from Anthropic API; using fallback list", exc_info=True)
+    return _FALLBACK_MODELS
 
 
 def build_app() -> FastAPI:
@@ -103,6 +147,10 @@ def build_app() -> FastAPI:
         except Exception:
             log.exception("failed to load persisted state; continuing with empty registry")
         try:
+            await _fetch_models()
+        except Exception:
+            log.exception("model pre-fetch failed; will retry on first /api/models request")
+        try:
             yield
         finally:
             await registry.shutdown()
@@ -113,6 +161,23 @@ def build_app() -> FastAPI:
     app.state.auth = auth
     app.state.persistence = persistence
 
+    # Polling endpoints that should log at DEBUG instead of INFO
+    _QUIET_PATHS = {"/api/auth/status", "/api/instances"}
+
+    @app.middleware("http")
+    async def access_log_middleware(request: Request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start) * 1000
+        path = request.url.path
+        level = logging.DEBUG if (request.method == "GET" and path in _QUIET_PATHS) else logging.INFO
+        log.log(level, '%s %s %s %.0fms', request.method, path, response.status_code, duration_ms)
+        return response
+
+    @app.get("/api/models")
+    async def list_models() -> list[str]:
+        return await _fetch_models()
+
     @app.get("/api/instances")
     async def list_instances() -> list[dict[str, Any]]:
         return [_summary(i) for i in registry.list()]
@@ -121,7 +186,7 @@ def build_app() -> FastAPI:
     async def create_instance(body: CreateInstanceBody) -> dict[str, Any]:
         try:
             inst = await registry.create(
-                body.name, body.path, body.permission_mode, body.add_dirs
+                body.name, body.path, body.permission_mode, body.model, body.add_dirs
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -155,6 +220,7 @@ def build_app() -> FastAPI:
         inst = await registry.update_permissions(
             title,
             permission_mode=body.permission_mode,
+            model=body.model,
             add_dirs=body.add_dirs,
         )
         if inst is None:

@@ -26,6 +26,7 @@ class InstanceRecord:
     title: str
     path: str
     permission_mode: str = "acceptEdits"
+    model: str | None = None
     display_title: str | None = None
     session_id: str | None = None
     created_at: str = ""
@@ -40,6 +41,7 @@ class InstanceRecord:
             "title": self.title,
             "path": self.path,
             "permission_mode": self.permission_mode,
+            "model": self.model,
             "display_title": self.display_title,
             "session_id": self.session_id,
             "created_at": self.created_at,
@@ -52,6 +54,7 @@ class InstanceRecord:
             title=d["title"],
             path=d["path"],
             permission_mode=d.get("permission_mode") or "acceptEdits",
+            model=d.get("model") or None,
             display_title=d.get("display_title"),
             session_id=d.get("session_id"),
             created_at=d.get("created_at") or "",

@@ -33,6 +33,7 @@ class Instance:
     title: str
     path: str
     permission_mode: str = "acceptEdits"
+    model: str | None = None
     status: str = "creating"
     created_at: str = ""
     display_title: str | None = None
@@ -60,6 +61,8 @@ class Instance:
             opts["resume"] = self.session_id
         if self.add_dirs:
             opts["add_dirs"] = list(self.add_dirs)
+        if self.model:
+            opts["model"] = self.model
         options = ClaudeAgentOptions(**opts)
         try:
             async with ClaudeSDKClient(options=options) as client:

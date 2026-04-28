@@ -57,6 +57,7 @@
                         </div>
                         <span class="status-text">idle</span>
                         <span class="status-spacer"></span>
+                        <span class="status-model" hidden title="Active model reported by the SDK"></span>
                         <span class="status-totals">
                             <span class="totals-tokens" title="cumulative input / output tokens">0 in / 0 out</span>
                             <span class="totals-cache" title="cached input tokens (read / created)" hidden>0 cached</span>
@@ -75,9 +76,10 @@
                 </div>
                 <div class="tab-pane" data-pane="diff">
                     <div class="pane-toolbar">
-                        <span class="pane-label">git diff (working tree vs. HEAD)</span>
+                        <span class="pane-label">git status + diff</span>
                         <button type="button" class="pane-refresh-btn" data-pane-target="diff">Refresh</button>
                     </div>
+                    <pre class="status-content"></pre>
                     <pre class="diff-content" data-empty="No diff."></pre>
                 </div>
 
@@ -92,6 +94,13 @@
                     <textarea class="file-editor" spellcheck="false" placeholder="Select a file above…"></textarea>
 
                     <div class="permissions-panel" hidden>
+                        <div class="perm-section">
+                            <label class="perm-label">Model</label>
+                            <select class="perm-model">
+                                <option value="">SDK default</option>
+                            </select>
+                        </div>
+
                         <div class="perm-section">
                             <label class="perm-label">Permission mode</label>
                             <select class="perm-mode">
