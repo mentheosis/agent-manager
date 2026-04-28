@@ -37,6 +37,7 @@ class Instance:
     created_at: str = ""
     display_title: str | None = None
     session_id: str | None = None
+    add_dirs: list[str] = field(default_factory=list)
 
     _task: asyncio.Task | None = field(default=None, repr=False)
     _inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue, repr=False)
@@ -57,6 +58,8 @@ class Instance:
         if self.session_id:
             # Continue the prior conversation. CLI loads its persisted session jsonl.
             opts["resume"] = self.session_id
+        if self.add_dirs:
+            opts["add_dirs"] = list(self.add_dirs)
         options = ClaudeAgentOptions(**opts)
         try:
             async with ClaudeSDKClient(options=options) as client:
@@ -90,6 +93,25 @@ class Instance:
             except asyncio.CancelledError:
                 pass
         self.status = "deleted"
+
+    async def reload_options(self) -> None:
+        """Tear down and restart the SDK client with the current options.
+
+        Used after add_dirs / permission_mode changes — the CLI subprocess sees
+        them as command-line flags at spawn, so a restart is required. The
+        prior conversation is preserved because session_id is in self and gets
+        passed as `resume=` to the new client.
+        """
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("instance %s background task ended with error during reload", self.title)
+        await self._set_status("creating")
+        self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
     def subscribe(self) -> asyncio.Queue[Event]:
         q: asyncio.Queue[Event] = asyncio.Queue()
@@ -176,6 +198,7 @@ class Instance:
                             }
                         )
         elif isinstance(msg, ResultMessage):
+            usage = getattr(msg, "usage", None)
             events.append(
                 {
                     "type": "result",
@@ -185,6 +208,7 @@ class Instance:
                     "total_cost_usd": getattr(msg, "total_cost_usd", None),
                     "is_error": bool(getattr(msg, "is_error", False)),
                     "session_id": getattr(msg, "session_id", None),
+                    "usage": usage if isinstance(usage, dict) else None,
                 }
             )
         elif isinstance(msg, SystemMessage):

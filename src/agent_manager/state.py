@@ -64,6 +64,7 @@ class Registry:
                 display_title=rec.display_title,
                 session_id=rec.session_id,
                 created_at=rec.created_at,
+                add_dirs=list(rec.add_dirs or []),
             )
             inst._history = await self.persistence.load_events(rec.title)
             self._wire_hooks(inst)
@@ -93,6 +94,7 @@ class Registry:
         name: str,
         path: str,
         permission_mode: str = "acceptEdits",
+        add_dirs: list[str] | None = None,
     ) -> Instance:
         """Create an instance from a free-form display name.
 
@@ -105,6 +107,7 @@ class Registry:
             raise ValueError("name must not be empty")
         base = slugify(cleaned)
         expanded = str(Path(path).expanduser().resolve())
+        resolved_dirs = _normalize_dirs(add_dirs or [])
         async with self._lock:
             title = self._unique_title_locked(base)
             display_title = cleaned if cleaned != title else None
@@ -114,11 +117,31 @@ class Registry:
                 permission_mode=permission_mode,
                 display_title=display_title,
                 created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+                add_dirs=resolved_dirs,
             )
             self._wire_hooks(inst)
             self._instances[title] = inst
         await inst.start()
         await self._save_records()
+        return inst
+
+    async def update_permissions(
+        self,
+        title: str,
+        permission_mode: str | None = None,
+        add_dirs: list[str] | None = None,
+    ) -> Instance | None:
+        """Update permission_mode / add_dirs and reload the SDK session."""
+        async with self._lock:
+            inst = self._instances.get(title)
+            if inst is None:
+                return None
+            if permission_mode is not None:
+                inst.permission_mode = permission_mode
+            if add_dirs is not None:
+                inst.add_dirs = _normalize_dirs(add_dirs)
+        await self._save_records()
+        await inst.reload_options()
         return inst
 
     def _unique_title_locked(self, base: str) -> str:
@@ -190,7 +213,25 @@ class Registry:
                     display_title=i.display_title,
                     session_id=i.session_id,
                     created_at=i.created_at,
+                    add_dirs=list(i.add_dirs or []),
                 )
                 for i in self._instances.values()
             ]
         await self.persistence.save_instances(records)
+
+
+def _normalize_dirs(dirs: list[str]) -> list[str]:
+    """Resolve, dedupe, and drop empties — keep insertion order otherwise."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for d in dirs:
+        if not d:
+            continue
+        try:
+            p = str(Path(d).expanduser().resolve())
+        except (OSError, RuntimeError):
+            continue
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
