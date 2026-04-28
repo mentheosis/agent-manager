@@ -1,0 +1,103 @@
+/**
+ * File editor pane styles
+ */
+
+.file-editor-pane {
+    flex: 1;
+    min-height: 0;
+}
+
+.file-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 6px 12px 0 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    overflow-x: auto;
+    flex-shrink: 0;
+}
+
+.file-tab {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-bottom: 2px solid transparent;
+    border-radius: 4px 4px 0 0;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.file-tab:hover { color: var(--text); }
+
+.file-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+.file-tab.missing { opacity: 0.5; font-style: italic; }
+.file-tab.dirty::after {
+    content: " ●";
+    color: var(--accent);
+}
+
+.file-tab.perm-tab {
+    color: var(--purple);
+}
+
+.file-tab.perm-tab.active {
+    color: var(--purple);
+    border-bottom-color: var(--purple);
+}
+
+.file-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.file-path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.file-status {
+    color: var(--text-dim);
+}
+
+.file-status.saved { color: var(--green); }
+.file-status.unsaved { color: var(--yellow); }
+.file-status.error { color: var(--red); }
+
+.file-editor {
+    flex: 1;
+    min-height: 0;
+    padding: 12px 16px;
+    background: var(--bg);
+    color: var(--text);
+    border: 0;
+    outline: 0;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    width: 100%;
+}
+
+.file-editor:disabled {
+    opacity: 0.6;
+}
+
+.file-editor[hidden] { display: none; }
+.file-toolbar[hidden] { display: none; }

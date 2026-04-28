@@ -1,0 +1,95 @@
+/**
+ * Shared component styles - pane toolbars, buttons, status indicators
+ */
+
+/* Status dots and labels (used in sidebar and status bar) */
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.status-dot.creating,
+.status-dot.loading { background: var(--orange); animation: pulse-dot 1s ease-in-out infinite; }
+.status-dot.ready { background: var(--yellow); }
+.status-dot.running { background: var(--green); animation: pulse-dot 1.5s ease-in-out infinite; }
+.status-dot.paused { background: var(--text-dim); }
+.status-dot.error { background: var(--red); animation: pulse-dot 0.8s ease-in-out infinite; }
+.status-dot.deleted { background: var(--text-dim); opacity: 0.4; }
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.status-label { font-weight: 600; }
+.status-label.creating,
+.status-label.loading { color: var(--orange); }
+.status-label.ready { color: var(--yellow); }
+.status-label.running { color: var(--green); }
+.status-label.paused { color: var(--text-dim); }
+.status-label.error { color: var(--red); }
+.status-label.deleted { color: var(--text-dim); opacity: 0.6; }
+
+/* Pane toolbar (used in diff pane, file editor) */
+.pane-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+    font-size: 12px;
+}
+
+.pane-label {
+    flex: 1;
+    color: var(--text-dim);
+}
+
+.pane-refresh-btn,
+.file-refresh-btn,
+.file-save-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+}
+
+.pane-refresh-btn:hover,
+.file-refresh-btn:hover,
+.file-save-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+.file-save-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.file-save-btn.dirty {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+}
+
+/* Hints */
+.hint {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.hint code {
+    background: var(--bg-surface);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+}

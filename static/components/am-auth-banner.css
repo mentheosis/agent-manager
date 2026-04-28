@@ -1,0 +1,39 @@
+/**
+ * Auth banner styles
+ */
+
+#auth-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 8px 16px;
+    background: #3a1f24;
+    color: var(--red);
+    border-bottom: 1px solid var(--red);
+    font-size: 13px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    z-index: 10;
+}
+
+#auth-banner[hidden] { display: none !important; }
+
+#auth-banner button {
+    background: var(--red);
+    color: var(--bg);
+    border: 0;
+    padding: 4px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 12px;
+    font-family: inherit;
+}
+
+body:has(#auth-banner:not([hidden])) #sidebar,
+body:has(#auth-banner:not([hidden])) #main {
+    margin-top: 36px;
+}

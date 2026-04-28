@@ -1,0 +1,365 @@
+/**
+ * Terminal pane styles - output area, events, turns, status bar, prompt form
+ */
+
+/* Output area */
+#output-area {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    background: var(--bg);
+}
+
+/* Event blocks */
+.event {
+    margin-bottom: 14px;
+    border-left: 3px solid var(--text-dim);
+    padding: 4px 0 4px 12px;
+}
+
+.label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+}
+
+.event > .label {
+    display: flex;
+}
+
+.ts {
+    color: #8a92b3;
+    font-size: 11px;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.event pre {
+    margin: 0;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+}
+
+/* Event type colors */
+.event-user_prompt { border-left-color: var(--accent); }
+.event-user_prompt .label { color: var(--accent); }
+
+.event-assistant_text { border-left-color: var(--green); }
+.event-assistant_text .label { color: var(--green); }
+
+.event-thinking { border-left-color: var(--yellow); }
+.event-thinking .label { color: var(--yellow); }
+.event-thinking pre { opacity: 0.7; font-style: italic; }
+
+.event-tool_use { border-left-color: var(--purple); }
+.event-tool_use .label { color: var(--purple); }
+
+.event-tool_result { border-left-color: var(--cyan); }
+.event-tool_result .label { color: var(--cyan); }
+
+.event-result { border-left-color: var(--text-dim); }
+.event-result .label { color: var(--text-dim); }
+
+.event-error { border-left-color: var(--red); }
+.event-error .label { color: var(--red); }
+
+.event-system_init { border-left-color: var(--cyan); }
+.event-system_init .label { color: var(--cyan); }
+.event-system_init pre {
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.event-note {
+    border-left: none;
+    color: var(--text-dim);
+    font-style: italic;
+    font-size: 12px;
+}
+
+/* Turn nesting (user prompt + its events grouped) */
+.turn {
+    margin-bottom: 18px;
+}
+
+.turn > .turn-header {
+    display: block;
+    padding: 6px 0 6px 12px;
+    border-left: 3px solid var(--text-dim);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    user-select: text;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
+}
+
+.turn-toggle {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 2px 6px;
+    margin: 0 6px 0 0;
+    font-size: 14px;
+    line-height: 1;
+    user-select: none;
+    transition: transform 0.15s, color 0.1s, border-color 0.1s;
+    vertical-align: middle;
+}
+
+.turn-toggle:hover {
+    color: var(--text);
+    border-color: var(--accent);
+}
+.turn-toggle:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
+
+.turn:not(.open) > .turn-header > .turn-toggle {
+    transform: rotate(-90deg);
+}
+
+.turn-user > .turn-header {
+    border-left-color: var(--accent);
+}
+
+.turn-user > .turn-header .label {
+    color: var(--accent);
+}
+
+.turn-user > .turn-header pre {
+    margin: 4px 0 0 18px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    user-select: text;
+    cursor: text;
+}
+
+/* Long prompts: sticky offset so only the tail is visible when stuck */
+.turn-long-prompt > .turn-header {
+    top: min(0px, calc(-1 * var(--header-height, 0px) + 6em));
+}
+
+/* Show more / show less toggle for long prompts */
+.prompt-toggle {
+    display: inline-block;
+    margin-left: 18px;
+    margin-top: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    cursor: pointer;
+    user-select: none;
+}
+.prompt-toggle:hover {
+    background: var(--accent);
+    color: var(--bg);
+}
+
+.turn-session > .turn-header .label {
+    color: var(--text-dim);
+}
+
+.turn > .turn-body {
+    margin-top: 8px;
+    padding-left: 22px;
+    display: none;
+}
+
+.turn.open > .turn-body {
+    display: block;
+}
+
+.turn-body > .event {
+    margin-bottom: 10px;
+}
+
+.turn-body > .event:last-child {
+    margin-bottom: 0;
+}
+
+.turn:not(.open) {
+    margin-bottom: 8px;
+}
+
+/* Per-event collapse toggle */
+.event:not(.open) > pre {
+    display: none;
+}
+.event:not(.open) > .label .turn-toggle {
+    transform: rotate(-90deg);
+}
+
+/* Inline preview shown only while event is collapsed */
+.event-preview {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-weight: normal;
+    text-transform: none;
+    letter-spacing: 0;
+    font-style: italic;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.event.open > .label > .event-preview {
+    display: none;
+}
+
+/* Status bar */
+#status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    color: var(--text-dim);
+    font-size: 11px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+}
+
+#status-bar .status-icon {
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+#status-bar .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+#status-bar .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+}
+
+#status-bar .status-dot.running { background: var(--green); animation: pulse-dot 1.5s ease-in-out infinite; }
+#status-bar .status-dot.ready { background: var(--yellow); }
+#status-bar .status-dot.creating,
+#status-bar .status-dot.loading { background: var(--orange); }
+#status-bar .status-dot.error { background: var(--red); animation: pulse-dot 0.8s ease-in-out infinite; }
+#status-bar .status-dot.paused { background: var(--text-dim); }
+
+#status-bar .status-text {
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+#status-bar .status-text.running { color: var(--green); }
+#status-bar .status-text.ready { color: var(--yellow); }
+#status-bar .status-text.creating,
+#status-bar .status-text.loading { color: var(--orange); }
+#status-bar .status-text.error { color: var(--red); }
+#status-bar .status-text.paused { color: var(--text-dim); }
+
+#status-bar .status-spacer { flex: 1; }
+
+#status-bar .status-model {
+    font-size: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--bg);
+    background: var(--accent);
+    border-radius: 3px;
+    padding: 1px 6px;
+    margin-right: 6px;
+    opacity: 0.85;
+}
+
+#status-bar .status-totals {
+    display: flex;
+    gap: 14px;
+    font-variant-numeric: tabular-nums;
+}
+
+#status-bar .totals-tokens { color: var(--text-dim); }
+#status-bar .totals-cache { color: var(--cyan); }
+#status-bar .totals-cost { color: var(--green); }
+#status-bar .totals-turns { color: var(--text-dim); }
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Prompt form */
+#prompt-form {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+}
+
+#prompt-input {
+    flex: 1;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+    min-height: 44px;
+}
+
+#prompt-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+#prompt-input:disabled { opacity: 0.5; }
+
+#send-btn {
+    background: var(--accent);
+    color: var(--bg);
+    border: 0;
+    padding: 0 22px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+#send-btn:hover:not(:disabled) { opacity: 0.85; }
+#send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
