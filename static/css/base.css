@@ -8,7 +8,8 @@ body {
     font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
     background: var(--bg);
     color: var(--text);
-    height: 100vh;
+    height: 100vh;       /* fallback for older browsers */
+    height: 100dvh;      /* dynamic viewport height: correctly stops above the phone's system nav bar */
     display: flex;
     overflow: hidden;
 }

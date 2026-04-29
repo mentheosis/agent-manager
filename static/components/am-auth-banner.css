@@ -11,12 +11,12 @@
     background: #3a1f24;
     color: var(--red);
     border-bottom: 1px solid var(--red);
-    font-size: 13px;
+    font-size: var(--fs-md);
     display: flex;
     justify-content: center;
     align-items: center;
     gap: 12px;
-    z-index: 10;
+    z-index: 200;
 }
 
 #auth-banner[hidden] { display: none !important; }
@@ -29,8 +29,21 @@
     border-radius: 4px;
     cursor: pointer;
     font-weight: 600;
-    font-size: 12px;
+    font-size: var(--fs-base);
     font-family: inherit;
+    flex-shrink: 0;
+}
+
+/* Disconnected mode — orange/amber colour scheme */
+#auth-banner[data-mode="disconnected"] {
+    background: #2a1e0a;
+    color: var(--yellow);
+    border-bottom-color: var(--yellow);
+}
+
+#auth-banner[data-mode="disconnected"] button {
+    background: var(--yellow);
+    color: #1a1008;
 }
 
 body:has(#auth-banner:not([hidden])) #sidebar,

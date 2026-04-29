@@ -22,28 +22,38 @@
     pointer-events: none;
 }
 
-/* Mobile: sidebar becomes overlay */
-@media (max-width: 768px) {
-    #sidebar {
-        position: absolute;
-        height: 100%;
-        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
-    }
-
+/* Narrow screens (≤1100px): collapsed = narrow mini strip in flow;
+   expanded = full-width overlay on top of content */
+@media (max-width: 1100px) {
     #sidebar.collapsed {
-        transform: translateX(-100%);
-        opacity: 0;
-        pointer-events: none;
+        position: relative;   /* in-flow so it takes up its own column */
+        width: 44px;
+        min-width: 44px;
+        transform: none;
+        opacity: 1;
+        pointer-events: auto;
+        overflow: hidden;
     }
 
     #sidebar:not(.collapsed) {
+        position: absolute;   /* overlay so it doesn't squash main content */
+        height: 100%;
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
         transform: translateX(0);
         opacity: 1;
         pointer-events: auto;
     }
 }
 
-/* Sidebar overlay backdrop (mobile) */
+/* Wider mini strip on mobile to fit the 4× scaled dots */
+@media (max-width: 768px) {
+    #sidebar.collapsed {
+        width: 64px;
+        min-width: 64px;
+    }
+}
+
+/* Sidebar overlay backdrop — visible on narrow screens when sidebar is open */
 #sidebar-backdrop {
     display: none;
     position: absolute;
@@ -56,7 +66,7 @@
     display: block;
 }
 
-@media (min-width: 769px) {
+@media (min-width: 1101px) {
     #sidebar-backdrop {
         display: none !important;
     }
@@ -89,7 +99,7 @@
 }
 
 #sidebar-header h1 {
-    font-size: 14px;
+    font-size: var(--fs-lg);
     color: var(--accent);
     display: flex;
     align-items: center;
@@ -112,7 +122,7 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--fs-base);
     font-weight: 600;
 }
 
@@ -198,8 +208,119 @@
     bottom: -2px;
 }
 
+/* Loop instance styling - orange left border */
+.instance-item.loop-instance {
+    border-left: 3px solid var(--orange);
+}
+
+.instance-item.loop-instance.active {
+    border-left-color: var(--orange);
+}
+
+/* Child instance styling - indented under parent */
+.instance-item.child-instance {
+    margin-left: 16px;
+    border-left: 2px solid var(--text-dim);
+    opacity: 0.95;
+}
+
+.instance-item.child-instance.active {
+    border-left-color: var(--accent);
+}
+
+/* Drop target for reparenting into loop - orange glow */
+.instance-item.drop-target-group {
+    background: rgba(255, 149, 0, 0.15);
+    border: 2px solid var(--orange);
+    box-shadow: 0 0 12px rgba(255, 149, 0, 0.4);
+}
+
+/* Invalid drop target - red indicator */
+.instance-item.drop-invalid {
+    background: rgba(247, 118, 142, 0.1);
+    border: 2px dashed var(--red);
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Prevent dragging loop instances - visual feedback */
+.instance-item.loop-instance[draggable="true"] {
+    cursor: default;
+}
+
+/* Preset badges */
+.preset-badge {
+    font-size: var(--fs-xs);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+}
+
+.preset-badge.preset-coder {
+    background: rgba(158, 206, 106, 0.2);
+    color: var(--green);
+}
+
+.preset-badge.preset-researcher {
+    background: rgba(122, 162, 247, 0.2);
+    color: var(--blue);
+}
+
+.preset-badge.preset-orchestrator {
+    background: rgba(187, 154, 247, 0.2);
+    color: var(--purple);
+}
+
+.preset-badge.preset-loop {
+    background: rgba(255, 149, 0, 0.2);
+    color: var(--orange);
+}
+
+/* Team expand/collapse button */
+.team-expand-btn {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    cursor: pointer;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    transition: transform 0.15s ease, background 0.15s;
+    flex-shrink: 0;
+}
+
+.team-expand-btn:hover {
+    background: var(--bg-highlight);
+    color: var(--text);
+}
+
+.team-expand-btn.expanded {
+    transform: rotate(90deg);
+}
+
+.team-expand-placeholder {
+    width: 16px;
+    flex-shrink: 0;
+}
+
+/* Child count badge */
+.child-count {
+    font-size: var(--fs-xs);
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
 .instance-title {
-    font-size: 13px;
+    font-size: var(--fs-md);
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -207,7 +328,7 @@
 }
 
 .instance-meta {
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
     margin-top: 4px;
     display: flex;
@@ -216,10 +337,122 @@
 }
 
 .instance-path {
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Scale the collapse-sidebar icon using the font-size variable so it grows on mobile */
+#sidebar-collapse svg {
+    width: var(--fs-xl);
+    height: var(--fs-xl);
+}
+
+/* Scale sidebar logo on mobile to match 4× font scale */
+@media (max-width: 768px) {
+    #sidebar-header h1 img {
+        width: 112px;
+        height: 112px;
+    }
+}
+
+/* Hide the brand name text on narrow screens — the logo alone is enough */
+@media (max-width: 1100px) {
+    .sidebar-brand-text {
+        display: none;
+    }
+}
+
+/* ── Mini sidebar strip ──────────────────────────────────────────────────── */
+
+/* Always hidden on wide screens — only used in the narrow-screen collapsed strip */
+#sidebar-mini {
+    display: none;
+}
+
+/* When collapsed on narrow screens: show mini strip, hide normal content */
+@media (max-width: 1100px) {
+    #sidebar.collapsed #sidebar-header,
+    #sidebar.collapsed #instance-list {
+        display: none;
+    }
+
+    #sidebar.collapsed #sidebar-mini {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        padding: 8px 0;
+        flex: 1;
+        overflow-y: auto;
+        width: 100%;
+    }
+}
+
+/* Expand button inside the mini strip */
+#sidebar-mini-expand {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    padding: 6px;
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 4px;
+    flex-shrink: 0;
+}
+
+#sidebar-mini-expand:hover {
+    background: var(--bg-highlight);
+    color: var(--text);
+}
+
+#sidebar-mini-expand svg {
+    width: var(--fs-xl);
+    height: var(--fs-xl);
+}
+
+/* Scrollable dot list inside the mini strip */
+#sidebar-mini-list {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    overflow-y: auto;
+}
+
+/* Each mini instance button — just a dot in a tap target */
+.mini-item {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    transition: background 0.15s;
+}
+
+.mini-item:hover {
+    background: var(--bg-highlight);
+}
+
+/* Active item: subtle accent ring around the dot */
+.mini-item.active .status-dot {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Scale dots larger on mobile (4× font scale screens) */
+@media (max-width: 768px) {
+    #sidebar-mini-list {
+        gap: 16px;
+    }
 }

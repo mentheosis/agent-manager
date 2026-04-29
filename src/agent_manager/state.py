@@ -68,8 +68,22 @@ class Registry:
                 session_id=rec.session_id,
                 created_at=rec.created_at,
                 add_dirs=list(rec.add_dirs or []),
+                instance_type=rec.instance_type or "claude",
+                parent=rec.parent,
+                children=list(rec.children or []),
+                agent_preset=rec.agent_preset,
+                task=rec.task,
             )
             inst._history = await self.persistence.load_events(rec.title)
+            # Restore _next_seq so events published in this run never collide
+            # with seq numbers already present in the persisted JSONL.
+            # Old events written before seq was introduced have no "seq" field;
+            # leaving _next_seq at 0 is safe for those — new events start at 0
+            # and old clients use since_seq=-1 which skips the filter entirely.
+            if inst._history:
+                max_seq = max((e.get("seq", -1) for e in inst._history), default=-1)
+                if max_seq >= 0:
+                    inst._next_seq = max_seq + 1
             self._wire_hooks(inst)
             async with self._lock:
                 self._instances[rec.title] = inst
@@ -209,6 +223,93 @@ class Registry:
         for inst in instances:
             await inst.stop()
 
+    # --- Orchestration methods -----------------------------------------------
+
+    async def reparent(self, title: str, new_parent: str | None) -> Instance | None:
+        """Move an instance to a new parent (or remove from parent if None).
+
+        Validation:
+        - Loop instances cannot be reparented
+        - Orchestrator-preset agents cannot be moved out of their team
+        - New parent must be a loop instance (if not None)
+        """
+        async with self._lock:
+            inst = self._instances.get(title)
+            if inst is None:
+                return None
+
+            # Validation
+            if inst.instance_type == "loop":
+                raise ValueError("loop instances cannot be reparented")
+            if inst.agent_preset == "orchestrator" and new_parent is None:
+                raise ValueError("orchestrator agents cannot be removed from their team")
+
+            if new_parent is not None:
+                parent_inst = self._instances.get(new_parent)
+                if parent_inst is None:
+                    raise ValueError(f"parent instance not found: {new_parent}")
+                if parent_inst.instance_type != "loop":
+                    raise ValueError("can only reparent into loop instances")
+
+            # Remove from old parent's children list
+            old_parent = inst.parent
+            if old_parent:
+                old_parent_inst = self._instances.get(old_parent)
+                if old_parent_inst and title in old_parent_inst.children:
+                    old_parent_inst.children.remove(title)
+
+            # Add to new parent's children list
+            if new_parent:
+                parent_inst = self._instances.get(new_parent)
+                if parent_inst and title not in parent_inst.children:
+                    parent_inst.children.append(title)
+
+            inst.parent = new_parent
+
+        await self._save_records()
+        return inst
+
+    def get_children(self, title: str) -> list[Instance]:
+        """Get child instances of a loop instance."""
+        inst = self._instances.get(title)
+        if inst is None:
+            return []
+        return [self._instances[t] for t in inst.children if t in self._instances]
+
+    async def update_task(self, title: str, task: str | None) -> Instance | None:
+        """Update the task description for a loop instance."""
+        async with self._lock:
+            inst = self._instances.get(title)
+            if inst is None:
+                return None
+            if inst.instance_type != "loop":
+                raise ValueError("task can only be set on loop instances")
+            inst.task = task
+        await self._save_records()
+        return inst
+
+    async def update_instance_type(
+        self,
+        title: str,
+        instance_type: str | None = None,
+        agent_preset: str | None = None,
+    ) -> Instance | None:
+        """Update instance_type and/or agent_preset."""
+        async with self._lock:
+            inst = self._instances.get(title)
+            if inst is None:
+                return None
+            if instance_type is not None:
+                if instance_type not in ("claude", "loop"):
+                    raise ValueError("instance_type must be 'claude' or 'loop'")
+                inst.instance_type = instance_type
+            if agent_preset is not None:
+                if agent_preset not in ("coder", "researcher", "orchestrator", ""):
+                    raise ValueError("agent_preset must be 'coder', 'researcher', 'orchestrator', or empty")
+                inst.agent_preset = agent_preset if agent_preset else None
+        await self._save_records()
+        return inst
+
     async def _save_records(self) -> None:
         if self.persistence is None:
             return
@@ -223,6 +324,11 @@ class Registry:
                     session_id=i.session_id,
                     created_at=i.created_at,
                     add_dirs=list(i.add_dirs or []),
+                    instance_type=i.instance_type,
+                    parent=i.parent,
+                    children=list(i.children or []),
+                    agent_preset=i.agent_preset,
+                    task=i.task,
                 )
                 for i in self._instances.values()
             ]

@@ -39,10 +39,17 @@ class Instance:
     display_title: str | None = None
     session_id: str | None = None
     add_dirs: list[str] = field(default_factory=list)
+    # Orchestration fields
+    instance_type: str = "claude"  # "claude" | "loop"
+    parent: str | None = None  # Title of parent loop instance
+    children: list[str] = field(default_factory=list)  # Titles of child instances
+    agent_preset: str | None = None  # "coder" | "researcher" | "orchestrator"
+    task: str | None = None  # Task description for loop instances
 
     _task: asyncio.Task | None = field(default=None, repr=False)
     _inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue, repr=False)
     _history: list[Event] = field(default_factory=list, repr=False)
+    _next_seq: int = field(default=0, repr=False)  # Monotonic counter stamped on every event
     _subscribers: list[asyncio.Queue[Event]] = field(default_factory=list, repr=False)
     # Hooks injected by Registry. Both are awaitable; called with no arguments.
     _on_event: Callable[[Event], Awaitable[None]] | None = field(default=None, repr=False)
@@ -135,6 +142,10 @@ class Instance:
 
     async def _publish(self, event: Event) -> None:
         event.setdefault("ts", dt.datetime.now(dt.timezone.utc).isoformat())
+        # Stamp a monotonically-increasing sequence number so clients can
+        # resume from a known position after a WebSocket reconnect.
+        event["seq"] = self._next_seq
+        self._next_seq += 1
         # Capture session_id from the SDK's init or result messages.
         session_changed = False
         sid = self._extract_session_id(event)

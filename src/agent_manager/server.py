@@ -24,6 +24,7 @@ from .files import (
     write_file_under,
 )
 from .instance import Instance
+from .orchestrator import get_manager as get_orchestrator_manager
 from .persistence import Persistence
 from .state import Registry
 
@@ -119,6 +120,19 @@ class PermissionsBody(BaseModel):
     add_dirs: list[str] | None = None
 
 
+class ReparentBody(BaseModel):
+    parent: str | None = None  # New parent title, or None to remove from parent
+
+
+class TaskBody(BaseModel):
+    task: str | None = None
+
+
+class InstanceTypeBody(BaseModel):
+    instance_type: str | None = None  # "claude" | "loop"
+    agent_preset: str | None = None  # "coder" | "researcher" | "orchestrator"
+
+
 def _summary(inst: Instance) -> dict[str, Any]:
     return {
         "title": inst.title,
@@ -129,6 +143,12 @@ def _summary(inst: Instance) -> dict[str, Any]:
         "status": inst.status,
         "created_at": inst.created_at,
         "add_dirs": list(inst.add_dirs or []),
+        # Orchestration fields
+        "instance_type": inst.instance_type,
+        "parent": inst.parent,
+        "children": list(inst.children or []),
+        "agent_preset": inst.agent_preset,
+        "task": inst.task,
     }
 
 
@@ -176,6 +196,9 @@ def build_app() -> FastAPI:
     registry = Registry(persistence)
     auth = AuthRegistry()
 
+    # Initialize orchestrator manager
+    orchestrator_manager = get_orchestrator_manager(base_url="http://localhost:8765")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Restore Claude CLI config from backup if missing (Docker volume edge case)
@@ -191,6 +214,7 @@ def build_app() -> FastAPI:
         try:
             yield
         finally:
+            await orchestrator_manager.shutdown()
             await registry.shutdown()
             await auth.shutdown()
 
@@ -241,6 +265,11 @@ def build_app() -> FastAPI:
 
     @app.delete("/api/instances/{title}", status_code=204)
     async def delete_instance(title: str) -> Response:
+        # Stop orchestrator if this is a loop instance
+        inst = registry.get(title)
+        if inst and inst.instance_type == "loop":
+            await orchestrator_manager.stop(title)
+
         ok = await registry.delete(title)
         if not ok:
             raise HTTPException(status_code=404)
@@ -265,6 +294,179 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=404)
         return _summary(inst)
 
+    # --- Orchestration endpoints ---------------------------------------------
+
+    @app.post("/api/instances/{title}/reparent")
+    async def reparent_instance(title: str, body: ReparentBody) -> dict[str, Any]:
+        try:
+            inst = await registry.reparent(title, body.parent)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if inst is None:
+            raise HTTPException(status_code=404)
+        return _summary(inst)
+
+    @app.get("/api/instances/{title}/children")
+    async def get_children(title: str) -> list[dict[str, Any]]:
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+        return [_summary(c) for c in registry.get_children(title)]
+
+    @app.patch("/api/instances/{title}/task")
+    async def update_task(title: str, body: TaskBody) -> dict[str, Any]:
+        try:
+            inst = await registry.update_task(title, body.task)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if inst is None:
+            raise HTTPException(status_code=404)
+        return _summary(inst)
+
+    @app.patch("/api/instances/{title}/type")
+    async def update_instance_type(title: str, body: InstanceTypeBody) -> dict[str, Any]:
+        try:
+            inst = await registry.update_instance_type(
+                title,
+                instance_type=body.instance_type,
+                agent_preset=body.agent_preset,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if inst is None:
+            raise HTTPException(status_code=404)
+        return _summary(inst)
+
+    # --- Orchestrator process management --------------------------------------
+
+    @app.post("/api/instances/{title}/orchestrator/start")
+    async def start_orchestrator(title: str) -> dict[str, Any]:
+        """Start the orchestrator process for a loop instance."""
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+        if inst.instance_type != "loop":
+            raise HTTPException(status_code=400, detail="can only start orchestrator for loop instances")
+
+        children = registry.get_children(title)
+        try:
+            proc = await orchestrator_manager.start(inst, children)
+            return {
+                "ok": True,
+                "pid": proc.pid,
+                "port": proc.port,
+                "running": proc.is_running,
+            }
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/instances/{title}/orchestrator/stop")
+    async def stop_orchestrator(title: str) -> dict[str, Any]:
+        """Stop the orchestrator process for a loop instance."""
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+
+        await orchestrator_manager.stop(title)
+        return {"ok": True}
+
+    @app.post("/api/instances/{title}/orchestrator/restart")
+    async def restart_orchestrator(title: str) -> dict[str, Any]:
+        """Restart the orchestrator process for a loop instance."""
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+        if inst.instance_type != "loop":
+            raise HTTPException(status_code=400, detail="can only restart orchestrator for loop instances")
+
+        children = registry.get_children(title)
+        try:
+            proc = await orchestrator_manager.restart(inst, children)
+            return {
+                "ok": True,
+                "pid": proc.pid,
+                "port": proc.port,
+                "running": proc.is_running,
+            }
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/instances/{title}/orchestrator/status")
+    async def get_orchestrator_status(title: str) -> dict[str, Any]:
+        """Get the status of the orchestrator process for a loop instance."""
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+
+        proc = orchestrator_manager.get(title)
+        if not proc:
+            return {"running": False, "pid": None, "port": None}
+
+        return {
+            "running": proc.is_running,
+            "pid": proc.pid,
+            "port": proc.port,
+        }
+
+    @app.get("/api/instances/{title}/orchestrator/output")
+    async def get_orchestrator_output(title: str, lines: int = 50) -> dict[str, Any]:
+        """Get recent output from the orchestrator process."""
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+
+        lines = max(1, min(lines, 500))
+        output = orchestrator_manager.get_output(title, lines)
+        return {"lines": output}
+
+    @app.get("/api/instances/{title}/history")
+    async def get_history(
+        title: str,
+        tail: int = 50,
+        offset: int = 0,
+        types: str | None = None,
+    ) -> dict[str, Any]:
+        """Get instance history with backwards pagination.
+
+        Args:
+            tail: Number of events to return from the end (default: 50, max: 200)
+            offset: Skip N events from end before taking tail (for scrolling back)
+            types: Comma-separated event types to filter (e.g., "assistant_text,tool_result")
+
+        Returns:
+            {events: [...], total_count: N, has_more: bool}
+        """
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+
+        # Clamp tail to reasonable bounds
+        tail = max(1, min(tail, 200))
+
+        all_events = inst.history()
+        total_count = len(all_events)
+
+        # Filter by types if specified
+        if types:
+            type_set = {t.strip() for t in types.split(",") if t.strip()}
+            all_events = [e for e in all_events if e.get("type") in type_set]
+
+        filtered_count = len(all_events)
+
+        # Apply offset and tail (reading backwards from end)
+        if offset > 0:
+            all_events = all_events[:-offset] if offset < len(all_events) else []
+
+        events = all_events[-tail:] if tail < len(all_events) else all_events
+        has_more = len(all_events) > tail
+
+        return {
+            "events": events,
+            "total_count": total_count,
+            "filtered_count": filtered_count,
+            "has_more": has_more,
+        }
+
     @app.post("/api/instances/reorder")
     async def reorder_instances(body: ReorderBody) -> list[dict[str, Any]]:
         try:
@@ -282,14 +484,26 @@ def build_app() -> FastAPI:
         return {"ok": True}
 
     @app.websocket("/api/instances/{title}/events")
-    async def events_ws(ws: WebSocket, title: str) -> None:
+    async def events_ws(ws: WebSocket, title: str, since_seq: int = -1) -> None:
         inst = registry.get(title)
         if not inst:
             await ws.close(code=1008, reason="instance not found")
             return
         await ws.accept()
+        # since_seq lets reconnecting clients receive only events they missed.
+        # -1 (default) means "send everything" — used on initial connection.
+        # Any value >= 0 is a reconnect: only send events with seq > since_seq.
+        # Because seq is a monotonic counter on the instance (never an array index),
+        # this is correct even when the history window has been trimmed by HISTORY_CAP.
+        # Using seq < 0 as the "send all" sentinel also means old in-memory events
+        # without a seq field are always included on initial connection.
         for event in inst.history():
-            await ws.send_text(json.dumps(event))
+            if since_seq < 0 or event.get("seq", -1) > since_seq:
+                await ws.send_text(json.dumps(event))
+        # Signal to the client that all buffered history has been sent.
+        # The client uses this to batch-render history and scroll once rather
+        # than scrolling incrementally as each history frame arrives.
+        await ws.send_text(json.dumps({"type": "history_end"}))
         q = inst.subscribe()
         try:
             while True:
@@ -476,7 +690,13 @@ def build_app() -> FastAPI:
                     return Response(
                         content=index_html.read_text(encoding="utf-8"),
                         media_type="text/html",
+                        headers={"Cache-Control": "no-store"},
                     )
+                # Prevent browsers from caching static assets (HTML, CSS, JS).
+                # Skip /api/ routes — they manage their own headers and include
+                # streaming responses where mutating headers after the fact is unsafe.
+                if not request.url.path.startswith("/api/"):
+                    response.headers["Cache-Control"] = "no-store"
                 return response
 
         app.add_middleware(SPAMiddleware)

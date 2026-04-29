@@ -21,10 +21,17 @@
     min-height: 44px;
 }
 
-/* Show header only when sidebar is collapsed */
+/* Show header only when sidebar is collapsed — but not on narrow screens
+   where the mini strip already provides an expand button */
 am-app:has(#sidebar.collapsed) #main-header,
 am-app.sidebar-collapsed #main-header {
     display: flex;
+}
+
+@media (max-width: 1100px) {
+    #main-header {
+        display: none !important;
+    }
 }
 
 #sidebar-expand {
@@ -48,7 +55,7 @@ am-app.sidebar-collapsed #main-header {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 14px;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: var(--accent);
     margin: 0;
@@ -65,7 +72,7 @@ am-app.sidebar-collapsed #main-header {
     align-items: center;
     justify-content: center;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: var(--fs-md);
 }
 
 #active-view {
@@ -94,6 +101,12 @@ am-app.sidebar-collapsed #main-header {
     flex-direction: column;
 }
 
+/* Scale the expand-sidebar icon using the font-size variable so it grows on mobile */
+#sidebar-expand svg {
+    width: var(--fs-xl);
+    height: var(--fs-xl);
+}
+
 .tab-pane.active {
     display: flex;
 }
@@ -104,7 +117,15 @@ am-app.sidebar-collapsed #main-header {
     align-items: center;
     justify-content: center;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: var(--fs-md);
     padding: 32px;
     text-align: center;
+}
+
+/* Scale header brand logo on mobile to match 4× font scale */
+@media (max-width: 768px) {
+    #main-header-brand img {
+        width: 96px;
+        height: 96px;
+    }
 }

@@ -17,3 +17,26 @@
     --purple: #bb9af7;
     --cyan: #7dcfff;
 }
+
+/* ─── Font-size scale ──────────────────────────────────────────────────────
+   All font sizes in the app use these variables so a single mobile breakpoint
+   doubles every text size for comfortable reading on small screens.          */
+:root {
+    --fs-xs:   10px;   /* tiny badges, instance paths */
+    --fs-sm:   11px;   /* secondary labels, small controls */
+    --fs-base: 12px;   /* tertiary content, toolbar buttons */
+    --fs-md:   13px;   /* primary content text, inputs */
+    --fs-lg:   14px;   /* headings, emphasis */
+    --fs-xl:   16px;   /* large icon-text */
+}
+
+@media (max-width: 1100px) {
+    :root {
+        --fs-xs:   20px;
+        --fs-sm:   22px;
+        --fs-base: 24px;
+        --fs-md:   28px;
+        --fs-lg:   32px;
+        --fs-xl:   38px;
+    }
+}

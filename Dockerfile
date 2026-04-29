@@ -1,4 +1,22 @@
 # syntax=docker/dockerfile:1
+
+# =============================================================================
+# Stage 1: Go build (orchestrator binary)
+# =============================================================================
+FROM golang:1.22-alpine AS go-deps
+WORKDIR /build
+# Copy only go.mod first to cache dependency download
+COPY orchestrator/go.mod orchestrator/go.sum* ./
+RUN go mod download
+
+FROM go-deps AS go-build
+# Copy source and build
+COPY orchestrator/ ./
+RUN CGO_ENABLED=0 go build -o am-orchestrator .
+
+# =============================================================================
+# Stage 2: Python application
+# =============================================================================
 FROM python:3.12-slim
 
 # --- System packages (changes rarely) -------------------------------------
@@ -34,6 +52,9 @@ RUN pip install --no-cache-dir --no-deps .
 
 # --- Static assets last (rebuilds only on static/ changes) ----------------
 COPY static/ ./static/
+
+# --- Orchestrator binary (from Go build stage) -----------------------------
+COPY --from=go-build /build/am-orchestrator /usr/local/bin/
 
 EXPOSE 8787
 ENV AGENT_MANAGER_HOST=0.0.0.0 \

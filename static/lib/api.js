@@ -144,7 +144,37 @@ export function loginWebSocketUrl(sessionId) {
     return `${proto}://${location.host}${BASE}/auth/login/${encodeURIComponent(sessionId)}`;
 }
 
-export function eventsWebSocketUrl(title) {
+export function eventsWebSocketUrl(title, sinceSeq = -1) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${proto}://${location.host}${BASE}/instances/${encodeURIComponent(title)}/events`;
+    const query = sinceSeq >= 0 ? `?since_seq=${sinceSeq}` : '';
+    return `${proto}://${location.host}${BASE}/instances/${encodeURIComponent(title)}/events${query}`;
+}
+
+export async function reparentInstance(title, parentTitle) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/reparent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent: parentTitle }),
+    });
+    if (!r.ok) {
+        const text = await r.text();
+        throw new Error(`Failed to reparent instance: ${r.status} ${text}`);
+    }
+    return r.json();
+}
+
+export async function fetchChildren(title) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/children`);
+    if (!r.ok) throw new Error(`Failed to fetch children: ${r.status}`);
+    return r.json();
+}
+
+export async function updateTask(title, task) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/task`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task }),
+    });
+    if (!r.ok) throw new Error(`Failed to update task: ${r.status}`);
+    return r.json();
 }

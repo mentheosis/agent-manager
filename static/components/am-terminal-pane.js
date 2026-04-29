@@ -11,6 +11,7 @@ class AmTerminalPane extends HTMLElement {
         this._instance = null;
         this._unsubscribe = null;
         this._wasNearBottom = true;  // Track scroll position for auto-scroll
+        this._replaying = false;     // True while bulk-rendering history; suppresses mid-render scrolls
     }
 
     connectedCallback() {
@@ -100,15 +101,65 @@ class AmTerminalPane extends HTMLElement {
         this.clearOutput();
 
         if (inst) {
-            // Subscribe to stream (replays buffered events)
             const stream = streamManager.get(inst.title);
-            this._unsubscribe = stream.subscribe((event) => this.handleEvent(event, stream));
 
-            this.updateStatusBar(stream);
+            // Render whatever history has already arrived (suppress auto-scroll
+            // so partial content doesn't cause a visible incremental scroll).
+            this._replaying = true;
+            for (const event of stream.eventHistory) {
+                this.handleEvent(event, stream);
+            }
+            this._replaying = false;
 
-            // Scroll to bottom after replaying history
-            this.scrollToBottom();
+            if (stream.historyComplete) {
+                // All history received — subscribe for live events only and scroll.
+                this._unsubscribe = stream.subscribe(
+                    (event) => this.handleEvent(event, stream),
+                    { replay: false }
+                );
+                this.updateStatusBar(stream);
+                this.scrollToBottom();
+            } else {
+                // History still in-flight from the server.  Use a loading handler
+                // that suppresses auto-scroll until the history_end sentinel arrives,
+                // then scrolls once and switches to the normal live handler.
+                this._unsubscribe = stream.subscribe(
+                    (event) => this._handleOnLoad(event, stream),
+                    { replay: false }
+                );
+                this.updateStatusBar(stream);
+            }
         }
+    }
+
+    // Used during initial load when history events are still arriving from the
+    // server.  Renders events silently (no auto-scroll) until history_end, then
+    // scrolls once and hands off to the normal live handler.
+    _handleOnLoad(event, stream) {
+        if (event.type === 'history_end') {
+            this.scrollToBottom();
+            // Capture which subscription we're replacing so a reconnect that
+            // fires between now and the setTimeout can't tear down the wrong one.
+            const capturedUnsub = this._unsubscribe;
+            // Defer the subscription swap so we're not modifying the listener
+            // set from inside the emit() loop that called this function.
+            setTimeout(() => {
+                // Only swap if the subscription hasn't changed (e.g. instance switch
+                // or a reconnect that already re-subscribed via handleEvent).
+                if (this._unsubscribe === capturedUnsub) {
+                    if (this._unsubscribe) this._unsubscribe();
+                    this._unsubscribe = stream.subscribe(
+                        (ev) => this.handleEvent(ev, stream),
+                        { replay: false }
+                    );
+                }
+            }, 0);
+            return;
+        }
+        // Render without auto-scroll — history is still arriving.
+        this._replaying = true;
+        this.handleEvent(event, stream);
+        this._replaying = false;
     }
 
     handleEvent(event, stream) {
@@ -132,9 +183,21 @@ class AmTerminalPane extends HTMLElement {
 
         if (event.type === 'connection') {
             if (event.status === 'closed') {
-                this.appendNote('Connection closed');
+                this.appendNote('Connection lost — reconnecting…');
             } else if (event.status === 'error') {
-                this.appendNote('Connection error');
+                this.appendNote('Connection error — reconnecting…');
+            } else if (event.status === 'reconnected') {
+                // The stream has successfully reconnected and replayed history.
+                // Clear the terminal and re-render from the fresh event history.
+                const stream = streamManager.get(this._instance.title);
+                this.clearOutput();
+                this._replaying = true;
+                for (const ev of stream.eventHistory) {
+                    this.handleEvent(ev, stream);
+                }
+                this._replaying = false;
+                this.updateStatusBar(stream);
+                this.scrollToBottom();
             }
             return;
         }
@@ -165,7 +228,7 @@ class AmTerminalPane extends HTMLElement {
 
         dot.className = `status-dot ${status}`;
         text.className = `status-text ${status}`;
-        text.textContent = this.statusLabel(status);
+        text.textContent = this.statusLabel(status, this._instance?.instance_type);
 
         // Model chip
         const modelEl = this.querySelector('.status-model');
@@ -193,7 +256,17 @@ class AmTerminalPane extends HTMLElement {
         this.querySelector('.totals-turns').textContent = `${t.turns} ${t.turns === 1 ? 'turn' : 'turns'}`;
     }
 
-    statusLabel(status) {
+    statusLabel(status, instanceType = null) {
+        // Loop instances have slightly different labels
+        if (instanceType === 'loop') {
+            switch (status) {
+                case 'running': return 'orchestrating…';
+                case 'ready': return 'idle';
+                case 'paused': return 'paused';
+                default: break;  // Fall through to default handling
+            }
+        }
+
         switch (status) {
             case 'running': return 'working…';
             case 'ready': return 'idle';
@@ -227,14 +300,12 @@ class AmTerminalPane extends HTMLElement {
     // Scroll to bottom of output area
     scrollToBottom() {
         const output = this.querySelector('#output-area');
-        if (output) {
-            output.scrollTop = output.scrollHeight;
-        }
+        if (output) output.scrollTop = output.scrollHeight;
     }
 
-    // Auto-scroll if user was already near bottom
+    // Auto-scroll if user was already near bottom (no-op during history replay)
     autoScroll() {
-        if (this._wasNearBottom) {
+        if (!this._replaying && this._wasNearBottom) {
             this.scrollToBottom();
         }
     }

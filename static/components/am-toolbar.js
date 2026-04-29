@@ -14,10 +14,12 @@ class AmToolbar extends HTMLElement {
         this.id = 'toolbar';
         this.innerHTML = `
             <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
+            <span id="toolbar-type-badge" class="type-badge" hidden></span>
             <div style="flex:1"></div>
             <button class="toolbar-btn" id="btn-scroll-bottom" type="button" title="Jump to bottom">↓ Bottom</button>
-            <button class="toolbar-btn" id="btn-pause" type="button">Pause</button>
-            <button class="toolbar-btn" id="btn-resume" type="button">Resume</button>
+            <button class="toolbar-btn loop-only" id="btn-restart-loop" type="button" title="Restart the orchestration loop">⟳ Restart Loop</button>
+            <button class="toolbar-btn agent-only" id="btn-pause" type="button">Pause</button>
+            <button class="toolbar-btn agent-only" id="btn-resume" type="button">Resume</button>
             <button class="toolbar-btn danger" id="btn-kill" type="button">Kill</button>
         `;
 
@@ -46,13 +48,14 @@ class AmToolbar extends HTMLElement {
             this.dispatchEvent(new CustomEvent('scroll-to-bottom', { bubbles: true }));
         });
 
-        // Action buttons (placeholders)
+        // Action buttons
         this.querySelector('#btn-pause').addEventListener('click', () => {
             alert('Pause not implemented yet.');
         });
         this.querySelector('#btn-resume').addEventListener('click', () => {
             alert('Resume not implemented yet.');
         });
+        this.querySelector('#btn-restart-loop').addEventListener('click', () => this.restartOrchestrator());
         this.querySelector('#btn-kill').addEventListener('click', () => this.killInstance());
     }
 
@@ -67,12 +70,35 @@ class AmToolbar extends HTMLElement {
 
     update() {
         const titleInput = this.querySelector('#toolbar-title');
+        const typeBadge = this.querySelector('#toolbar-type-badge');
+        const isLoop = this._instance?.instance_type === 'loop';
+
         if (this._instance) {
             titleInput.value = this._instance.display_title || this._instance.title;
             titleInput.disabled = false;
+
+            // Show type badge for loop instances
+            if (isLoop) {
+                typeBadge.textContent = 'team';
+                typeBadge.hidden = false;
+            } else if (this._instance.agent_preset) {
+                typeBadge.textContent = this._instance.agent_preset;
+                typeBadge.hidden = false;
+            } else {
+                typeBadge.hidden = true;
+            }
         } else {
             titleInput.value = '';
             titleInput.disabled = true;
+            typeBadge.hidden = true;
+        }
+
+        // Show/hide buttons based on instance type
+        for (const btn of this.querySelectorAll('.loop-only')) {
+            btn.hidden = !isLoop;
+        }
+        for (const btn of this.querySelectorAll('.agent-only')) {
+            btn.hidden = isLoop;
         }
     }
 
@@ -110,6 +136,33 @@ class AmToolbar extends HTMLElement {
             }));
         } catch (err) {
             alert(`Failed to delete: ${err.message}`);
+        }
+    }
+
+    async restartOrchestrator() {
+        if (!this._instance) return;
+        if (this._instance.instance_type !== 'loop') return;
+
+        const btn = this.querySelector('#btn-restart-loop');
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Restarting...';
+
+        try {
+            const r = await fetch(`/api/instances/${encodeURIComponent(this._instance.title)}/orchestrator/restart`, {
+                method: 'POST',
+            });
+            if (!r.ok) {
+                const data = await r.json().catch(() => ({}));
+                throw new Error(data.detail || `HTTP ${r.status}`);
+            }
+            const data = await r.json();
+            console.log('Orchestrator restarted:', data);
+        } catch (err) {
+            alert(`Failed to restart orchestrator: ${err.message}`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
         }
     }
 }

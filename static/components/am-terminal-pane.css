@@ -9,7 +9,7 @@
     overflow-y: auto;
     overflow-x: hidden;
     padding: 16px;
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     background: var(--bg);
 }
@@ -25,7 +25,7 @@
     display: inline-flex;
     align-items: baseline;
     gap: 10px;
-    font-size: 11px;
+    font-size: var(--fs-sm);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-dim);
@@ -38,7 +38,7 @@
 
 .ts {
     color: #8a92b3;
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: normal;
     text-transform: none;
     letter-spacing: 0;
@@ -48,7 +48,7 @@
 .event pre {
     margin: 0;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
@@ -81,7 +81,7 @@
 .event-system_init { border-left-color: var(--cyan); }
 .event-system_init .label { color: var(--cyan); }
 .event-system_init pre {
-    font-size: 12px;
+    font-size: var(--fs-base);
     color: var(--text-dim);
 }
 
@@ -89,7 +89,7 @@
     border-left: none;
     color: var(--text-dim);
     font-style: italic;
-    font-size: 12px;
+    font-size: var(--fs-base);
 }
 
 /* Turn nesting (user prompt + its events grouped) */
@@ -118,7 +118,7 @@
     cursor: pointer;
     padding: 2px 6px;
     margin: 0 6px 0 0;
-    font-size: 14px;
+    font-size: var(--fs-lg);
     line-height: 1;
     user-select: none;
     transition: transform 0.15s, color 0.1s, border-color 0.1s;
@@ -146,7 +146,7 @@
 .turn-user > .turn-header pre {
     margin: 4px 0 0 18px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
@@ -166,7 +166,7 @@
     margin-left: 18px;
     margin-top: 4px;
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--accent);
     background: transparent;
     border: 1px solid var(--accent);
@@ -216,7 +216,7 @@
 /* Inline preview shown only while event is collapsed */
 .event-preview {
     color: var(--text-dim);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: normal;
     text-transform: none;
     letter-spacing: 0;
@@ -239,7 +239,7 @@
     gap: 10px;
     padding: 6px 14px;
     color: var(--text-dim);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     border-top: 1px solid var(--border);
     background: var(--bg-surface);
     flex-shrink: 0;
@@ -293,7 +293,7 @@
 #status-bar .status-spacer { flex: 1; }
 
 #status-bar .status-model {
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     color: var(--bg);
     background: var(--accent);
@@ -323,9 +323,33 @@
     display: flex;
     gap: 8px;
     padding: 12px 16px;
+    /* Pull padding down to clear the phone's home indicator / gesture bar */
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--border);
     background: var(--bg-surface);
     flex-shrink: 0;
+}
+
+/* On narrow screens (phones in responsive test mode and real devices), ensure the
+   prompt form clears the browser chrome / system nav bar. Uses a fixed 20px floor
+   so it's visible in browser dev tools responsive mode as well as on real devices. */
+@media (max-width: 768px) {
+    #prompt-form {
+        padding-bottom: max(20px, calc(12px + env(safe-area-inset-bottom, 0px)));
+    }
+    #status-bar .spinner {
+        width: 48px;
+        height: 48px;
+        border-width: 5px;
+    }
+    #status-bar .status-dot {
+        width: 32px;
+        height: 32px;
+    }
+    #status-bar .status-icon {
+        width: 56px;
+        height: 56px;
+    }
 }
 
 #prompt-input {
@@ -336,7 +360,7 @@
     border-radius: 4px;
     padding: 10px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     resize: vertical;
     min-height: 44px;
@@ -357,7 +381,7 @@
     border-radius: 4px;
     cursor: pointer;
     font-weight: 600;
-    font-size: 13px;
+    font-size: var(--fs-md);
     font-family: inherit;
 }
 

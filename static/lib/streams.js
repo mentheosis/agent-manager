@@ -23,12 +23,34 @@ class Stream {
         };
         this.listeners = new Set();
         this.eventHistory = [];  // Buffer events for replay to new subscribers
+        this.historyComplete = false;  // True once the server's history_end sentinel arrives
+
+        // Reconnection state
+        this._everConnected = false;   // True after first successful WS open
+        this._reconnecting = false;    // True while server is sending the delta on reconnect
+        this._lastSeq = -1;            // seq of the last event received; sent as ?since_seq= on reconnect
+        this._reconnectDelay = 1000;   // Current backoff delay (ms)
+        this._reconnectTimer = null;
     }
 
     connect() {
         if (this.ws) return;
-        const url = eventsWebSocketUrl(this.title);
+        const url = eventsWebSocketUrl(this.title, this._lastSeq);
         this.ws = new WebSocket(url);
+
+        this.ws.onopen = () => {
+            this._reconnectDelay = 1000;  // Reset backoff on successful connect
+
+            if (this._everConnected) {
+                // This is a reconnect.  The server only sends events with
+                // seq > _lastSeq, so eventHistory is kept intact and we just
+                // wait for the (possibly empty) delta + history_end.
+                this._reconnecting = true;
+                this.historyComplete = false;
+            } else {
+                this._everConnected = true;
+            }
+        };
 
         this.ws.onmessage = (ev) => {
             try {
@@ -43,6 +65,9 @@ class Stream {
             this.ws = null;
             if (!this.evicting) {
                 this.emit({ type: 'connection', status: 'closed' });
+                this._scheduleReconnect();
+                // Notify the app so it can show a disconnected banner
+                document.dispatchEvent(new CustomEvent('am-stream-closed'));
             }
         };
 
@@ -53,7 +78,65 @@ class Stream {
         };
     }
 
+    _scheduleReconnect() {
+        if (this.evicting) return;
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            if (!this.evicting && !this.ws) {
+                this.connect();  // _lastSeq is already up-to-date
+            }
+        }, this._reconnectDelay);
+        // Exponential backoff: 1 → 2 → 4 → 8 → 16 → 30s max
+        this._reconnectDelay = Math.min(this._reconnectDelay * 2, 30_000);
+    }
+
+    // Immediately cancel any pending reconnect and open a fresh connection.
+    reconnectNow() {
+        if (this.evicting) return;
+        // Already open and healthy — nothing to do
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+        this._reconnectDelay = 1000;
+
+        if (this.ws) {
+            try { this.ws.close(); } catch { /* ignore */ }
+            this.ws = null;
+        }
+        this.connect();  // _lastSeq is already up-to-date
+    }
+
     handleEvent(event) {
+        // History sentinel — mark history complete.
+        if (event.type === 'history_end') {
+            this.historyComplete = true;
+            if (this._reconnecting) {
+                // History replay after a reconnect is complete.
+                // Notify all live subscribers to re-render from the fresh eventHistory.
+                this._reconnecting = false;
+                const reconnectEvent = { type: 'connection', status: 'reconnected' };
+                for (const cb of this.listeners) {
+                    try { cb(reconnectEvent); } catch (err) { console.error('Stream listener error', err); }
+                }
+                document.dispatchEvent(new CustomEvent('am-stream-reconnected'));
+            } else {
+                // Normal initial load — forward to listeners as before.
+                for (const cb of this.listeners) {
+                    try { cb(event); } catch (err) { console.error('Stream listener error', err); }
+                }
+            }
+            return;
+        }
+
+        // Track the highest seq seen so reconnects can resume from this point.
+        // Use Math.max so _lastSeq only ever moves forward — guards against
+        // out-of-order delivery or any future seq regression on the server.
+        if (typeof event.seq === 'number') {
+            this._lastSeq = Math.max(this._lastSeq, event.seq);
+        }
+
         // Track status changes
         if (event.type === 'status') {
             this.status = event.status;
@@ -113,6 +196,10 @@ class Stream {
             this.eventHistory.push(event);
         }
 
+        // During a reconnect history replay, don't forward to live subscribers —
+        // they'll get a single 'reconnected' event when the replay is complete.
+        if (this._reconnecting) return;
+
         for (const cb of this.listeners) {
             try {
                 cb(event);
@@ -124,6 +211,8 @@ class Stream {
 
     close() {
         this.evicting = true;
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
         if (this.ws) {
             try { this.ws.close(); } catch {}
             this.ws = null;
@@ -157,6 +246,13 @@ class StreamManager {
         if (stream) {
             stream.close();
             this.streams.delete(title);
+        }
+    }
+
+    // Reconnect all active streams immediately (e.g. when app regains focus).
+    reconnectAll() {
+        for (const stream of this.streams.values()) {
+            stream.reconnectNow();
         }
     }
 

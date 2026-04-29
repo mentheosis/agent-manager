@@ -31,10 +31,18 @@ class InstanceRecord:
     session_id: str | None = None
     created_at: str = ""
     add_dirs: list[str] = None  # type: ignore[assignment]
+    # Orchestration fields
+    instance_type: str = "claude"
+    parent: str | None = None
+    children: list[str] = None  # type: ignore[assignment]
+    agent_preset: str | None = None
+    task: str | None = None
 
     def __post_init__(self) -> None:
         if self.add_dirs is None:
             self.add_dirs = []
+        if self.children is None:
+            self.children = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +54,11 @@ class InstanceRecord:
             "session_id": self.session_id,
             "created_at": self.created_at,
             "add_dirs": list(self.add_dirs or []),
+            "instance_type": self.instance_type,
+            "parent": self.parent,
+            "children": list(self.children or []),
+            "agent_preset": self.agent_preset,
+            "task": self.task,
         }
 
     @classmethod
@@ -59,6 +72,11 @@ class InstanceRecord:
             session_id=d.get("session_id"),
             created_at=d.get("created_at") or "",
             add_dirs=list(d.get("add_dirs") or []),
+            instance_type=d.get("instance_type") or "claude",
+            parent=d.get("parent"),
+            children=list(d.get("children") or []),
+            agent_preset=d.get("agent_preset"),
+            task=d.get("task"),
         )
 
 

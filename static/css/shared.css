@@ -42,7 +42,7 @@
     border-bottom: 1px solid var(--border);
     background: var(--bg-surface);
     flex-shrink: 0;
-    font-size: 12px;
+    font-size: var(--fs-base);
 }
 
 .pane-label {
@@ -60,7 +60,7 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: var(--fs-sm);
 }
 
 .pane-refresh-btn:hover,
@@ -83,7 +83,7 @@
 
 /* Hints */
 .hint {
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
 }
 
@@ -91,5 +91,13 @@
     background: var(--bg-surface);
     padding: 1px 4px;
     border-radius: 3px;
-    font-size: 11px;
+    font-size: var(--fs-sm);
+}
+
+/* Scale status-dot on mobile to match 4× font scale */
+@media (max-width: 768px) {
+    .status-dot {
+        width: 32px;
+        height: 32px;
+    }
 }

@@ -17,7 +17,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 
 dialog h2 {
     margin: 0 0 14px 0;
-    font-size: 15px;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: var(--purple);
 }
@@ -31,7 +31,7 @@ dialog form {
 dialog label {
     display: flex;
     flex-direction: column;
-    font-size: 11px;
+    font-size: var(--fs-sm);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-dim);
@@ -39,7 +39,7 @@ dialog label {
 }
 
 dialog small.hint {
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     text-transform: none;
     letter-spacing: 0;
@@ -55,7 +55,7 @@ dialog select {
     padding: 7px 9px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--fs-md);
     text-transform: none;
     letter-spacing: 0;
 }
@@ -81,7 +81,7 @@ dialog button {
     padding: 7px 16px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: var(--fs-md);
     font-family: inherit;
 }
 
@@ -99,7 +99,7 @@ dialog #create-btn:hover { opacity: 0.85; }
 #login-dialog { min-width: 560px; max-width: 720px; }
 
 #login-dialog .hint {
-    font-size: 12px;
+    font-size: var(--fs-base);
     color: var(--text-dim);
     margin: 0 0 10px 0;
     line-height: 1.5;
@@ -114,7 +114,7 @@ dialog #create-btn:hover { opacity: 0.85; }
     max-height: 280px;
     overflow-y: auto;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--fs-base);
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
@@ -142,7 +142,7 @@ dialog #create-btn:hover { opacity: 0.85; }
     border-radius: 4px;
     cursor: pointer;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--fs-md);
     min-width: 40px;
 }
 
@@ -171,7 +171,7 @@ dialog #create-btn:hover { opacity: 0.85; }
     padding: 7px 9px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--fs-md);
 }
 
 #login-text:focus { outline: none; border-color: var(--accent); }
@@ -184,7 +184,7 @@ dialog #create-btn:hover { opacity: 0.85; }
     padding: 7px 16px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: var(--fs-md);
     font-family: inherit;
 }
 
@@ -196,4 +196,297 @@ dialog #create-btn:hover { opacity: 0.85; }
     gap: 8px;
     padding: 0;
     margin: 12px 0 0 0;
+}
+
+/* Team Config Dialog (custom overlay style) */
+.dialog-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+
+.dialog-overlay.open {
+    display: flex;
+}
+
+.dialog {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    min-width: 500px;
+    max-width: 600px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.dialog-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.dialog-close {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.dialog-close:hover {
+    color: var(--text);
+}
+
+.dialog-body {
+    padding: 20px;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.dialog-hint {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin: 0 0 12px 0;
+}
+
+.yaml-input {
+    width: 100%;
+    min-height: 300px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.yaml-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.yaml-input::placeholder {
+    color: var(--text-dim);
+    opacity: 0.6;
+}
+
+.yaml-error {
+    color: var(--red);
+    font-size: 12px;
+    margin-top: 8px;
+    min-height: 18px;
+}
+
+.dialog-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+}
+
+.dialog-footer .btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.dialog-footer .btn-primary:hover {
+    opacity: 0.85;
+}
+
+.dialog-footer .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.dialog-footer .btn-secondary {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.dialog-footer .btn-secondary:hover {
+    border-color: var(--accent);
+}
+
+/* New dialog with mode selector */
+#new-dialog {
+    min-width: 480px;
+    max-width: 560px;
+}
+
+#new-dialog .dialog-content {
+    padding: 0;
+}
+
+#new-dialog h2 {
+    padding: 16px 20px;
+    margin: 0;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-lg);
+    color: var(--accent);
+}
+
+/* Mode selector buttons */
+.mode-selector {
+    display: flex;
+    gap: 12px;
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.mode-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 16px 12px;
+    background: var(--bg);
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.mode-btn:hover {
+    border-color: var(--text-dim);
+}
+
+.mode-btn.active {
+    border-color: var(--accent);
+    background: rgba(122, 162, 247, 0.1);
+}
+
+.mode-icon {
+    font-size: 28px;
+    line-height: 1;
+}
+
+.mode-label {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    color: var(--text);
+}
+
+.mode-desc {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+}
+
+/* Mode forms */
+.mode-form {
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+}
+
+.mode-form.active {
+    display: flex;
+}
+
+.mode-form .form-hint {
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    margin: 0 0 8px 0;
+}
+
+.mode-form textarea {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: var(--fs-base);
+    resize: vertical;
+}
+
+.mode-form textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.mode-form .yaml-input {
+    min-height: 240px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.mode-form menu {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 0;
+    margin: 8px 0 0 0;
+}
+
+.mode-form .btn-cancel {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+
+.mode-form .btn-cancel:hover {
+    border-color: var(--accent);
+}
+
+.mode-form .btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.mode-form .btn-primary:hover {
+    opacity: 0.85;
+}
+
+.mode-form .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }

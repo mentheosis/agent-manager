@@ -22,7 +22,7 @@
 }
 
 .permissions-panel .perm-label {
-    font-size: 11px;
+    font-size: var(--fs-sm);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-dim);
@@ -36,7 +36,7 @@
     padding: 6px 9px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: 13px;
+    font-size: var(--fs-md);
     max-width: 280px;
 }
 
@@ -75,7 +75,7 @@
 .permissions-panel .dir-path {
     flex: 1;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 12px;
+    font-size: var(--fs-base);
     color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -86,7 +86,7 @@
     background: transparent;
     color: var(--text-dim);
     border: 0;
-    font-size: 16px;
+    font-size: var(--fs-xl);
     line-height: 1;
     padding: 0 6px;
     cursor: pointer;
@@ -100,7 +100,7 @@
 }
 
 .permissions-panel .dir-label {
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -123,7 +123,7 @@
     padding: 6px 9px;
     border-radius: 4px;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 12px;
+    font-size: var(--fs-base);
 }
 
 .permissions-panel .dir-add-input:focus {
@@ -139,7 +139,7 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--fs-base);
 }
 
 .permissions-panel .dir-add-btn:hover { border-color: var(--accent); }
@@ -159,7 +159,7 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: inherit;
-    font-size: 12px;
+    font-size: var(--fs-base);
     font-weight: 600;
 }
 
@@ -179,6 +179,6 @@
 }
 
 .permissions-panel .perm-apply-status {
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
 }

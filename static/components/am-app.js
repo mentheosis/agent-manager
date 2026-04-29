@@ -15,6 +15,7 @@ import './am-diff-pane.js';
 import './am-file-editor.js';
 import './am-new-dialog.js';
 import './am-login-dialog.js';
+import './am-team-panel.js';
 
 // Map internal tab names to URL-friendly names
 const TAB_TO_URL = {
@@ -36,6 +37,10 @@ class AmApp extends HTMLElement {
         this.currentInst = null;
         this.activeTab = 'terminal';
         this._skipUrlUpdate = false;  // Flag to prevent URL update during restore
+
+        // Connection / disconnection tracking
+        this._disconnected = false;
+        this._disconnectTimer = null;  // Debounce timer before showing disconnected banner
     }
 
     connectedCallback() {
@@ -65,6 +70,7 @@ class AmApp extends HTMLElement {
                     </div>
                 </div>
             </div>
+            <am-team-panel></am-team-panel>
             <am-new-dialog></am-new-dialog>
             <am-login-dialog></am-login-dialog>
         `;
@@ -87,11 +93,15 @@ class AmApp extends HTMLElement {
             this.closeSidebar();
         });
 
+        this.addEventListener('open-sidebar', () => {
+            this.openSidebar();
+        });
+
         // Instance selection
         this.addEventListener('instance-selected', (e) => {
             this.selectInstance(e.detail.instance);
             // Auto-close sidebar on mobile after selection
-            if (window.innerWidth <= 768) {
+            if (window.innerWidth <= 1100) {
                 this.closeSidebar();
             }
         });
@@ -146,6 +156,36 @@ class AmApp extends HTMLElement {
         this.addEventListener('scroll-to-bottom', () => {
             this.querySelector('am-terminal-pane').scrollToBottom();
         });
+
+        // Manual reconnect requested from the disconnected banner
+        this.addEventListener('reconnect-requested', () => {
+            this.reconnect();
+        });
+
+        // A stream's WebSocket closed — start a debounce timer.
+        // We wait briefly before showing the disconnected banner so that
+        // transient drops (phone switching apps for a moment) don't cause a flash.
+        document.addEventListener('am-stream-closed', () => {
+            if (this._disconnectTimer) return;  // already waiting
+            this._disconnectTimer = setTimeout(() => {
+                this._disconnectTimer = null;
+                // Confirm the network is actually unreachable before showing banner
+                this.checkAuth();
+            }, 4000);
+        });
+
+        // A stream successfully reconnected — clear the banner and refresh data.
+        document.addEventListener('am-stream-reconnected', () => {
+            if (this._disconnectTimer) {
+                clearTimeout(this._disconnectTimer);
+                this._disconnectTimer = null;
+            }
+            if (this._disconnected) {
+                this._setDisconnected(false);
+                this.checkAuth();
+                this.loadInstances();
+            }
+        });
     }
 
     async init() {
@@ -153,6 +193,19 @@ class AmApp extends HTMLElement {
 
         // Listen for browser back/forward
         window.addEventListener('popstate', () => this.restoreFromURL());
+
+        // Reconnect immediately when the page becomes visible again
+        // (handles the common mobile case of switching away and back)
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                this._onBecameVisible();
+            }
+        });
+
+        // Reconnect when the device comes back online after being offline
+        window.addEventListener('online', () => {
+            this._onBecameVisible();
+        });
 
         await Promise.all([
             this.checkAuth(),
@@ -167,12 +220,42 @@ class AmApp extends HTMLElement {
         setInterval(() => this.checkAuth(), 30000);
     }
 
+    _onBecameVisible() {
+        // Cancel any pending disconnect debounce
+        if (this._disconnectTimer) {
+            clearTimeout(this._disconnectTimer);
+            this._disconnectTimer = null;
+        }
+        this.reconnect();
+    }
+
+    // Reconnect all WebSocket streams and refresh state from the server.
+    async reconnect() {
+        streamManager.reconnectAll();
+        await Promise.all([this.checkAuth(), this.loadInstances()]);
+    }
+
+    _setDisconnected(value) {
+        this._disconnected = value;
+        this.querySelector('am-auth-banner').disconnected = value;
+    }
+
     async checkAuth() {
         try {
             const { authed } = await api.checkAuth();
+            // Got a real HTTP response — network is reachable
+            if (this._disconnected) {
+                this._setDisconnected(false);
+            }
             this.querySelector('am-auth-banner').authed = authed;
         } catch (e) {
-            console.error('Auth check failed', e);
+            if (e instanceof TypeError) {
+                // fetch() throws TypeError on network failure (no response at all).
+                // Show the disconnected banner rather than the misleading "not authed" one.
+                this._setDisconnected(true);
+            } else {
+                console.error('Auth check failed', e);
+            }
         }
     }
 
@@ -227,6 +310,9 @@ class AmApp extends HTMLElement {
         // Enable prompt form
         terminal.enablePrompt();
 
+        // Update team panel (show for loop instances on conversation tab)
+        this.updateTeamPanel();
+
         // Load active tab content
         this.onTabActivated(this.activeTab);
 
@@ -254,6 +340,9 @@ class AmApp extends HTMLElement {
         terminal.instance = null;
         terminal.disablePrompt();
 
+        // Hide team panel
+        this.querySelector('am-team-panel').instance = null;
+
         // Update URL
         this.updateURL();
     }
@@ -270,6 +359,9 @@ class AmApp extends HTMLElement {
             const isActive = pane.dataset.pane === name;
             pane.classList.toggle('active', isActive);
         }
+
+        // Update team panel (only visible on conversation tab for loop instances)
+        this.updateTeamPanel();
 
         this.onTabActivated(name);
 
@@ -293,6 +385,17 @@ class AmApp extends HTMLElement {
                 const editor = this.querySelector(`am-file-editor[data-pane="${name}"]`);
                 editor.load(this.currentTitle);
                 break;
+        }
+    }
+
+    // Update team panel visibility based on instance type and active tab
+    updateTeamPanel() {
+        const teamPanel = this.querySelector('am-team-panel');
+        // Show team panel only for loop instances on conversation (terminal) tab
+        if (this.currentInst?.instance_type === 'loop' && this.activeTab === 'terminal') {
+            teamPanel.instance = this.currentInst;
+        } else {
+            teamPanel.instance = null;
         }
     }
 
@@ -323,11 +426,11 @@ class AmApp extends HTMLElement {
     }
 
     initSidebarState() {
-        // Start collapsed on mobile
-        if (window.innerWidth <= 768) {
+        // Start collapsed on narrow screens (phones and tablets up to 1100px)
+        if (window.innerWidth <= 1100) {
             this.closeSidebar();
         } else {
-            // Ensure class state matches on desktop
+            // Ensure class state matches on wide screens
             this.classList.remove('sidebar-collapsed');
         }
     }
