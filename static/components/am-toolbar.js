@@ -8,6 +8,15 @@ class AmToolbar extends HTMLElement {
     constructor() {
         super();
         this._instance = null;
+        this._filterOpen = false;
+        this._filters = {
+            assistant_text: true,
+            thinking: true,
+            tool_use: true,
+            result: true,
+            system_init: true,
+            error: true,
+        };
     }
 
     connectedCallback() {
@@ -16,6 +25,35 @@ class AmToolbar extends HTMLElement {
             <input id="toolbar-title" type="text" placeholder="Untitled" spellcheck="false">
             <span id="toolbar-type-badge" class="type-badge" hidden></span>
             <div style="flex:1"></div>
+            <div class="filter-dropdown">
+                <button class="toolbar-btn" id="btn-filter" type="button" title="Filter event types">Filter</button>
+                <div class="filter-menu" id="filter-menu">
+                    <label class="filter-item">
+                        <input type="checkbox" data-type="assistant_text" checked>
+                        <span class="filter-label">Assistant</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox" data-type="thinking" checked>
+                        <span class="filter-label">Thinking</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox" data-type="tool_use" checked>
+                        <span class="filter-label">Tools</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox" data-type="result" checked>
+                        <span class="filter-label">Results</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox" data-type="system_init" checked>
+                        <span class="filter-label">System</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox" data-type="error" checked>
+                        <span class="filter-label">Errors</span>
+                    </label>
+                </div>
+            </div>
             <button class="toolbar-btn" id="btn-scroll-bottom" type="button" title="Jump to bottom">↓ Bottom</button>
             <button class="toolbar-btn loop-only" id="btn-restart-loop" type="button" title="Restart the orchestration loop">⟳ Restart Loop</button>
             <button class="toolbar-btn agent-only" id="btn-pause" type="button">Pause</button>
@@ -24,6 +62,7 @@ class AmToolbar extends HTMLElement {
         `;
 
         this.setupEventListeners();
+        this.setupFilterListeners();
     }
 
     setupEventListeners() {
@@ -124,9 +163,26 @@ class AmToolbar extends HTMLElement {
         if (!this._instance) return;
 
         const name = this._instance.display_title || this._instance.title;
-        if (!confirm(`Delete "${name}"? This will stop the session and remove all history.`)) {
+        const isTeam = this._instance.instance_type === 'loop';
+        const childCount = this._instance.children?.length || 0;
+
+        let confirmMsg = `Delete "${name}"? This will stop the session and remove all history.`;
+        if (isTeam && childCount > 0) {
+            confirmMsg = `Delete team "${name}" and its ${childCount} member(s)? This will stop all sessions and remove all history.`;
+        }
+
+        if (!confirm(confirmMsg)) {
             return;
         }
+
+        // Dispatch deleting event to update UI immediately
+        this.dispatchEvent(new CustomEvent('instance-deleting', {
+            bubbles: true,
+            detail: {
+                title: this._instance.title,
+                children: isTeam ? this._instance.children : []
+            }
+        }));
 
         try {
             await api.deleteInstance(this._instance.title);
@@ -136,6 +192,8 @@ class AmToolbar extends HTMLElement {
             }));
         } catch (err) {
             alert(`Failed to delete: ${err.message}`);
+            // Reload instances to reset status
+            this.dispatchEvent(new CustomEvent('instances-reordered', { bubbles: true }));
         }
     }
 
@@ -164,6 +222,46 @@ class AmToolbar extends HTMLElement {
             btn.disabled = false;
             btn.textContent = originalText;
         }
+    }
+
+    setupFilterListeners() {
+        const filterBtn = this.querySelector('#btn-filter');
+        const filterMenu = this.querySelector('#filter-menu');
+
+        // Toggle dropdown on button click
+        filterBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._filterOpen = !this._filterOpen;
+            filterMenu.classList.toggle('open', this._filterOpen);
+        });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (this._filterOpen && !this.querySelector('.filter-dropdown').contains(e.target)) {
+                this._filterOpen = false;
+                filterMenu.classList.remove('open');
+            }
+        });
+
+        // Handle checkbox changes
+        for (const checkbox of this.querySelectorAll('#filter-menu input[type="checkbox"]')) {
+            checkbox.addEventListener('change', () => {
+                const eventType = checkbox.dataset.type;
+                this._filters[eventType] = checkbox.checked;
+                this.dispatchFilterEvent();
+            });
+        }
+    }
+
+    dispatchFilterEvent() {
+        this.dispatchEvent(new CustomEvent('filter-changed', {
+            bubbles: true,
+            detail: { filters: { ...this._filters } }
+        }));
+    }
+
+    get filters() {
+        return { ...this._filters };
     }
 }
 

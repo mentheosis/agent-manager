@@ -114,6 +114,12 @@ class AmApp extends HTMLElement {
             });
         });
 
+        // Instance deleting (show deleting status immediately)
+        this.addEventListener('instance-deleting', (e) => {
+            const sidebar = this.querySelector('am-sidebar');
+            sidebar.setDeleting(e.detail.title, e.detail.children || []);
+        });
+
         // Instance deleted
         this.addEventListener('instance-deleted', (e) => {
             if (this.currentTitle === e.detail.title) {

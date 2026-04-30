@@ -69,6 +69,89 @@
 .event-tool_use { border-left-color: var(--purple); }
 .event-tool_use .label { color: var(--purple); }
 
+/* Tool status indicator */
+.tool-status {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin: 0 6px;
+    vertical-align: middle;
+}
+
+.tool-status.pending {
+    background: var(--yellow);
+    animation: pulse-dot 1s ease-in-out infinite;
+}
+
+.tool-status.success {
+    background: var(--green);
+}
+
+.tool-status.error {
+    background: var(--red);
+}
+
+/* Tool use body - code block formatting */
+.event-tool_use > .event-body {
+    background: var(--bg-surface);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: var(--fs-sm);
+}
+
+/* Nested tool result inside tool_use */
+.event-nested.tool-result {
+    margin: 8px 0 4px 16px;
+    padding: 8px 12px;
+    background: var(--bg-surface);
+    border-radius: 6px;
+    border-left: 3px solid var(--cyan);
+}
+
+.event-nested.tool-result.error {
+    border-left-color: var(--red);
+    background: rgba(247, 118, 142, 0.08);
+}
+
+.event-nested .nested-label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: var(--fs-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--cyan);
+    margin-bottom: 4px;
+}
+
+.event-nested .nested-label .ts {
+    font-size: var(--fs-sm);
+    color: #8a92b3;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: normal;
+    font-variant-numeric: tabular-nums;
+}
+
+.event-nested.error .nested-label {
+    color: var(--red);
+}
+
+.event-nested .nested-body {
+    margin: 0;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* Legacy standalone tool_result (for events without matching tool_use) */
 .event-tool_result { border-left-color: var(--cyan); }
 .event-tool_result .label { color: var(--cyan); }
 
@@ -111,7 +194,7 @@
 }
 
 .turn-toggle {
-    background: var(--bg-surface);
+    background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 4px;
     color: var(--text-dim);
@@ -167,16 +250,36 @@
     margin-top: 4px;
     padding: 2px 8px;
     font-size: var(--fs-sm);
-    color: var(--accent);
+    color: var(--text-dim);
     background: transparent;
-    border: 1px solid var(--accent);
+    border: 1px solid var(--border);
     border-radius: 3px;
     cursor: pointer;
     user-select: none;
 }
 .prompt-toggle:hover {
-    background: var(--accent);
-    color: var(--bg);
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* Scroll-to button on turn headers */
+.scroll-to-btn {
+    display: inline-block;
+    margin-left: 18px;
+    margin-top: 4px;
+    padding: 2px 8px;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.scroll-to-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 .turn-session > .turn-header .label {
@@ -206,7 +309,9 @@
 }
 
 /* Per-event collapse toggle */
-.event:not(.open) > pre {
+.event:not(.open) > pre,
+.event:not(.open) > .event-body,
+.event:not(.open) > .event-nested {
     display: none;
 }
 .event:not(.open) > .label .turn-toggle {
@@ -387,3 +492,11 @@
 
 #send-btn:hover:not(:disabled) { opacity: 0.85; }
 #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Event type filter visibility */
+#output-area.hide-assistant_text .event-assistant_text { display: none; }
+#output-area.hide-thinking .event-thinking { display: none; }
+#output-area.hide-tool_use .event-tool_use { display: none; }
+#output-area.hide-result .event-result { display: none; }
+#output-area.hide-system_init .event-system_init { display: none; }
+#output-area.hide-error .event-error { display: none; }

@@ -125,6 +125,13 @@ class Registry:
             raise ValueError("name must not be empty")
         base = slugify(cleaned)
         expanded = str(Path(path).expanduser().resolve())
+
+        # Create directory if it doesn't exist
+        expanded_path = Path(expanded)
+        if not expanded_path.exists():
+            log.info("Creating directory for instance: %s", expanded)
+            expanded_path.mkdir(parents=True, exist_ok=True)
+
         resolved_dirs = _normalize_dirs(add_dirs or [])
         async with self._lock:
             title = self._unique_title_locked(base)
@@ -182,14 +189,45 @@ class Registry:
     def list(self) -> list[Instance]:
         return list(self._instances.values())
 
-    async def delete(self, title: str) -> bool:
+    async def delete(self, title: str, cascade: bool = True) -> bool:
+        """Delete an instance.
+
+        Args:
+            title: The instance title to delete
+            cascade: If True and this is a loop instance, also delete all children
+
+        Returns:
+            True if the instance was deleted, False if not found
+        """
         async with self._lock:
-            inst = self._instances.pop(title, None)
-        if inst is None:
-            return False
+            inst = self._instances.get(title)
+            if inst is None:
+                return False
+
+            # Collect child instances to delete if this is a loop instance
+            child_instances: list[Instance] = []
+            if cascade and inst.instance_type == "loop" and inst.children:
+                child_instances = [
+                    self._instances[c] for c in inst.children if c in self._instances
+                ]
+
+            # Remove the instance and children from registry
+            self._instances.pop(title, None)
+            for child in child_instances:
+                self._instances.pop(child.title, None)
+
+        # Stop the parent instance
         await inst.stop()
         if self.persistence is not None:
             await self.persistence.delete_events(title)
+
+        # Stop and cleanup children
+        for child in child_instances:
+            log.info("Cascade deleting child instance: %s", child.title)
+            await child.stop()
+            if self.persistence is not None:
+                await self.persistence.delete_events(child.title)
+
         await self._save_records()
         return True
 

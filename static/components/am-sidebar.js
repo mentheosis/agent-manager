@@ -257,6 +257,34 @@ class AmSidebar extends HTMLElement {
         return item;
     }
 
+    /**
+     * Set deleting status for an instance and its children.
+     * This shows immediate visual feedback while the delete is in progress.
+     */
+    setDeleting(title, children = []) {
+        const allTitles = [title, ...children];
+        for (const t of allTitles) {
+            const item = this.querySelector(`.instance-item[data-title="${CSS.escape(t)}"]`);
+            if (item) {
+                item.classList.remove('creating', 'loading', 'ready', 'running', 'paused', 'error');
+                item.classList.add('deleting');
+                const dot = item.querySelector('.status-dot');
+                const label = item.querySelector('.status-label');
+                if (dot) dot.className = 'status-dot deleting';
+                if (label) {
+                    label.className = 'status-label deleting';
+                    label.textContent = 'deleting';
+                }
+            }
+            const miniItem = this.querySelector(`.mini-item[data-title="${CSS.escape(t)}"]`);
+            if (miniItem) {
+                miniItem.className = 'mini-item deleting';
+                const miniDot = miniItem.querySelector('.status-dot');
+                if (miniDot) miniDot.className = 'status-dot deleting';
+            }
+        }
+    }
+
     toggleTeamExpanded(title) {
         if (this._expandedTeams.has(title)) {
             this._expandedTeams.delete(title);

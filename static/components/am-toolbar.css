@@ -55,3 +55,52 @@
     background: rgba(255, 149, 0, 0.2);
     color: var(--orange);
 }
+
+/* Filter dropdown */
+.filter-dropdown {
+    position: relative;
+}
+
+.filter-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 0;
+    min-width: 140px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+}
+
+.filter-menu.open {
+    display: block;
+}
+
+.filter-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.filter-item:hover {
+    background: var(--bg-highlight);
+}
+
+.filter-item input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.filter-label {
+    font-size: var(--fs-sm);
+    color: var(--text);
+}

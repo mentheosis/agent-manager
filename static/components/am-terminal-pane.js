@@ -12,6 +12,14 @@ class AmTerminalPane extends HTMLElement {
         this._unsubscribe = null;
         this._wasNearBottom = true;  // Track scroll position for auto-scroll
         this._replaying = false;     // True while bulk-rendering history; suppresses mid-render scrolls
+        this._filters = {
+            assistant_text: true,
+            thinking: true,
+            tool_use: true,
+            result: true,
+            system_init: true,
+            error: true,
+        };
     }
 
     connectedCallback() {
@@ -68,6 +76,22 @@ class AmTerminalPane extends HTMLElement {
                 this.submitPrompt();
             }
         });
+
+        // Listen for filter changes from toolbar
+        document.addEventListener('filter-changed', (e) => {
+            this._filters = { ...e.detail.filters };
+            this.applyFilters();
+        });
+    }
+
+    applyFilters() {
+        const output = this.querySelector('#output-area');
+        if (!output) return;
+
+        // Toggle CSS classes on output area to show/hide event types
+        for (const [type, visible] of Object.entries(this._filters)) {
+            output.classList.toggle(`hide-${type}`, !visible);
+        }
     }
 
     async submitPrompt() {
@@ -350,6 +374,17 @@ class AmTerminalPane extends HTMLElement {
         header.appendChild(this.makeLabelSpan('user', event.ts));
 
         const pre = document.createElement('pre');
+
+        // Scroll-to button
+        const scrollBtn = document.createElement('button');
+        scrollBtn.type = 'button';
+        scrollBtn.className = 'scroll-to-btn';
+        scrollBtn.textContent = 'scroll to';
+        scrollBtn.title = 'Scroll this turn to the top';
+        scrollBtn.addEventListener('click', () => {
+            turn.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+
         if (isLong) {
             let truncated = text.slice(0, 200);
             const lastSpace = truncated.lastIndexOf(' ');
@@ -381,10 +416,12 @@ class AmTerminalPane extends HTMLElement {
             });
 
             header.appendChild(pre);
+            header.appendChild(scrollBtn);
             header.appendChild(toggle);
         } else {
             pre.textContent = text;
             header.appendChild(pre);
+            header.appendChild(scrollBtn);
         }
 
         const body = document.createElement('div');
@@ -409,7 +446,7 @@ class AmTerminalPane extends HTMLElement {
         return btn;
     }
 
-    makeLabelSpan(text, ts, toggleTarget = null) {
+    makeLabelSpan(text, ts, toggleTarget = null, statusPlaceholder = false) {
         const span = document.createElement('span');
         span.className = 'label';
 
@@ -420,6 +457,14 @@ class AmTerminalPane extends HTMLElement {
         const labelText = document.createElement('span');
         labelText.textContent = text;
         span.appendChild(labelText);
+
+        // Status indicator placeholder (inserted before timestamp)
+        if (statusPlaceholder) {
+            const status = document.createElement('span');
+            status.className = 'tool-status pending';
+            status.title = 'Pending';
+            span.appendChild(status);
+        }
 
         if (ts) {
             const time = document.createElement('time');
@@ -468,6 +513,28 @@ class AmTerminalPane extends HTMLElement {
 
     appendEventToCurrentTurn(event) {
         this.checkScrollPosition();
+
+        // Handle tool_result specially - nest it under the matching tool_use
+        if (event.type === 'tool_result' && event.tool_id) {
+            const toolUse = this.querySelector(`.event-tool_use[data-tool-id="${CSS.escape(event.tool_id)}"]`);
+            if (toolUse) {
+                const resultEl = this.createToolResultElement(event);
+                toolUse.appendChild(resultEl);
+
+                // Update tool_use status indicator
+                const statusEl = toolUse.querySelector('.tool-status');
+                if (statusEl) {
+                    statusEl.classList.remove('pending');
+                    statusEl.classList.add(event.is_error ? 'error' : 'success');
+                    statusEl.title = event.is_error ? 'Error' : 'Success';
+                }
+
+                this.autoScroll();
+                return;
+            }
+            // Fall through to normal append if tool_use not found
+        }
+
         const body = this.getOrCreateCurrentTurnBody();
         const el = this.createEventElement(event);
         body.appendChild(el);
@@ -482,24 +549,67 @@ class AmTerminalPane extends HTMLElement {
             el.classList.add('open');
         }
 
-        const labelEl = this.makeLabelSpan(this.labelFor(event), event.ts, el);
+        // Add tool ID for matching results
+        if (event.type === 'tool_use' && event.id) {
+            el.dataset.toolId = event.id;
+        }
+
+        // For tool_use, add status indicator before timestamp
+        const hasStatusIndicator = event.type === 'tool_use';
+        const labelEl = this.makeLabelSpan(this.labelFor(event), event.ts, el, hasStatusIndicator);
+
         el.appendChild(labelEl);
 
         const bodyText = (event.type === 'system_init')
             ? JSON.stringify(event.data ?? {}, null, 2)
             : this.bodyFor(event);
 
-        // Preview for collapsed events
-        if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'result') {
+        // Preview for collapsed events (not tool_result since it's nested now)
+        if (event.type === 'tool_use' || event.type === 'result') {
             const preview = document.createElement('span');
             preview.className = 'event-preview';
-            preview.textContent = this.shortPreview(bodyText);
+            // For tool_use, show a more useful preview based on the tool type
+            if (event.type === 'tool_use') {
+                preview.textContent = this.toolUsePreview(event);
+            } else {
+                preview.textContent = this.shortPreview(bodyText);
+            }
             labelEl.appendChild(preview);
         }
 
         const bodyEl = document.createElement('pre');
         bodyEl.className = 'event-body';
         bodyEl.textContent = bodyText;
+        el.appendChild(bodyEl);
+
+        return el;
+    }
+
+    createToolResultElement(event) {
+        const el = document.createElement('div');
+        el.className = `event-nested tool-result ${event.is_error ? 'error' : 'success'}`;
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'nested-label';
+
+        const labelText = document.createElement('span');
+        labelText.textContent = event.is_error ? '✗ error' : '✓ result';
+        labelEl.appendChild(labelText);
+
+        // Add timestamp if available
+        if (event.ts) {
+            const time = document.createElement('time');
+            time.className = 'ts';
+            time.dateTime = event.ts;
+            time.textContent = this.formatTimestamp(event.ts);
+            labelEl.appendChild(time);
+        }
+
+        const bodyEl = document.createElement('pre');
+        bodyEl.className = 'nested-body';
+        bodyEl.textContent = event.output ?? '';
+
+        el.appendChild(labelEl);
         el.appendChild(bodyEl);
 
         return el;
@@ -556,6 +666,34 @@ class AmTerminalPane extends HTMLElement {
         const compact = text.replace(/\s+/g, ' ').trim();
         if (compact.length <= max) return compact;
         return compact.slice(0, max) + '…';
+    }
+
+    toolUsePreview(event) {
+        const input = event.input || {};
+        const name = event.name || '';
+
+        // Tool-specific previews
+        switch (name) {
+            case 'Bash':
+                return this.shortPreview(input.command || '', 60);
+            case 'Read':
+                return input.file_path || '';
+            case 'Write':
+                return input.file_path || '';
+            case 'Edit':
+                return input.file_path || '';
+            case 'Glob':
+                return input.pattern || '';
+            case 'Grep':
+                return `${input.pattern || ''} ${input.path ? 'in ' + input.path : ''}`.trim();
+            case 'Agent':
+                return input.description || this.shortPreview(input.prompt || '', 50);
+            default:
+                // Generic: show first string value or JSON preview
+                const firstVal = Object.values(input).find(v => typeof v === 'string');
+                if (firstVal) return this.shortPreview(firstVal, 60);
+                return this.shortPreview(JSON.stringify(input), 60);
+        }
     }
 
     enablePrompt() {

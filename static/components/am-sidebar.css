@@ -178,6 +178,13 @@
     background: linear-gradient(to right, transparent 0%, rgba(247, 118, 142, 0.08) 100%);
 }
 
+.instance-item.deleting {
+    border-right: 2px solid var(--red);
+    background: linear-gradient(to right, transparent 0%, rgba(247, 118, 142, 0.15) 100%);
+    opacity: 0.6;
+    pointer-events: none;
+}
+
 /* Drag-to-reorder */
 .instance-item[draggable="true"] { user-select: none; }
 .instance-item.dragging { opacity: 0.35; }

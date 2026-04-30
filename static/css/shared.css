@@ -18,6 +18,7 @@
 .status-dot.paused { background: var(--text-dim); }
 .status-dot.error { background: var(--red); animation: pulse-dot 0.8s ease-in-out infinite; }
 .status-dot.deleted { background: var(--text-dim); opacity: 0.4; }
+.status-dot.deleting { background: var(--red); animation: pulse-dot 0.5s ease-in-out infinite; opacity: 0.7; }
 
 @keyframes pulse-dot {
     0%, 100% { opacity: 1; }
@@ -32,6 +33,7 @@
 .status-label.paused { color: var(--text-dim); }
 .status-label.error { color: var(--red); }
 .status-label.deleted { color: var(--text-dim); opacity: 0.6; }
+.status-label.deleting { color: var(--red); opacity: 0.8; }
 
 /* Pane toolbar (used in diff pane, file editor) */
 .pane-toolbar {
