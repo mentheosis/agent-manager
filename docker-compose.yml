@@ -14,10 +14,10 @@ services:
       # in-container `claude login` flow (triggered from the UI), not inherited
       # from the host. Note: ~/.claude.json lives outside this volume, so the
       # server restores it from ~/.claude/backups/ on startup if missing.
-      - claude-auth:/root/.claude
+      - claude-auth:/app/.claude
       # Persist instance metadata + per-instance event logs across rebuilds.
       # Conversation continuity comes from Claude's own session jsonl (under
-      # /root/.claude/projects/) which lives in the claude-auth volume — we
+      # ~/.claude/projects/) which lives in the claude-auth volume — we
       # only persist the session_id and our UI event stream here.
       - agent-manager-state:/var/lib/agent-manager
     restart: unless-stopped

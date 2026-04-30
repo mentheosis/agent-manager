@@ -4,6 +4,7 @@
  */
 
 import * as api from '../lib/api.js';
+import { streamManager } from '../lib/streams.js';
 import './am-permissions-panel.js';
 
 const PERMISSIONS_TAB_INDEX = -2;
@@ -187,6 +188,12 @@ class AmFileEditor extends HTMLElement {
         const permPanel = this.querySelector('am-permissions-panel');
         if (permPanel) {
             await permPanel.load(this._title);
+
+            // Pass active model from stream
+            const stream = streamManager.get(this._title);
+            if (stream?.activeModel) {
+                permPanel.setActiveModel(stream.activeModel);
+            }
         }
     }
 

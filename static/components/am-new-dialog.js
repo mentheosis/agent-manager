@@ -50,6 +50,12 @@ class AmNewDialog extends HTMLElement {
                             </select>
                         </label>
                         <label>
+                            Model
+                            <select name="model">
+                                <option value="" selected>Default</option>
+                            </select>
+                        </label>
+                        <label>
                             Additional allowed directories (one per line, optional)
                             <textarea name="add_dirs" rows="2" autocomplete="off" spellcheck="false" placeholder="/path/to/other-project"></textarea>
                         </label>
@@ -64,11 +70,13 @@ class AmNewDialog extends HTMLElement {
                         <p class="form-hint">Define your team using YAML configuration:</p>
                         <textarea id="team-yaml" class="yaml-input" spellcheck="false" placeholder="title: my-team
 path: /path/to/workspace
+model: claude-sonnet-4-20250514  # optional
 task: Build feature X with tests
 agents:
   - name: coder-1
     path: /path/to/repo
     preset: coder
+    model: claude-opus-4-20250514  # optional
   - name: researcher
     path: /path/to/docs
     preset: researcher"></textarea>
@@ -150,6 +158,10 @@ agents:
         const addDirsRaw = data.add_dirs || '';
         delete data.add_dirs;
 
+        // Handle model - only include if set
+        const model = data.model || null;
+        delete data.model;
+
         const add_dirs = addDirsRaw
             .split(/\r?\n/)
             .map((l) => l.trim())
@@ -160,7 +172,7 @@ agents:
         submitBtn.textContent = 'Creating...';
 
         try {
-            const inst = await api.createInstance({ ...data, add_dirs });
+            const inst = await api.createInstance({ ...data, model, add_dirs });
             this.close();
             form.reset();
 
@@ -218,6 +230,7 @@ agents:
                     name: config.title,
                     path: config.path,
                     permission_mode: 'plan',
+                    model: config.model || null,
                 })
             });
             if (!loopResp.ok) {
@@ -255,6 +268,7 @@ agents:
                             name: agent.name,
                             path: agent.path,
                             permission_mode: 'acceptEdits',
+                            model: agent.model || null,
                         })
                     });
                     if (!agentResp.ok) {
@@ -365,9 +379,30 @@ agents:
         return value;
     }
 
-    open(mode = 'agent') {
+    async open(mode = 'agent') {
         this.setMode(mode);
+        await this.loadModels();
         this.querySelector('#new-dialog').showModal();
+    }
+
+    async loadModels() {
+        try {
+            const models = await api.fetchModels();
+            const select = this.querySelector('select[name="model"]');
+
+            // Clear existing options except default
+            select.innerHTML = '<option value="" selected>Default</option>';
+
+            // Add fetched models
+            for (const id of models) {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = id;
+                select.appendChild(opt);
+            }
+        } catch (e) {
+            console.error('Failed to load models:', e);
+        }
     }
 
     close() {

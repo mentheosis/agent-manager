@@ -147,11 +147,19 @@ class Instance:
         event["seq"] = self._next_seq
         self._next_seq += 1
         # Capture session_id from the SDK's init or result messages.
-        session_changed = False
+        state_changed = False
         sid = self._extract_session_id(event)
         if sid and sid != self.session_id:
             self.session_id = sid
-            session_changed = True
+            state_changed = True
+        # Capture model from system_init if we don't have one configured.
+        # This resolves "SDK default" to the actual model being used.
+        if event.get("type") == "system_init" and not self.model:
+            model = self._extract_model(event)
+            if model:
+                self.model = model
+                state_changed = True
+                log.info("instance %s: resolved default model to %s", self.title, model)
         self._history.append(event)
         if len(self._history) > HISTORY_CAP:
             del self._history[: len(self._history) - HISTORY_CAP]
@@ -162,7 +170,7 @@ class Instance:
                 log.exception("on_event hook failed for %s", self.title)
         for q in list(self._subscribers):
             q.put_nowait(event)
-        if session_changed and self._on_state_change is not None:
+        if state_changed and self._on_state_change is not None:
             try:
                 await self._on_state_change()
             except Exception:
@@ -177,6 +185,16 @@ class Instance:
             sid = data.get("session_id")
             if sid:
                 return sid
+        return None
+
+    @staticmethod
+    def _extract_model(event: Event) -> str | None:
+        """Extract model from system_init event data."""
+        data = event.get("data")
+        if isinstance(data, dict):
+            model = data.get("model")
+            if model:
+                return model
         return None
 
     def _translate(self, msg: Any) -> list[Event]:

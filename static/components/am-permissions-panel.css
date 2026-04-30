@@ -40,6 +40,31 @@
     max-width: 280px;
 }
 
+.permissions-panel .perm-model-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    font-size: var(--fs-sm);
+}
+
+.permissions-panel .model-current {
+    color: var(--text-dim);
+}
+
+.permissions-panel .model-current code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--bg-surface);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--green);
+}
+
+.permissions-panel .model-pending {
+    color: var(--yellow);
+    font-weight: 500;
+}
+
 .permissions-panel .perm-mode:focus,
 .permissions-panel .perm-model:focus {
     outline: none;

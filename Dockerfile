@@ -26,35 +26,58 @@ RUN apt-get update \
         gnupg \
         git \
         ca-certificates \
+        build-essential \
+        pkg-config \
+        libssl-dev \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Claude CLI (changes rarely) ------------------------------------------
-RUN npm install -g @anthropic-ai/claude-code
+# --- Create non-root user with /app as home ------------------------------
+ARG UID=1000
+ARG GID=1000
+RUN mkdir -p /app /var/lib/agent-manager \
+    && groupadd -g ${GID} agent \
+    && useradd -u ${UID} -g agent -s /bin/bash -d /app agent \
+    && chown agent:agent /app /var/lib/agent-manager
 
+# --- Rust toolchain (installed for agent user) ----------------------------
+USER agent
 WORKDIR /app
+ENV HOME=/app \
+    RUSTUP_HOME=/app/.rustup \
+    CARGO_HOME=/app/.cargo \
+    PATH="/app/.cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+
+# --- Claude CLI (changes rarely) ------------------------------------------
+USER root
+RUN npm install -g @anthropic-ai/claude-code
 
 # --- Python deps (rebuilds only when pyproject.toml changes) --------------
 # Install only the dependency list — not the project itself — so that
 # editing source or static files doesn't invalidate this layer.
-COPY pyproject.toml ./
+COPY --chown=agent:agent pyproject.toml ./
 RUN python -c "import tomllib; d = tomllib.load(open('pyproject.toml','rb')); print('\n'.join(d['project']['dependencies']))" \
         > /tmp/deps.txt \
     && pip install --no-cache-dir -r /tmp/deps.txt \
     && rm /tmp/deps.txt
 
 # --- Project source (rebuilds on src/ changes) ----------------------------
-COPY README.md ./
-COPY src/ ./src/
+COPY --chown=agent:agent README.md ./
+COPY --chown=agent:agent src/ ./src/
 RUN pip install --no-cache-dir --no-deps .
 
 # --- Static assets last (rebuilds only on static/ changes) ----------------
-COPY static/ ./static/
+COPY --chown=agent:agent static/ ./static/
 
 # --- Orchestrator binary (from Go build stage) -----------------------------
 COPY --from=go-build /build/am-orchestrator /usr/local/bin/
+
+# --- Switch to non-root user ----------------------------------------------
+USER agent
+WORKDIR /app
 
 EXPOSE 8787
 ENV AGENT_MANAGER_HOST=0.0.0.0 \

@@ -8,6 +8,7 @@ class AmPermissionsPanel extends HTMLElement {
     constructor() {
         super();
         this._title = null;
+        this._activeModel = null;  // Model from current running session
         this.workingDir = '';  // The instance's working directory
         this.permission_mode = 'acceptEdits';
         this.model = '';
@@ -25,6 +26,10 @@ class AmPermissionsPanel extends HTMLElement {
                 <select class="perm-model">
                     <option value="">SDK default</option>
                 </select>
+                <div class="perm-model-info">
+                    <span class="model-current" hidden>Current session: <code class="model-current-value"></code></span>
+                    <span class="model-pending" hidden>Pending restart</span>
+                </div>
             </div>
 
             <div class="perm-section">
@@ -68,6 +73,7 @@ class AmPermissionsPanel extends HTMLElement {
         modelEl.addEventListener('change', () => {
             this.model = modelEl.value;
             this.refreshDirty();
+            this.updateModelInfo();
         });
 
         modeEl.addEventListener('change', () => {
@@ -113,6 +119,7 @@ class AmPermissionsPanel extends HTMLElement {
             this.querySelector('.perm-mode').value = this.permission_mode;
             this.populateModelDropdown(models, this.model);
             this.renderDirs();
+            this.updateModelInfo();
 
             statusEl.textContent = '';
             this.refreshDirty();  // Update button state (always enabled)
@@ -231,6 +238,38 @@ class AmPermissionsPanel extends HTMLElement {
         return true;
     }
 
+    setActiveModel(model) {
+        this._activeModel = model || null;
+        this.updateModelInfo();
+    }
+
+    updateModelInfo() {
+        const currentEl = this.querySelector('.model-current');
+        const currentValueEl = this.querySelector('.model-current-value');
+        const pendingEl = this.querySelector('.model-pending');
+
+        const configuredModel = this.model;  // What's selected in dropdown (may be unsaved)
+        const activeModel = this._activeModel;  // What the running session uses
+
+        // Show current session model
+        if (activeModel) {
+            currentValueEl.textContent = activeModel;
+            currentEl.hidden = false;
+        } else {
+            currentEl.hidden = true;
+        }
+
+        // Show "pending restart" if configured differs from active
+        // (and there's an active session to compare against)
+        const configuredEffective = configuredModel || 'default';
+        const activeEffective = activeModel || '';
+        const modelsDiffer = activeModel && configuredModel && configuredModel !== activeModel;
+        const defaultChanged = activeModel && !configuredModel;  // Configured is "default" but we have an active model
+
+        // Only show pending if user explicitly changed to a different model
+        pendingEl.hidden = !modelsDiffer;
+    }
+
     async apply() {
         if (!this._title) return;
 
@@ -260,6 +299,10 @@ class AmPermissionsPanel extends HTMLElement {
 
             statusEl.textContent = 'applied · session restarted';
             applyBtn.classList.remove('dirty');
+
+            // Clear active model since session restarted - will be updated on next stream event
+            this._activeModel = null;
+            this.updateModelInfo();
         } catch (e) {
             statusEl.textContent = `error: ${e.message}`;
             applyBtn.disabled = false;
