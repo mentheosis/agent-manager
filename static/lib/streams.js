@@ -31,14 +31,18 @@ class Stream {
         this._lastSeq = -1;            // seq of the last event received; sent as ?since_seq= on reconnect
         this._reconnectDelay = 1000;   // Current backoff delay (ms)
         this._reconnectTimer = null;
+        this._connecting = false;      // Guard against concurrent connect() calls
     }
 
     connect() {
-        if (this.ws) return;
+        // Guard against concurrent connection attempts (race condition on spotty networks)
+        if (this.ws || this._connecting) return;
+        this._connecting = true;
         const url = eventsWebSocketUrl(this.title, this._lastSeq);
         this.ws = new WebSocket(url);
 
         this.ws.onopen = () => {
+            this._connecting = false;
             this._reconnectDelay = 1000;  // Reset backoff on successful connect
 
             if (this._everConnected) {
@@ -63,6 +67,7 @@ class Stream {
 
         this.ws.onclose = () => {
             this.ws = null;
+            this._connecting = false;
             if (!this.evicting) {
                 this.emit({ type: 'connection', status: 'closed' });
                 this._scheduleReconnect();

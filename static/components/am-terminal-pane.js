@@ -213,6 +213,8 @@ class AmTerminalPane extends HTMLElement {
             } else if (event.status === 'reconnected') {
                 // The stream has successfully reconnected and replayed history.
                 // Clear the terminal and re-render from the fresh event history.
+                // Preserve scroll position - only scroll to bottom if user was already there.
+                const wasNearBottom = this.isNearBottom();
                 const stream = streamManager.get(this._instance.title);
                 this.clearOutput();
                 this._replaying = true;
@@ -221,7 +223,9 @@ class AmTerminalPane extends HTMLElement {
                 }
                 this._replaying = false;
                 this.updateStatusBar(stream);
-                this.scrollToBottom();
+                if (wasNearBottom) {
+                    this.scrollToBottom();
+                }
             }
             return;
         }

@@ -87,7 +87,8 @@ class AmFileEditor extends HTMLElement {
             editor.disabled = false;
 
             if (this.activeIndex === PERMISSIONS_TAB_INDEX) {
-                // Stay on permissions tab
+                // Stay on permissions tab, but reload for new instance
+                await this.selectPermissions();
                 return;
             }
 
@@ -125,14 +126,30 @@ class AmFileEditor extends HTMLElement {
             tabsEl.appendChild(btn);
         }
 
-        // File tabs
-        for (let i = 0; i < this.files.length; i++) {
+        // Sort files: existing files first, then missing files
+        const sortedIndices = this.files
+            .map((f, i) => ({ file: f, index: i }))
+            .sort((a, b) => {
+                const aExists = a.file.exists !== false;
+                const bExists = b.file.exists !== false;
+                if (aExists && !bExists) return -1;
+                if (!aExists && bExists) return 1;
+                return 0;  // Preserve original order within each group
+            })
+            .map(item => item.index);
+
+        // File tabs (in sorted order)
+        for (const i of sortedIndices) {
             const f = this.files[i];
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'file-tab';
             btn.classList.toggle('active', i === this.activeIndex);
-            if (f.exists === false) btn.classList.add('missing');
+            if (f.exists === false) {
+                btn.classList.add('missing');
+            } else {
+                btn.classList.add('exists');
+            }
             btn.textContent = f.name;
             btn.addEventListener('click', () => this.selectFile(i));
             tabsEl.appendChild(btn);

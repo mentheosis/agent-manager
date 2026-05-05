@@ -37,7 +37,16 @@
     border-bottom-color: var(--accent);
 }
 
-.file-tab.missing { opacity: 0.5; font-style: italic; }
+.file-tab.exists { color: var(--green); }
+.file-tab.exists.active {
+    color: var(--green);
+    border-bottom-color: var(--green);
+}
+.file-tab.missing {
+    opacity: 0.5;
+    font-style: italic;
+    color: var(--text-dim);
+}
 .file-tab.dirty::after {
     content: " ●";
     color: var(--accent);
