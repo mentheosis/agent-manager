@@ -21,11 +21,11 @@ export async function fetchInstance(title) {
     return r.json();
 }
 
-export async function createInstance({ name, path, permission_mode, model, add_dirs }) {
+export async function createInstance({ name, path, permission_mode, model, add_dirs, settings_json }) {
     const r = await fetch(`${BASE}/instances`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, permission_mode, model, add_dirs }),
+        body: JSON.stringify({ name, path, permission_mode, model, add_dirs, settings_json }),
     });
     if (!r.ok) {
         const text = await r.text();
@@ -81,6 +81,14 @@ export async function sendPrompt(title, text) {
         body: JSON.stringify({ text }),
     });
     if (!r.ok) throw new Error(`Failed to send prompt: ${r.status}`);
+}
+
+export async function abortInstance(title) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/abort`, {
+        method: 'POST',
+    });
+    if (!r.ok) throw new Error(`Failed to abort: ${r.status}`);
+    return r.json();
 }
 
 export async function fetchDiff(title) {

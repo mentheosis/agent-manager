@@ -85,12 +85,50 @@ def _find_static_dir() -> Path | None:
     return None
 
 
+def _merge_settings_json(workdir: Path, settings: dict[str, Any]) -> None:
+    """Merge settings into .claude/settings.json, creating it if needed.
+
+    For `permissions.allow` and `permissions.deny`, arrays are merged (new
+    items added to existing). Other top-level keys are shallow-merged.
+    """
+    settings_dir = workdir / ".claude"
+    settings_file = settings_dir / "settings.json"
+
+    settings_dir.mkdir(parents=True, exist_ok=True)
+
+    existing: dict[str, Any] = {}
+    if settings_file.exists():
+        try:
+            existing = json.loads(settings_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    # Special handling for permissions - merge arrays
+    if "permissions" in settings:
+        new_perms = settings.pop("permissions")
+        existing_perms = existing.setdefault("permissions", {})
+        for key in ("allow", "deny"):
+            if key in new_perms:
+                existing_list = existing_perms.get(key, [])
+                # Add new items, avoiding duplicates
+                for item in new_perms[key]:
+                    if item not in existing_list:
+                        existing_list.append(item)
+                existing_perms[key] = existing_list
+
+    # Shallow merge remaining keys
+    merged = {**existing, **settings}
+    settings_file.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    log.info("merged settings into %s", settings_file)
+
+
 class CreateInstanceBody(BaseModel):
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     permission_mode: str = "acceptEdits"
     model: str | None = None
     add_dirs: list[str] = Field(default_factory=list)
+    settings_json: dict[str, Any] | None = None  # Settings to merge into .claude/settings.json
 
 
 class SendBody(BaseModel):
@@ -244,6 +282,38 @@ def build_app() -> FastAPI:
     async def list_instances() -> list[dict[str, Any]]:
         return [_summary(i) for i in registry.list()]
 
+    @app.get("/api/batch/scan")
+    async def scan_batch_directory(directory: str) -> dict[str, Any]:
+        """Scan a directory for YAML files and return parsed configs."""
+        import yaml
+
+        expanded = Path(directory).expanduser().resolve()
+        if not expanded.is_dir():
+            raise HTTPException(status_code=400, detail=f"Not a directory: {directory}")
+
+        files: list[dict[str, Any]] = []
+        for ext in ("*.yaml", "*.yml"):
+            for filepath in expanded.glob(ext):
+                entry: dict[str, Any] = {"filename": filepath.name, "path": str(filepath)}
+                try:
+                    content = filepath.read_text(encoding="utf-8")
+                    config = yaml.safe_load(content)
+                    if not isinstance(config, dict):
+                        entry["error"] = "Invalid YAML structure (expected object)"
+                    elif not config.get("name"):
+                        entry["error"] = "Missing required field: name"
+                    else:
+                        entry["config"] = config
+                except yaml.YAMLError as e:
+                    entry["error"] = f"YAML parse error: {e}"
+                except OSError as e:
+                    entry["error"] = f"Read error: {e}"
+                files.append(entry)
+
+        # Sort by filename
+        files.sort(key=lambda f: f["filename"])
+        return {"directory": str(expanded), "files": files}
+
     @app.post("/api/instances", status_code=201)
     async def create_instance(body: CreateInstanceBody) -> dict[str, Any]:
         try:
@@ -254,6 +324,14 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         except FileNotFoundError as e:
             raise HTTPException(status_code=400, detail=f"path not found: {e}")
+
+        # Merge settings_json into .claude/settings.json if provided
+        if body.settings_json:
+            try:
+                _merge_settings_json(Path(inst.path), body.settings_json)
+            except Exception as e:
+                log.warning("failed to merge settings.json for %s: %s", inst.title, e)
+
         return _summary(inst)
 
     @app.get("/api/instances/{title}")
@@ -481,6 +559,15 @@ def build_app() -> FastAPI:
         if not inst:
             raise HTTPException(status_code=404)
         await inst.send(body.text)
+        return {"ok": True}
+
+    @app.post("/api/instances/{title}/abort")
+    async def abort_instance(title: str) -> dict[str, Any]:
+        """Abort the current operation and restart the SDK client."""
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+        await inst.abort()
         return {"ok": True}
 
     @app.websocket("/api/instances/{title}/events")

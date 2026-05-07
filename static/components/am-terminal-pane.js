@@ -40,6 +40,7 @@ class AmTerminalPane extends HTMLElement {
                     <span class="totals-turns">0 turns</span>
                 </span>
             </div>
+            <div class="prompt-resize-handle" title="Drag to resize"></div>
             <form id="prompt-form">
                 <textarea
                     id="prompt-input"
@@ -47,6 +48,7 @@ class AmTerminalPane extends HTMLElement {
                     rows="3"
                     disabled></textarea>
                 <button type="submit" id="send-btn" disabled>Send</button>
+                <button type="button" id="cancel-btn" hidden>Cancel</button>
             </form>
         `;
 
@@ -64,6 +66,8 @@ class AmTerminalPane extends HTMLElement {
         const form = this.querySelector('#prompt-form');
         const input = this.querySelector('#prompt-input');
         const btn = this.querySelector('#send-btn');
+        const cancelBtn = this.querySelector('#cancel-btn');
+        const resizeHandle = this.querySelector('.prompt-resize-handle');
 
         form.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -75,6 +79,52 @@ class AmTerminalPane extends HTMLElement {
                 e.preventDefault();
                 this.submitPrompt();
             }
+        });
+
+        cancelBtn.addEventListener('click', () => this.cancelOperation());
+
+        // Resize handle - drag to resize textarea
+        let startY = 0;
+        let startHeight = 0;
+
+        const onMouseMove = (e) => {
+            const delta = startY - e.clientY;
+            const newHeight = Math.max(44, Math.min(400, startHeight + delta));
+            input.style.height = `${newHeight}px`;
+        };
+
+        const onMouseUp = () => {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            resizeHandle.classList.remove('dragging');
+        };
+
+        resizeHandle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            startY = e.clientY;
+            startHeight = input.offsetHeight;
+            resizeHandle.classList.add('dragging');
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        });
+
+        // Touch support for mobile
+        resizeHandle.addEventListener('touchstart', (e) => {
+            const touch = e.touches[0];
+            startY = touch.clientY;
+            startHeight = input.offsetHeight;
+            resizeHandle.classList.add('dragging');
+        }, { passive: true });
+
+        resizeHandle.addEventListener('touchmove', (e) => {
+            const touch = e.touches[0];
+            const delta = startY - touch.clientY;
+            const newHeight = Math.max(44, Math.min(400, startHeight + delta));
+            input.style.height = `${newHeight}px`;
+        }, { passive: true });
+
+        resizeHandle.addEventListener('touchend', () => {
+            resizeHandle.classList.remove('dragging');
         });
 
         // Listen for filter changes from toolbar
@@ -107,6 +157,23 @@ class AmTerminalPane extends HTMLElement {
             await api.sendPrompt(this._instance.title, text);
         } catch (err) {
             this.appendNote(`Error: ${err.message}`);
+        }
+    }
+
+    async cancelOperation() {
+        if (!this._instance) return;
+
+        const cancelBtn = this.querySelector('#cancel-btn');
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'Cancelling...';
+
+        try {
+            await api.abortInstance(this._instance.title);
+        } catch (err) {
+            this.appendNote(`Cancel failed: ${err.message}`);
+        } finally {
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = 'Cancel';
         }
     }
 
@@ -245,13 +312,16 @@ class AmTerminalPane extends HTMLElement {
         const spinner = this.querySelector('.spinner');
         const dot = this.querySelector('.status-dot');
         const text = this.querySelector('.status-text');
+        const cancelBtn = this.querySelector('#cancel-btn');
 
         if (status === 'running') {
             spinner.style.display = '';
             dot.style.display = 'none';
+            cancelBtn.hidden = false;
         } else {
             spinner.style.display = 'none';
             dot.style.display = '';
+            cancelBtn.hidden = true;
         }
 
         dot.className = `status-dot ${status}`;
@@ -631,6 +701,7 @@ class AmTerminalPane extends HTMLElement {
             case 'tool_result': return `tool · result`;
             case 'result': return `result${event.is_error ? ' (error)' : ''}`;
             case 'error': return 'error';
+            case 'aborted': return 'cancelled';
             case 'system_init': return 'system · init';
             default: return event.type;
         }
@@ -660,6 +731,7 @@ class AmTerminalPane extends HTMLElement {
                 ].filter(Boolean).join('\n');
             }
             case 'error':
+            case 'aborted':
                 return event.message ?? JSON.stringify(event);
             default:
                 return JSON.stringify(event, null, 2);

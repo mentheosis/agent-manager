@@ -105,6 +105,24 @@ class Instance:
                 pass
         self.status = "deleted"
 
+    async def abort(self) -> None:
+        """Abort the current operation and restart the SDK client.
+
+        This cancels any in-progress query but keeps the instance alive,
+        ready to accept new prompts. The conversation is preserved via session_id.
+        """
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("instance %s task ended with error during abort", self.title)
+        await self._publish({"type": "aborted", "message": "Operation cancelled by user"})
+        await self._set_status("creating")
+        self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
+
     async def reload_options(self) -> None:
         """Tear down and restart the SDK client with the current options.
 

@@ -7,7 +7,7 @@ import * as api from '../lib/api.js';
 class AmNewDialog extends HTMLElement {
     constructor() {
         super();
-        this._mode = 'agent';  // 'agent' or 'team'
+        this._mode = 'agent';  // 'agent' | 'team' | 'batch'
     }
 
     connectedCallback() {
@@ -27,18 +27,24 @@ class AmNewDialog extends HTMLElement {
                             <span class="mode-label">Team</span>
                             <span class="mode-desc">Orchestrated group</span>
                         </button>
+                        <button type="button" class="mode-btn" data-mode="batch">
+                            <span class="mode-icon">📁</span>
+                            <span class="mode-label">Batch</span>
+                            <span class="mode-desc">From YAML directory</span>
+                        </button>
                     </div>
 
                     <!-- Agent Form -->
                     <form id="agent-form" class="mode-form active">
                         <label>
                             Name
-                            <input name="name" required autocomplete="off" placeholder="My cool project">
-                            <small class="hint">Used as the display label. A snake_case ID is generated for storage.</small>
+                            <input name="name" autocomplete="off" placeholder="My cool project">
+                            <small class="hint">Used as the display label. Can be set in YAML instead.</small>
                         </label>
                         <label>
                             Working directory
-                            <input name="path" value="~" required autocomplete="off">
+                            <input name="path" value="~" autocomplete="off" placeholder="~/my-project">
+                            <small class="hint">Can be set in YAML instead.</small>
                         </label>
                         <label>
                             Permission mode
@@ -59,6 +65,21 @@ class AmNewDialog extends HTMLElement {
                             Additional allowed directories (one per line, optional)
                             <textarea name="add_dirs" rows="2" autocomplete="off" spellcheck="false" placeholder="/path/to/other-project"></textarea>
                         </label>
+                        <details class="yaml-config-section">
+                            <summary>Advanced Config (YAML)</summary>
+                            <textarea name="agent_yaml" class="yaml-input" rows="10" spellcheck="false" placeholder="# Optional YAML config (overrides form fields)
+name: my-agent
+path: /path/to/workspace
+permission_mode: acceptEdits
+model: claude-sonnet-4-20250514
+add_dirs:
+  - /path/to/other/repo
+permissions:
+  allow:
+    - 'Bash(npm *)'
+    - 'WebFetch'"></textarea>
+                            <div class="yaml-hint">Permissions are merged into .claude/settings.json</div>
+                        </details>
                         <menu>
                             <button type="button" class="btn-cancel">Cancel</button>
                             <button type="submit" class="btn-primary">Create Agent</button>
@@ -84,6 +105,26 @@ agents:
                         <menu>
                             <button type="button" class="btn-cancel">Cancel</button>
                             <button type="submit" class="btn-primary">Create Team</button>
+                        </menu>
+                    </form>
+
+                    <!-- Batch Form -->
+                    <form id="batch-form" class="mode-form">
+                        <p class="form-hint">Create one agent per YAML file in a directory:</p>
+                        <label>
+                            Directory containing YAML configs
+                            <input name="directory" autocomplete="off" placeholder="~/agent-configs" required>
+                            <small class="hint">Each .yaml or .yml file will create one agent</small>
+                        </label>
+                        <div id="batch-preview" class="batch-preview" hidden>
+                            <div class="batch-preview-header">Found <span class="batch-count">0</span> YAML files:</div>
+                            <ul class="batch-file-list"></ul>
+                        </div>
+                        <div id="batch-error" class="yaml-error"></div>
+                        <menu>
+                            <button type="button" class="btn-cancel">Cancel</button>
+                            <button type="button" class="btn-secondary batch-scan-btn">Scan Directory</button>
+                            <button type="submit" class="btn-primary" disabled>Create Agents</button>
                         </menu>
                     </form>
                 </div>
@@ -114,6 +155,15 @@ agents:
         this.querySelector('#team-form').addEventListener('submit', (e) => {
             e.preventDefault();
             this.createTeam();
+        });
+
+        // Batch form
+        this.querySelector('.batch-scan-btn').addEventListener('click', () => {
+            this.scanBatchDirectory();
+        });
+        this.querySelector('#batch-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.createBatch();
         });
 
         // Close on backdrop click
@@ -156,23 +206,71 @@ agents:
         const form = this.querySelector('#agent-form');
         const data = Object.fromEntries(new FormData(form));
         const addDirsRaw = data.add_dirs || '';
+        const agentYaml = data.agent_yaml || '';
         delete data.add_dirs;
+        delete data.agent_yaml;
 
         // Handle model - only include if set
-        const model = data.model || null;
+        let model = data.model || null;
         delete data.model;
 
-        const add_dirs = addDirsRaw
+        // Form values (can be overridden by YAML)
+        let name = data.name;
+        let path = data.path;
+        let permission_mode = data.permission_mode;
+        delete data.name;
+        delete data.path;
+        delete data.permission_mode;
+
+        let add_dirs = addDirsRaw
             .split(/\r?\n/)
             .map((l) => l.trim())
             .filter((l) => l.length > 0);
+
+        // Parse YAML config if provided (overrides form fields)
+        let settings_json = null;
+        if (agentYaml.trim()) {
+            try {
+                const config = this.parseAgentYaml(agentYaml);
+                // Override form fields with YAML values
+                if (config.name) name = config.name;
+                if (config.path) path = config.path;
+                if (config.permission_mode) permission_mode = config.permission_mode;
+                if (config.model) model = config.model;
+                if (config.add_dirs && Array.isArray(config.add_dirs)) {
+                    // Merge YAML add_dirs with form add_dirs
+                    add_dirs = [...new Set([...add_dirs, ...config.add_dirs])];
+                }
+                // Build settings_json from permissions if any were specified
+                const hasAllow = config.permissions?.allow?.length > 0;
+                const hasDeny = config.permissions?.deny?.length > 0;
+                if (hasAllow || hasDeny) {
+                    settings_json = { permissions: {} };
+                    if (hasAllow) settings_json.permissions.allow = config.permissions.allow;
+                    if (hasDeny) settings_json.permissions.deny = config.permissions.deny;
+                }
+            } catch (e) {
+                alert(`YAML parse error: ${e.message}`);
+                return;
+            }
+        }
+
+        // Validate required fields (from form or YAML)
+        if (!name || !name.trim()) {
+            alert('Name is required (in form or YAML)');
+            return;
+        }
+        if (!path || !path.trim()) {
+            alert('Working directory is required (in form or YAML)');
+            return;
+        }
 
         const submitBtn = form.querySelector('button[type="submit"]');
         submitBtn.disabled = true;
         submitBtn.textContent = 'Creating...';
 
         try {
-            const inst = await api.createInstance({ ...data, model, add_dirs });
+            const inst = await api.createInstance({ name, path, permission_mode, model, add_dirs, settings_json });
             this.close();
             form.reset();
 
@@ -311,6 +409,125 @@ agents:
         }
     }
 
+    async scanBatchDirectory() {
+        const form = this.querySelector('#batch-form');
+        const directory = form.querySelector('input[name="directory"]').value.trim();
+        const errorDiv = this.querySelector('#batch-error');
+        const previewDiv = this.querySelector('#batch-preview');
+        const fileList = this.querySelector('.batch-file-list');
+        const countSpan = this.querySelector('.batch-count');
+        const submitBtn = form.querySelector('button[type="submit"]');
+        const scanBtn = this.querySelector('.batch-scan-btn');
+
+        errorDiv.textContent = '';
+        previewDiv.hidden = true;
+        submitBtn.disabled = true;
+
+        if (!directory) {
+            errorDiv.textContent = 'Please enter a directory path';
+            return;
+        }
+
+        scanBtn.disabled = true;
+        scanBtn.textContent = 'Scanning...';
+
+        try {
+            const resp = await fetch(`/api/batch/scan?directory=${encodeURIComponent(directory)}`);
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || 'Failed to scan directory');
+            }
+            const data = await resp.json();
+            this._batchFiles = data.files || [];
+
+            if (this._batchFiles.length === 0) {
+                errorDiv.textContent = 'No .yaml or .yml files found in directory';
+                return;
+            }
+
+            // Show preview
+            countSpan.textContent = this._batchFiles.length;
+            fileList.innerHTML = '';
+            for (const f of this._batchFiles) {
+                const li = document.createElement('li');
+                li.innerHTML = `<code>${f.filename}</code> → <strong>${f.config?.name || '(no name)'}</strong>`;
+                if (f.error) {
+                    li.innerHTML += ` <span class="batch-file-error">⚠ ${f.error}</span>`;
+                }
+                fileList.appendChild(li);
+            }
+            previewDiv.hidden = false;
+
+            // Enable submit if we have valid files
+            const validFiles = this._batchFiles.filter(f => !f.error && f.config?.name);
+            submitBtn.disabled = validFiles.length === 0;
+            submitBtn.textContent = `Create ${validFiles.length} Agent${validFiles.length !== 1 ? 's' : ''}`;
+
+        } catch (e) {
+            errorDiv.textContent = e.message;
+        } finally {
+            scanBtn.disabled = false;
+            scanBtn.textContent = 'Scan Directory';
+        }
+    }
+
+    async createBatch() {
+        if (!this._batchFiles || this._batchFiles.length === 0) return;
+
+        const form = this.querySelector('#batch-form');
+        const errorDiv = this.querySelector('#batch-error');
+        const submitBtn = form.querySelector('button[type="submit"]');
+
+        const validFiles = this._batchFiles.filter(f => !f.error && f.config?.name);
+        if (validFiles.length === 0) {
+            errorDiv.textContent = 'No valid YAML configs to create';
+            return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Creating...';
+        errorDiv.textContent = '';
+
+        const created = [];
+        const errors = [];
+
+        try {
+            for (const f of validFiles) {
+                try {
+                    const config = f.config;
+                    const inst = await api.createInstance({
+                        name: config.name,
+                        path: config.path || '~',
+                        permission_mode: config.permission_mode || 'acceptEdits',
+                        model: config.model || null,
+                        add_dirs: config.add_dirs || [],
+                        settings_json: config.permissions ? { permissions: config.permissions } : null,
+                    });
+                    created.push(inst.title);
+                } catch (e) {
+                    errors.push(`${f.filename}: ${e.message}`);
+                }
+            }
+
+            if (created.length > 0) {
+                this.dispatchEvent(new CustomEvent('instance-created', {
+                    bubbles: true,
+                    detail: { title: created[0] }  // Select first created
+                }));
+            }
+
+            if (errors.length > 0) {
+                errorDiv.textContent = `Created ${created.length}, failed ${errors.length}: ${errors[0]}`;
+            } else {
+                this.close();
+                this._batchFiles = null;
+            }
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = `Create ${validFiles.length} Agent${validFiles.length !== 1 ? 's' : ''}`;
+        }
+    }
+
     /**
      * Simple YAML parser for our specific schema.
      */
@@ -376,7 +593,83 @@ agents:
             (value.startsWith("'") && value.endsWith("'"))) {
             return value.slice(1, -1);
         }
+        // Parse booleans
+        if (value === 'true') return true;
+        if (value === 'false') return false;
+        // Parse numbers
+        if (/^-?\d+$/.test(value)) return parseInt(value, 10);
+        if (/^-?\d+\.\d+$/.test(value)) return parseFloat(value);
         return value;
+    }
+
+    /**
+     * Parse YAML for agent config with nested permissions.
+     * Supports: model, add_dirs (list), permissions (object with allow/deny arrays)
+     */
+    parseAgentYaml(text) {
+        const result = { add_dirs: [], permissions: { allow: [], deny: [] } };
+        const lines = text.split('\n');
+        let currentSection = null;  // 'add_dirs' | 'permissions'
+        let currentPermKey = null;  // 'allow' | 'deny'
+
+        for (let line of lines) {
+            if (!line.trim() || line.trim().startsWith('#')) continue;
+
+            const indent = line.search(/\S/);
+            line = line.trim();
+
+            // Top-level fields
+            if (indent === 0 && line.includes(':')) {
+                const [key, ...valueParts] = line.split(':');
+                const keyName = key.trim();
+                const value = valueParts.join(':').trim();
+
+                if (keyName === 'add_dirs') {
+                    currentSection = 'add_dirs';
+                    currentPermKey = null;
+                    continue;
+                }
+                if (keyName === 'permissions') {
+                    currentSection = 'permissions';
+                    currentPermKey = null;
+                    continue;
+                }
+
+                currentSection = null;
+                currentPermKey = null;
+                result[keyName] = this.parseValue(value);
+                continue;
+            }
+
+            // add_dirs list items
+            if (currentSection === 'add_dirs' && line.startsWith('- ')) {
+                const path = line.substring(2).trim();
+                if (path) {
+                    result.add_dirs.push(this.parseValue(path));
+                }
+                continue;
+            }
+
+            // Permissions sub-keys (allow/deny)
+            if (currentSection === 'permissions' && indent === 2 && line.includes(':')) {
+                const [key, ...valueParts] = line.split(':');
+                const keyName = key.trim();
+                if (keyName === 'allow' || keyName === 'deny') {
+                    currentPermKey = keyName;
+                }
+                continue;
+            }
+
+            // Permissions list items
+            if (currentSection === 'permissions' && currentPermKey && line.startsWith('- ')) {
+                const perm = line.substring(2).trim();
+                if (perm) {
+                    result.permissions[currentPermKey].push(this.parseValue(perm));
+                }
+            }
+        }
+
+        return result;
     }
 
     async open(mode = 'agent') {
@@ -411,6 +704,13 @@ agents:
         this.querySelector('#agent-form').reset();
         this.querySelector('#team-yaml').value = '';
         this.querySelector('#yaml-error').textContent = '';
+        // Reset batch form
+        this.querySelector('#batch-form').reset();
+        this.querySelector('#batch-preview').hidden = true;
+        this.querySelector('#batch-error').textContent = '';
+        this.querySelector('#batch-form button[type="submit"]').disabled = true;
+        this.querySelector('#batch-form button[type="submit"]').textContent = 'Create Agents';
+        this._batchFiles = null;
     }
 }
 

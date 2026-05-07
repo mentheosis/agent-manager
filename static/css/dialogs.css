@@ -490,3 +490,119 @@ dialog #create-btn:hover { opacity: 0.85; }
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* YAML config section in agent form */
+.yaml-config-section {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    margin-top: 4px;
+}
+
+.yaml-config-section summary {
+    padding: 8px 12px;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+}
+
+.yaml-config-section summary:hover {
+    color: var(--text);
+}
+
+.yaml-config-section[open] summary {
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+}
+
+.yaml-config-section .yaml-input {
+    border: none;
+    border-radius: 0 0 6px 6px;
+    min-height: 140px;
+    resize: vertical;
+}
+
+.yaml-config-section .yaml-hint {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-highlight);
+    border-radius: 0 0 6px 6px;
+}
+
+/* Batch form styles */
+.batch-preview {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    margin-top: 8px;
+}
+
+.batch-preview-header {
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+
+.batch-preview-header .batch-count {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.batch-file-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.batch-file-list li {
+    padding: 4px 0;
+    font-size: var(--fs-sm);
+    border-bottom: 1px solid var(--border);
+}
+
+.batch-file-list li:last-child {
+    border-bottom: none;
+}
+
+.batch-file-list code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--text-dim);
+    background: var(--bg-surface);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
+.batch-file-list strong {
+    color: var(--text);
+}
+
+.batch-file-error {
+    color: var(--red);
+    font-size: var(--fs-xs);
+}
+
+.btn-secondary {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+
+.btn-secondary:hover {
+    border-color: var(--accent);
+}
+
+.btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
