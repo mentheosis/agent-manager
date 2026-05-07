@@ -171,6 +171,10 @@ class InstanceTypeBody(BaseModel):
     agent_preset: str | None = None  # "coder" | "researcher" | "orchestrator"
 
 
+class FolderBody(BaseModel):
+    folder: str | None = None  # Folder name, or None to remove from folder
+
+
 def _summary(inst: Instance) -> dict[str, Any]:
     return {
         "title": inst.title,
@@ -187,6 +191,8 @@ def _summary(inst: Instance) -> dict[str, Any]:
         "children": list(inst.children or []),
         "agent_preset": inst.agent_preset,
         "task": inst.task,
+        # Organization
+        "folder": inst.folder,
     }
 
 
@@ -414,6 +420,19 @@ def build_app() -> FastAPI:
         if inst is None:
             raise HTTPException(status_code=404)
         return _summary(inst)
+
+    @app.patch("/api/instances/{title}/folder")
+    async def update_folder(title: str, body: FolderBody) -> dict[str, Any]:
+        """Update the folder for an instance (sidebar organization)."""
+        inst = await registry.update_folder(title, body.folder)
+        if inst is None:
+            raise HTTPException(status_code=404)
+        return _summary(inst)
+
+    @app.get("/api/folders")
+    async def list_folders() -> list[str]:
+        """Get list of all folder names."""
+        return registry.get_folders()
 
     # --- Orchestrator process management --------------------------------------
 

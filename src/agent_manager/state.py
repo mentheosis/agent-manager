@@ -73,6 +73,7 @@ class Registry:
                 children=list(rec.children or []),
                 agent_preset=rec.agent_preset,
                 task=rec.task,
+                folder=rec.folder,
             )
             inst._history = await self.persistence.load_events(rec.title)
             # Restore _next_seq so events published in this run never collide
@@ -348,6 +349,24 @@ class Registry:
         await self._save_records()
         return inst
 
+    async def update_folder(self, title: str, folder: str | None) -> Instance | None:
+        """Update the folder for an instance (for sidebar organization)."""
+        async with self._lock:
+            inst = self._instances.get(title)
+            if inst is None:
+                return None
+            inst.folder = folder.strip() if folder else None
+        await self._save_records()
+        return inst
+
+    def get_folders(self) -> list[str]:
+        """Get list of unique folder names across all instances."""
+        folders: set[str] = set()
+        for inst in self._instances.values():
+            if inst.folder:
+                folders.add(inst.folder)
+        return sorted(folders)
+
     async def _save_records(self) -> None:
         if self.persistence is None:
             return
@@ -367,6 +386,7 @@ class Registry:
                     children=list(i.children or []),
                     agent_preset=i.agent_preset,
                     task=i.task,
+                    folder=i.folder,
                 )
                 for i in self._instances.values()
             ]

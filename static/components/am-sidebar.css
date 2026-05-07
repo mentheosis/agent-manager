@@ -463,3 +463,199 @@
         gap: 16px;
     }
 }
+
+/* ── Folder styles ───────────────────────────────────────────────────────── */
+
+.folder-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 2px;
+    color: var(--text-dim);
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+}
+
+.folder-item:hover {
+    background: var(--bg-highlight);
+    color: var(--text);
+}
+
+.folder-toggle {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    cursor: pointer;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    transition: transform 0.15s ease;
+    flex-shrink: 0;
+}
+
+.folder-toggle.expanded {
+    transform: rotate(90deg);
+}
+
+.folder-icon {
+    font-size: var(--fs-md);
+    flex-shrink: 0;
+}
+
+.folder-name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.folder-count {
+    font-size: var(--fs-xs);
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    padding: 1px 6px;
+    border-radius: 10px;
+    flex-shrink: 0;
+}
+
+/* Drop target for folder */
+.folder-item.drop-target-folder {
+    background: rgba(122, 162, 247, 0.15);
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 12px rgba(122, 162, 247, 0.4);
+}
+
+.folder-item.drop-invalid {
+    background: rgba(247, 118, 142, 0.1);
+    border: 2px dashed var(--red);
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Instance inside a folder - indented */
+.instance-item[data-folder]:not([data-folder=""]) {
+    margin-left: 16px;
+}
+
+/* Folder drop zone - appears at end of folder contents */
+.folder-drop-zone {
+    height: 8px;
+    margin: 2px 16px;
+    border-radius: 4px;
+    background: transparent;
+    border: 2px dashed transparent;
+    transition: all 0.15s ease;
+}
+
+.folder-drop-zone.drop-active {
+    height: 24px;
+    background: rgba(122, 162, 247, 0.15);
+    border-color: var(--accent);
+    box-shadow: 0 0 8px rgba(122, 162, 247, 0.3);
+}
+
+.folder-drop-zone.drop-invalid {
+    background: rgba(247, 118, 142, 0.1);
+    border-color: var(--red);
+    cursor: not-allowed;
+}
+
+/* Folder exit zone - for dragging items OUT of a folder */
+.folder-exit-zone {
+    display: none;
+    height: 44px;
+    margin: 4px 12px 8px 12px;
+    border-radius: 6px;
+    background: var(--bg-surface);
+    border: 2px dashed var(--border);
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+/* Only show when dragging an item from this folder */
+.folder-exit-zone.visible {
+    display: block;
+}
+
+.folder-exit-zone::after {
+    content: 'Drop here to remove from folder';
+    display: block;
+    text-align: center;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    line-height: 40px;
+}
+
+.folder-exit-zone.drop-active {
+    background: var(--bg-highlight);
+    border-color: var(--accent);
+}
+
+.folder-exit-zone.drop-active::after {
+    color: var(--text);
+}
+
+/* ── Context menu ────────────────────────────────────────────────────────── */
+
+.context-menu {
+    position: fixed;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    min-width: 180px;
+    z-index: 1000;
+    padding: 4px 0;
+}
+
+.context-menu[hidden] {
+    display: none;
+}
+
+.context-menu-header {
+    padding: 6px 12px;
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.context-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: var(--fs-sm);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.context-menu-item:hover {
+    background: var(--bg-highlight);
+}
+
+.context-menu-item.active {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.context-menu-item[hidden] {
+    display: none;
+}
+
+.context-menu-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+}

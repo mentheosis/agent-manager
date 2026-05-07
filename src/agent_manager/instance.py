@@ -45,6 +45,8 @@ class Instance:
     children: list[str] = field(default_factory=list)  # Titles of child instances
     agent_preset: str | None = None  # "coder" | "researcher" | "orchestrator"
     task: str | None = None  # Task description for loop instances
+    # Organization
+    folder: str | None = None  # Folder name for grouping in sidebar
 
     _task: asyncio.Task | None = field(default=None, repr=False)
     _inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue, repr=False)

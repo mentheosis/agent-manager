@@ -37,6 +37,8 @@ class InstanceRecord:
     children: list[str] = None  # type: ignore[assignment]
     agent_preset: str | None = None
     task: str | None = None
+    # Organization
+    folder: str | None = None
 
     def __post_init__(self) -> None:
         if self.add_dirs is None:
@@ -59,6 +61,7 @@ class InstanceRecord:
             "children": list(self.children or []),
             "agent_preset": self.agent_preset,
             "task": self.task,
+            "folder": self.folder,
         }
 
     @classmethod
@@ -77,6 +80,7 @@ class InstanceRecord:
             children=list(d.get("children") or []),
             agent_preset=d.get("agent_preset"),
             task=d.get("task"),
+            folder=d.get("folder"),
         )
 
 

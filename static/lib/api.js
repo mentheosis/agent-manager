@@ -186,3 +186,19 @@ export async function updateTask(title, task) {
     if (!r.ok) throw new Error(`Failed to update task: ${r.status}`);
     return r.json();
 }
+
+export async function updateFolder(title, folder) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/folder`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder }),
+    });
+    if (!r.ok) throw new Error(`Failed to update folder: ${r.status}`);
+    return r.json();
+}
+
+export async function fetchFolders() {
+    const r = await fetch(`${BASE}/folders`);
+    if (!r.ok) return [];
+    return r.json();
+}
