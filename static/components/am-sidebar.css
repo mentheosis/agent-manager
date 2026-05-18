@@ -186,17 +186,24 @@
 }
 
 /* Drag-to-reorder */
-.instance-item[draggable="true"] { user-select: none; }
-.instance-item.dragging { opacity: 0.35; }
+.instance-item[draggable="true"],
+.folder-item[draggable="true"] { user-select: none; }
+
+.instance-item.dragging,
+.folder-item.dragging { opacity: 0.35; }
 
 /* Drop indicator - blue line showing where item will be placed */
 .instance-item.drop-before,
-.instance-item.drop-after {
+.instance-item.drop-after,
+.folder-item.drop-before,
+.folder-item.drop-after {
     position: relative;
 }
 
 .instance-item.drop-before::before,
-.instance-item.drop-after::after {
+.instance-item.drop-after::after,
+.folder-item.drop-before::before,
+.folder-item.drop-after::after {
     content: '';
     position: absolute;
     left: 0;
@@ -207,11 +214,13 @@
     box-shadow: 0 0 6px var(--accent);
 }
 
-.instance-item.drop-before::before {
+.instance-item.drop-before::before,
+.folder-item.drop-before::before {
     top: -2px;
 }
 
-.instance-item.drop-after::after {
+.instance-item.drop-after::after,
+.folder-item.drop-after::after {
     bottom: -2px;
 }
 

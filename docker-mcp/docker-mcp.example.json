@@ -1,0 +1,41 @@
+{
+  "_comment": "Example docker-mcp config. Copy to config.json and edit paths.",
+
+  "listen": "127.0.0.1:9090",
+  "auth_token_env": "DOCKER_MCP_TOKEN",
+  "log_dir": "~/.cache/docker-mcp/logs",
+  "max_concurrent_per_profile": 1,
+  "shell": ["zsh", "-l"],
+  "inherit_env": true,
+
+  "profiles": [
+    {
+      "name": "build",
+      "description": "Build the agent-manager image.",
+      "cwd": "~/wrk/agent_manager",
+      "script": "./docker-mcp/scripts/build.sh",
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "up",
+      "description": "Bring up the agent-manager stack with a fresh build.",
+      "cwd": "~/wrk/agent_manager",
+      "script": "./docker-mcp/scripts/up.sh",
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "down",
+      "description": "Tear down the agent-manager stack.",
+      "cwd": "~/wrk/agent_manager",
+      "script": "./docker-mcp/scripts/down.sh",
+      "timeout_seconds": 120
+    },
+    {
+      "name": "logs",
+      "description": "Tail the last 200 lines of the agent-manager container logs.",
+      "cwd": "~/wrk/agent_manager",
+      "script": "./docker-mcp/scripts/logs.sh",
+      "timeout_seconds": 60
+    }
+  ]
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -72,6 +73,21 @@ class Instance:
             opts["add_dirs"] = list(self.add_dirs)
         if self.model:
             opts["model"] = self.model
+
+        # Add docker-mcp server if configured via env vars
+        docker_mcp_url = os.environ.get("DOCKER_MCP_URL")
+        docker_mcp_token = os.environ.get("DOCKER_MCP_TOKEN")
+        if docker_mcp_url and docker_mcp_token:
+            opts["mcp_servers"] = {
+                "docker": {
+                    "type": "http",
+                    "url": docker_mcp_url.rstrip("/") + "/",
+                    "headers": {
+                        "Authorization": f"Bearer {docker_mcp_token}",
+                    },
+                },
+            }
+
         options = ClaudeAgentOptions(**opts)
         log.info("instance %s: starting SDK client (session_id=%s)", self.title, self.session_id)
         try:

@@ -18,3 +18,7 @@ state.json
 # Per-developer docker-compose overrides (mount your own host paths)
 docker-compose.local.yml
 docker-compose.override.yml
+
+# docker-mcp (host-side binary and user config)
+docker-mcp/am-docker-mcp
+docker-mcp/config.json

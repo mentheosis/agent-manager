@@ -363,33 +363,105 @@ class AmSidebar extends HTMLElement {
             this.onDragEnd();
         });
 
-        // Make folder a drop target
+        // Make folder a drop target with zones: top edge (before), center (into), bottom edge (after)
         item.addEventListener('dragover', (e) => {
             if (!this._draggedItem) return;
             e.preventDefault();
             e.stopPropagation();
-            // Can't drop teams into folders
-            if (this._draggedItem.instance_type === 'loop') {
-                item.classList.add('drop-invalid');
-                return;
+
+            // Clear previous indicators
+            item.classList.remove('drop-target-folder', 'drop-before', 'drop-after', 'drop-invalid');
+
+            const rect = item.getBoundingClientRect();
+            const zoneHeight = rect.height * 0.3;
+            const y = e.clientY - rect.top;
+
+            if (y < zoneHeight) {
+                // Top edge - reorder before folder
+                item.classList.add('drop-before');
+                this._dropMode = 'reorder-before-folder';
+            } else if (y > rect.height - zoneHeight) {
+                // Bottom edge - reorder after folder
+                item.classList.add('drop-after');
+                this._dropMode = 'reorder-after-folder';
+            } else {
+                // Center - drop into folder
+                if (this._draggedItem.instance_type === 'loop') {
+                    item.classList.add('drop-invalid');
+                    this._dropMode = null;
+                } else {
+                    item.classList.add('drop-target-folder');
+                    this._dropMode = 'folder';
+                }
             }
-            item.classList.add('drop-target-folder');
-            this._dropMode = 'folder';
         });
 
         item.addEventListener('dragleave', () => {
-            item.classList.remove('drop-target-folder', 'drop-invalid');
+            item.classList.remove('drop-target-folder', 'drop-before', 'drop-after', 'drop-invalid');
         });
 
         item.addEventListener('drop', async (e) => {
             e.preventDefault();
             e.stopPropagation();
-            item.classList.remove('drop-target-folder', 'drop-invalid');
 
-            if (!this._draggedItem || this._draggedItem.instance_type === 'loop') return;
+            const dropMode = this._dropMode;
+            const draggedItem = this._draggedItem;
+            const draggedTitle = draggedItem?.title;
+            const draggedFolder = draggedItem?.folder;
+            const draggedType = draggedItem?.instance_type;
+
+            // Clear drag state early
+            item.classList.remove('drop-target-folder', 'drop-before', 'drop-after', 'drop-invalid');
+            this.onDragEnd();
+
+            if (!draggedItem) return;
+
+            // Handle reorder before/after folder
+            if (dropMode === 'reorder-before-folder' || dropMode === 'reorder-after-folder') {
+                // Find the first/last instance in this folder to determine position
+                const folderInstances = this._instances.filter(i => i.folder === name && !i.parent);
+                if (folderInstances.length === 0) return;
+
+                const anchorTitle = dropMode === 'reorder-before-folder'
+                    ? folderInstances[0].title
+                    : folderInstances[folderInstances.length - 1].title;
+
+                // Remove from any folder - dropping before/after a folder means outside of it
+                if (draggedFolder) {
+                    try {
+                        await api.updateFolder(draggedTitle, null);
+                    } catch (err) {
+                        console.error('Failed to remove from folder', err);
+                        return;
+                    }
+                }
+
+                // Reorder
+                const titles = this._instances.map(i => i.title);
+                const fromIndex = titles.indexOf(draggedTitle);
+                let toIndex = titles.indexOf(anchorTitle);
+
+                if (fromIndex === -1 || toIndex === -1) return;
+
+                titles.splice(fromIndex, 1);
+                toIndex = titles.indexOf(anchorTitle);
+                const insertIndex = dropMode === 'reorder-before-folder' ? toIndex : toIndex + 1;
+                titles.splice(insertIndex, 0, draggedTitle);
+
+                try {
+                    await api.reorderInstances(titles);
+                    this.dispatchEvent(new CustomEvent('instances-reordered', { bubbles: true }));
+                } catch (err) {
+                    console.error('Failed to reorder', err);
+                }
+                return;
+            }
+
+            // Handle drop into folder
+            if (draggedType === 'loop') return;
 
             try {
-                await api.updateFolder(this._draggedItem.title, name);
+                await api.updateFolder(draggedTitle, name);
                 this.dispatchEvent(new CustomEvent('instances-reordered', { bubbles: true }));
             } catch (err) {
                 console.error('Failed to move to folder', err);
