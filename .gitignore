@@ -22,3 +22,8 @@ docker-compose.override.yml
 # docker-mcp (host-side binary and user config)
 docker-mcp/am-docker-mcp
 docker-mcp/config.json
+
+# Local-only example configs, host-specific scripts, and ngrok policy
+config_examples/
+docker-mcp/scripts/
+ngrok-policy.yml
