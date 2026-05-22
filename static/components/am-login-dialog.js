@@ -9,6 +9,7 @@ class AmLoginDialog extends HTMLElement {
         super();
         this.sessionId = null;
         this.ws = null;
+        this._doneHandling = false;
     }
 
     connectedCallback() {
@@ -16,7 +17,7 @@ class AmLoginDialog extends HTMLElement {
             <dialog id="login-dialog">
                 <h2>Authenticate Claude Code</h2>
                 <p class="hint">
-                    Running <code>claude login</code> inside the container. On first run you'll see
+                    Running <code>claude auth login</code> inside the container. On first run you'll see
                     the setup wizard (theme picker, folder trust) - use Enter / arrow keys below to
                     drive it. Once the authorization URL appears, open it in your browser, copy the
                     code Anthropic shows, and paste it below.
@@ -30,7 +31,7 @@ class AmLoginDialog extends HTMLElement {
                         <button type="button" class="key-btn" data-key="[C">&#x2192;</button>
                         <button type="button" class="key-btn key-enter" data-key="\\r">Enter</button>
                     </div>
-                    <form id="login-form" method="dialog">
+                    <form id="login-form">
                         <input
                             name="text"
                             id="login-text"
@@ -88,13 +89,18 @@ class AmLoginDialog extends HTMLElement {
 
         output.textContent = '';
         input.value = '';
+        input.disabled = true;
+        this.querySelector('#login-submit').disabled = true;
 
         this.querySelector('#login-dialog').showModal();
-        input.focus();
 
         try {
             const { id } = await api.startLogin();
             this.sessionId = id;
+            this._doneHandling = false;
+            input.disabled = false;
+            this.querySelector('#login-submit').disabled = false;
+            input.focus();
 
             this.ws = new WebSocket(api.loginWebSocketUrl(id));
 
@@ -104,14 +110,7 @@ class AmLoginDialog extends HTMLElement {
                     if (msg.type === 'output') {
                         this.appendOutput(msg.text);
                     } else if (msg.type === 'done') {
-                        this.appendOutput(`\n[login process exited, code ${msg.returncode}]\n`);
-                        this.ws = null;
-                        this.sessionId = null;
-
-                        setTimeout(() => {
-                            this.dispatchEvent(new CustomEvent('auth-changed', { bubbles: true }));
-                            this.close();
-                        }, 200);
+                        this.handleDone(msg.returncode);
                     }
                 } catch (err) {
                     console.error('Bad login event', err, ev.data);
@@ -123,7 +122,43 @@ class AmLoginDialog extends HTMLElement {
             };
         } catch (err) {
             this.appendOutput(`\n[error] failed to start login: ${err.message}\n`);
+            input.disabled = false;
+            this.querySelector('#login-submit').disabled = false;
         }
+    }
+
+    async handleDone(returncode) {
+        if (this._doneHandling) return;
+        this._doneHandling = true;
+
+        const input = this.querySelector('#login-text');
+        const submit = this.querySelector('#login-submit');
+
+        input.disabled = true;
+        submit.disabled = true;
+        this.appendOutput(`\n[login process exited, code ${returncode}]\n`);
+        this.ws = null;
+        this.sessionId = null;
+
+        let status = { authed: false };
+        try {
+            status = await api.checkAuth();
+        } catch (err) {
+            this.appendOutput(`\n[error] failed to check auth status: ${err.message}\n`);
+        }
+
+        this.dispatchEvent(new CustomEvent('auth-changed', { bubbles: true }));
+
+        if (status.authed) {
+            this.appendOutput('\n[authenticated]\n');
+            setTimeout(() => this.close(), 200);
+            return;
+        }
+
+        const detail = status.auth_method || status.api_provider
+            ? ` (${status.auth_method || 'unknown'} / ${status.api_provider || 'unknown'})`
+            : '';
+        this.appendOutput(`\n[not authenticated${detail}] Start login again to retry.\n`);
     }
 
     close() {
@@ -201,9 +236,11 @@ class AmLoginDialog extends HTMLElement {
 
     async submitText() {
         const input = this.querySelector('#login-text');
-        const text = input.value;
+        const text = input.value.trim();
+        if (!text) return;
         input.value = '';
         await this.sendInput(text + '\r');
+        input.focus();
     }
 }
 

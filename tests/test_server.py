@@ -65,6 +65,22 @@ def test_auth_status_returns_authed_field() -> None:
         assert isinstance(body["authed"], bool)
 
 
+def test_claude_login_command_uses_auth_subcommand() -> None:
+    from agent_manager.auth import LOGIN_COMMAND
+
+    assert LOGIN_COMMAND == ("claude", "auth", "login")
+
+
+def test_parse_claude_auth_status() -> None:
+    from agent_manager.auth import _parse_auth_status
+
+    assert _parse_auth_status('{"loggedIn": true, "authMethod": "claudeai"}') == {
+        "loggedIn": True,
+        "authMethod": "claudeai",
+    }
+    assert _parse_auth_status("not json") == {}
+
+
 def test_slugify_basic_cases() -> None:
     from agent_manager.state import slugify
 

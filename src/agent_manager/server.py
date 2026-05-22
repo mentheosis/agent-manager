@@ -725,10 +725,7 @@ def build_app() -> FastAPI:
 
     @app.get("/api/auth/status")
     async def auth_status() -> dict[str, Any]:
-        return {
-            "authed": AuthRegistry.is_authed(),
-            "credentials_path": AuthRegistry.credentials_path(),
-        }
+        return AuthRegistry.status()
 
     @app.post("/api/auth/login", status_code=201)
     async def auth_login_start() -> dict[str, Any]:

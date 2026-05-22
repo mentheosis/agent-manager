@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import pty
+import shutil
 import signal
+import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +18,33 @@ log = logging.getLogger(__name__)
 AuthEvent = dict[str, Any]
 
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+LOGIN_COMMAND = ("claude", "auth", "login")
+
+
+def _parse_auth_status(raw: str) -> dict[str, Any]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _claude_auth_status() -> dict[str, Any]:
+    """Return `claude auth status --json` output when the CLI is available."""
+    if shutil.which("claude") is None:
+        return {}
+    try:
+        proc = subprocess.run(
+            ["claude", "auth", "status", "--json"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return _parse_auth_status(proc.stdout)
 
 
 @dataclass
@@ -40,8 +70,7 @@ class LoginSession:
         self._master_fd = master_fd
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                "claude",
-                "login",
+                *LOGIN_COMMAND,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
@@ -134,7 +163,21 @@ class AuthRegistry:
 
     @staticmethod
     def is_authed() -> bool:
+        status = _claude_auth_status()
+        if "loggedIn" in status:
+            return bool(status.get("loggedIn"))
         return CREDENTIALS_PATH.exists()
+
+    @staticmethod
+    def status() -> dict[str, Any]:
+        status = _claude_auth_status()
+        authed = bool(status.get("loggedIn")) if "loggedIn" in status else CREDENTIALS_PATH.exists()
+        return {
+            "authed": authed,
+            "credentials_path": str(CREDENTIALS_PATH),
+            "auth_method": status.get("authMethod"),
+            "api_provider": status.get("apiProvider"),
+        }
 
     @staticmethod
     def credentials_path() -> str:

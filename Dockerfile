@@ -37,10 +37,10 @@ RUN apt-get update \
 # --- Create non-root user with /app as home ------------------------------
 ARG UID=1000
 ARG GID=1000
-RUN mkdir -p /app /var/lib/agent-manager \
+RUN mkdir -p /app/.claude/backups /var/lib/agent-manager \
     && groupadd -g ${GID} agent \
     && useradd -u ${UID} -g agent -s /bin/bash -d /app agent \
-    && chown agent:agent /app /var/lib/agent-manager
+    && chown -R agent:agent /app /var/lib/agent-manager
 
 # --- Rust toolchain (installed for agent user) ----------------------------
 USER agent
