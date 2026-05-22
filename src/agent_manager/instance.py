@@ -5,6 +5,7 @@ import datetime as dt
 import logging
 import os
 from dataclasses import dataclass, field
+from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable
 
 from claude_agent_sdk import (
@@ -50,7 +51,7 @@ class Instance:
     folder: str | None = None  # Folder name for grouping in sidebar
 
     _task: asyncio.Task | None = field(default=None, repr=False)
-    _inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue, repr=False)
+    _inbox: asyncio.Queue[str | dict] = field(default_factory=asyncio.Queue, repr=False)
     _history: list[Event] = field(default_factory=list, repr=False)
     _next_seq: int = field(default=0, repr=False)  # Monotonic counter stamped on every event
     _subscribers: list[asyncio.Queue[Event]] = field(default_factory=list, repr=False)
@@ -94,15 +95,46 @@ class Instance:
             async with ClaudeSDKClient(options=options) as client:
                 await self._set_status("ready")
                 while True:
-                    prompt = await self._inbox.get()
+                    message = await self._inbox.get()
+                    log.info("instance %s: received message from inbox (type=%s)",
+                             self.title, type(message).__name__)
                     await self._set_status("running")
-                    await self._publish({"type": "user_prompt", "text": prompt})
 
-                    await client.query(prompt)
-                    async for msg in client.receive_response():
+                    # Handle both simple text and multimodal messages
+                    if isinstance(message, dict):
+                        text = message.get("text", "")
+                        images = message.get("images", [])
+                        log.info("instance %s: multimodal message with %d images, text=%d chars",
+                                 self.title, len(images), len(text))
+                        prompt = self._build_multimodal_content(text, images)
+                        # Publish with images for display in UI
+                        await self._publish({
+                            "type": "user_prompt",
+                            "text": text,
+                            "images": images,  # [{media_type, data}, ...]
+                        })
+                    else:
+                        prompt = message
+                        await self._publish({"type": "user_prompt", "text": prompt})
+
+                    log.info("instance %s: calling client.query() with prompt type=%s",
+                             self.title, type(prompt).__name__)
+                    try:
+                        await client.query(prompt)
+                    except Exception as e:
+                        log.exception("instance %s: client.query() failed: %s", self.title, e)
+                        raise
+                    log.info("instance %s: client.query() returned, calling receive_response()", self.title)
+                    response_iter = client.receive_response()
+                    log.info("instance %s: got response iterator, starting iteration", self.title)
+                    msg_count = 0
+                    async for msg in response_iter:
+                        msg_count += 1
+                        log.info("instance %s: received msg #%d type=%s", self.title, msg_count, type(msg).__name__)
                         for event in self._translate(msg):
                             await self._publish(event)
 
+                    log.info("instance %s: response complete after %d messages", self.title, msg_count)
                     await self._set_status("ready")
         except asyncio.CancelledError:
             raise
@@ -111,8 +143,57 @@ class Instance:
             await self._set_status("error")
             await self._publish({"type": "error", "message": f"{type(e).__name__}: {e}"})
 
-    async def send(self, text: str) -> None:
-        await self._inbox.put(text)
+    async def send(self, text: str, images: list[dict] | None = None) -> None:
+        """Send a message to the instance.
+
+        Args:
+            text: The text message
+            images: Optional list of images, each with {media_type, data} where
+                    data is base64-encoded image content
+        """
+        if images:
+            # Multimodal message - pass as dict
+            await self._inbox.put({"text": text, "images": images})
+        else:
+            # Simple text message
+            await self._inbox.put(text)
+
+    async def _build_multimodal_content(
+        self, text: str, images: list[dict]
+    ) -> "AsyncIterator[dict]":
+        """Build an async iterator for streaming input mode with images.
+
+        The SDK expects messages wrapped as:
+        {"type": "user", "message": {"role": "user", "content": [...]}}
+
+        See: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
+        """
+        # Build content array: images first, then text
+        content: list[dict] = []
+        for img in images:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img["media_type"],
+                    "data": img["data"],
+                },
+            })
+        if text:
+            content.append({"type": "text", "text": text})
+
+        log.info("_build_multimodal_content: yielding user message with %d content blocks", len(content))
+
+        # Yield the properly wrapped message
+        yield {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": content,
+            },
+        }
+
+        log.info("_build_multimodal_content: generator exhausted")
 
     async def stop(self) -> None:
         if self._task and not self._task.done():

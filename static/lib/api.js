@@ -74,11 +74,15 @@ export async function updatePermissions(title, { permission_mode, model, add_dir
     return r.json();
 }
 
-export async function sendPrompt(title, text) {
+export async function sendPrompt(title, text, images = null) {
+    const body = { text };
+    if (images && images.length > 0) {
+        body.images = images;  // [{media_type: "image/png", data: "base64..."}]
+    }
     const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`Failed to send prompt: ${r.status}`);
 }

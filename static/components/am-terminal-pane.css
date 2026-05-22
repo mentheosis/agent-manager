@@ -461,6 +461,7 @@
 /* Prompt form */
 #prompt-form {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     padding: 12px 16px;
     /* Pull padding down to clear the phone's home indicator / gesture bar */
@@ -552,3 +553,110 @@
 #output-area.hide-result .event-result { display: none; }
 #output-area.hide-system_init .event-system_init { display: none; }
 #output-area.hide-error .event-error { display: none; }
+
+/* Image preview for pasted images */
+#image-preview-area {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+    padding: 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    border: 1px solid var(--border);
+}
+
+#image-preview-area[hidden] {
+    display: none;
+}
+
+.image-preview-item {
+    position: relative;
+    display: inline-block;
+}
+
+.image-preview-item img {
+    max-width: 120px;
+    max-height: 80px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    object-fit: cover;
+}
+
+.image-remove-btn {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: none;
+    background: var(--red);
+    color: white;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+.image-remove-btn:hover {
+    opacity: 0.8;
+}
+
+/* User prompt images (in chat history) */
+.user-prompt-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    width: 100%;
+}
+
+.user-prompt-image {
+    max-width: 150px;
+    max-height: 100px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    object-fit: contain;
+    background: var(--bg);
+    cursor: pointer;
+    transition: transform 0.15s ease;
+}
+
+.user-prompt-image:hover {
+    transform: scale(1.05);
+    border-color: var(--accent);
+}
+
+/* Image modal (lightbox) */
+.image-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.image-modal[hidden] {
+    display: none;
+}
+
+.image-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+}
+
+.image-modal-img {
+    position: relative;
+    max-width: 90vw;
+    max-height: 90vh;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    object-fit: contain;
+}

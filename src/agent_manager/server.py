@@ -13,7 +13,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .auth import AuthRegistry
 from .files import (
@@ -131,8 +131,20 @@ class CreateInstanceBody(BaseModel):
     settings_json: dict[str, Any] | None = None  # Settings to merge into .claude/settings.json
 
 
+class ImageData(BaseModel):
+    media_type: str  # e.g., "image/png", "image/jpeg"
+    data: str  # base64-encoded image data
+
+
 class SendBody(BaseModel):
-    text: str = Field(min_length=1)
+    text: str = ""
+    images: list[ImageData] | None = None
+
+    @model_validator(mode="after")
+    def require_text_or_images(self) -> "SendBody":
+        if not self.text.strip() and not self.images:
+            raise ValueError("Either text or images must be provided")
+        return self
 
 
 class InputBody(BaseModel):
@@ -577,7 +589,10 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
-        await inst.send(body.text)
+        images = None
+        if body.images:
+            images = [{"media_type": img.media_type, "data": img.data} for img in body.images]
+        await inst.send(body.text, images=images)
         return {"ok": True}
 
     @app.post("/api/instances/{title}/abort")

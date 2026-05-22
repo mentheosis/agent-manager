@@ -12,6 +12,7 @@ class AmTerminalPane extends HTMLElement {
         this._unsubscribe = null;
         this._wasNearBottom = true;  // Track scroll position for auto-scroll
         this._replaying = false;     // True while bulk-rendering history; suppresses mid-render scrolls
+        this._pendingImages = [];    // Images to send with next prompt [{media_type, data}]
         this._filters = {
             assistant_text: true,
             thinking: true,
@@ -42,9 +43,10 @@ class AmTerminalPane extends HTMLElement {
             </div>
             <div class="prompt-resize-handle" title="Drag to resize"></div>
             <form id="prompt-form">
+                <div id="image-preview-area" hidden></div>
                 <textarea
                     id="prompt-input"
-                    placeholder="Send a prompt (Enter to send, Shift+Enter for newline)…"
+                    placeholder="Send a prompt (Enter to send, Shift+Enter for newline, paste images)…"
                     rows="3"
                     disabled></textarea>
                 <button type="submit" id="send-btn" disabled>Send</button>
@@ -78,6 +80,21 @@ class AmTerminalPane extends HTMLElement {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 this.submitPrompt();
+            }
+        });
+
+        // Handle image paste
+        input.addEventListener('paste', (e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+
+            for (const item of items) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    if (file) this.addPendingImage(file);
+                    return;  // Only handle first image
+                }
             }
         });
 
@@ -149,12 +166,18 @@ class AmTerminalPane extends HTMLElement {
 
         const input = this.querySelector('#prompt-input');
         const text = input.value.trim();
-        if (!text) return;
+
+        // Need either text or images
+        if (!text && this._pendingImages.length === 0) return;
 
         input.value = '';
 
+        // Prepare images for sending (strip _preview field)
+        const images = this._pendingImages.map(({ media_type, data }) => ({ media_type, data }));
+        this.clearPendingImages();
+
         try {
-            await api.sendPrompt(this._instance.title, text);
+            await api.sendPrompt(this._instance.title, text, images.length > 0 ? images : null);
         } catch (err) {
             this.appendNote(`Error: ${err.message}`);
         }
@@ -435,6 +458,7 @@ class AmTerminalPane extends HTMLElement {
         turn.className = 'turn turn-user open';
 
         const text = event.text ?? '';
+        const images = event.images || [];
         const isLong = text.length > 200;
 
         if (isLong) {
@@ -445,7 +469,26 @@ class AmTerminalPane extends HTMLElement {
         header.className = 'turn-header';
 
         header.appendChild(this.makeToggleButton(turn));
-        header.appendChild(this.makeLabelSpan('user', event.ts));
+
+        // Build label with optional image count
+        const labelText = images.length > 0 ? `user · ${images.length} image${images.length > 1 ? 's' : ''}` : 'user';
+        header.appendChild(this.makeLabelSpan(labelText, event.ts));
+
+        // Render image thumbnails if present
+        if (images.length > 0) {
+            const imageRow = document.createElement('div');
+            imageRow.className = 'user-prompt-images';
+            for (const img of images) {
+                const imgEl = document.createElement('img');
+                imgEl.src = `data:${img.media_type};base64,${img.data}`;
+                imgEl.alt = 'Attached image';
+                imgEl.className = 'user-prompt-image';
+                imgEl.title = 'Click to enlarge';
+                imgEl.addEventListener('click', () => this.showImageModal(imgEl.src));
+                imageRow.appendChild(imgEl);
+            }
+            header.appendChild(imageRow);
+        }
 
         const pre = document.createElement('pre');
 
@@ -770,6 +813,110 @@ class AmTerminalPane extends HTMLElement {
                 if (firstVal) return this.shortPreview(firstVal, 60);
                 return this.shortPreview(JSON.stringify(input), 60);
         }
+    }
+
+    // --- Image handling ---
+
+    showImageModal(src) {
+        // Create or reuse modal
+        let modal = document.getElementById('image-modal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'image-modal';
+            modal.className = 'image-modal';
+            modal.hidden = true;
+            modal.innerHTML = `
+                <div class="image-modal-backdrop"></div>
+                <img class="image-modal-img" src="" alt="Enlarged image">
+            `;
+            modal.querySelector('.image-modal-backdrop').addEventListener('click', () => {
+                modal.hidden = true;
+            });
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.hidden = true;
+            });
+            // Close on Escape
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && !modal.hidden) {
+                    modal.hidden = true;
+                }
+            });
+            document.body.appendChild(modal);
+        }
+        modal.querySelector('.image-modal-img').src = src;
+        modal.hidden = false;
+    }
+
+    async addPendingImage(file) {
+        try {
+            const base64 = await this.fileToBase64(file);
+            // Remove the data:image/png;base64, prefix
+            const data = base64.split(',')[1];
+            const img = {
+                media_type: file.type,
+                data: data,
+                // Keep a reference for preview
+                _preview: base64
+            };
+            this._pendingImages.push(img);
+            this.renderImagePreviews();
+        } catch (err) {
+            console.error('Failed to read image:', err);
+            this.appendNote(`Failed to read image: ${err.message}`);
+        }
+    }
+
+    fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+        });
+    }
+
+    renderImagePreviews() {
+        const previewArea = this.querySelector('#image-preview-area');
+        if (!previewArea) return;
+
+        if (this._pendingImages.length === 0) {
+            previewArea.hidden = true;
+            previewArea.innerHTML = '';
+            return;
+        }
+
+        previewArea.hidden = false;
+        previewArea.innerHTML = '';
+
+        this._pendingImages.forEach((img, index) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'image-preview-item';
+
+            const imgEl = document.createElement('img');
+            imgEl.src = img._preview;
+            imgEl.alt = `Pasted image ${index + 1}`;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'image-remove-btn';
+            removeBtn.textContent = '×';
+            removeBtn.title = 'Remove image';
+            removeBtn.addEventListener('click', () => this.removePendingImage(index));
+
+            wrapper.appendChild(imgEl);
+            wrapper.appendChild(removeBtn);
+            previewArea.appendChild(wrapper);
+        });
+    }
+
+    removePendingImage(index) {
+        this._pendingImages.splice(index, 1);
+        this.renderImagePreviews();
+    }
+
+    clearPendingImages() {
+        this._pendingImages = [];
+        this.renderImagePreviews();
     }
 
     enablePrompt() {
