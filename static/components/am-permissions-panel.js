@@ -1,5 +1,5 @@
 /**
- * Permissions panel component - SDK settings (model, mode, directories).
+ * Permissions panel component - runtime settings (model, mode, directories).
  */
 
 import * as api from '../lib/api.js';
@@ -9,6 +9,7 @@ class AmPermissionsPanel extends HTMLElement {
         super();
         this._title = null;
         this._activeModel = null;  // Model from current running session
+        this.provider = 'claude';
         this.workingDir = '';  // The instance's working directory
         this.permission_mode = 'acceptEdits';
         this.model = '';
@@ -24,7 +25,7 @@ class AmPermissionsPanel extends HTMLElement {
             <div class="perm-section">
                 <label class="perm-label">Model</label>
                 <select class="perm-model">
-                    <option value="">SDK default</option>
+                    <option value="">Provider default</option>
                 </select>
                 <div class="perm-model-info">
                     <span class="model-current" hidden>Current session: <code class="model-current-value"></code></span>
@@ -33,7 +34,7 @@ class AmPermissionsPanel extends HTMLElement {
             </div>
 
             <div class="perm-section">
-                <label class="perm-label">Permission mode</label>
+                <label class="perm-label perm-mode-label">Permission mode</label>
                 <select class="perm-mode">
                     <option value="default">default</option>
                     <option value="acceptEdits">acceptEdits</option>
@@ -57,7 +58,7 @@ class AmPermissionsPanel extends HTMLElement {
                 <span class="perm-apply-status"></span>
             </div>
 
-            <small class="hint">Applying restarts the SDK session. Conversation history is preserved via session resume; any in-flight turn will be cancelled.</small>
+            <small class="hint">Applying restarts the provider session. Conversation history is preserved via session resume; any in-flight turn will be cancelled.</small>
         `;
 
         this.setupEventListeners();
@@ -103,20 +104,25 @@ class AmPermissionsPanel extends HTMLElement {
         applyBtn.disabled = true;
 
         try {
-            const [inst, models] = await Promise.all([
-                api.fetchInstance(title),
-                api.fetchModels(),
+            const inst = await api.fetchInstance(title);
+            const providerName = inst.provider || 'claude';
+            const [provider, models] = await Promise.all([
+                api.fetchProvider(providerName).catch(() => null),
+                api.fetchModels(providerName),
             ]);
+            const defaultMode = provider?.runtime_options?.default_permission_mode || this.defaultModeForProvider(providerName);
 
+            this.provider = providerName;
             this.workingDir = inst.path || '';
-            this.permission_mode = inst.permission_mode || 'acceptEdits';
+            this.permission_mode = this.resolvePermissionMode(provider, inst.permission_mode || defaultMode);
             this.model = inst.model || '';
             this.dirs = (inst.add_dirs || []).slice();
             this.savedMode = this.permission_mode;
             this.savedModel = this.model;
             this.savedDirs = this.dirs.slice();
 
-            this.querySelector('.perm-mode').value = this.permission_mode;
+            this.populatePermissionModes(provider, this.permission_mode);
+            this.updateProviderLabels(provider);
             this.populateModelDropdown(models, this.model);
             this.renderDirs();
             this.updateModelInfo();
@@ -128,9 +134,50 @@ class AmPermissionsPanel extends HTMLElement {
         }
     }
 
+    populatePermissionModes(provider, currentMode) {
+        const el = this.querySelector('.perm-mode');
+        const modes = provider?.runtime_options?.permission_modes || ['default', 'acceptEdits', 'plan', 'bypassPermissions'];
+        const defaultMode = provider?.runtime_options?.default_permission_mode || modes[0] || '';
+        el.innerHTML = '';
+
+        for (const mode of modes) {
+            const opt = document.createElement('option');
+            opt.value = mode;
+            opt.textContent = mode;
+            el.appendChild(opt);
+        }
+
+        if (currentMode && !el.querySelector(`option[value="${CSS.escape(currentMode)}"]`)) {
+            const opt = document.createElement('option');
+            opt.value = currentMode;
+            opt.textContent = `${currentMode} (custom)`;
+            el.appendChild(opt);
+        }
+
+        el.value = currentMode || defaultMode;
+        el.disabled = modes.length === 0;
+    }
+
+    resolvePermissionMode(provider, currentMode) {
+        const modes = provider?.runtime_options?.permission_modes || [];
+        const defaultMode = provider?.runtime_options?.default_permission_mode || this.defaultModeForProvider(this.provider);
+        if (!currentMode) return defaultMode;
+        if (modes.length > 0 && !modes.includes(currentMode)) return defaultMode;
+        return currentMode;
+    }
+
+    defaultModeForProvider(providerName) {
+        return providerName === 'codex' ? 'workspace-write' : 'acceptEdits';
+    }
+
+    updateProviderLabels(provider) {
+        const modeLabel = this.querySelector('.perm-mode-label');
+        modeLabel.textContent = provider?.provider === 'codex' ? 'Sandbox mode' : 'Permission mode';
+    }
+
     populateModelDropdown(models, currentModel) {
         const el = this.querySelector('.perm-model');
-        el.innerHTML = '<option value="">SDK default</option>';
+        el.innerHTML = '<option value="">Provider default</option>';
 
         for (const id of models) {
             const opt = document.createElement('option');
@@ -286,7 +333,10 @@ class AmPermissionsPanel extends HTMLElement {
                 add_dirs: this.dirs,
             });
 
-            this.permission_mode = inst.permission_mode || 'acceptEdits';
+            this.permission_mode = this.resolvePermissionMode(
+                { runtime_options: { permission_modes: [...this.querySelector('.perm-mode').options].map((opt) => opt.value) } },
+                inst.permission_mode || this.defaultModeForProvider(this.provider),
+            );
             this.model = inst.model || '';
             this.dirs = (inst.add_dirs || []).slice();
             this.savedMode = this.permission_mode;
@@ -298,11 +348,11 @@ class AmPermissionsPanel extends HTMLElement {
             this.renderDirs();
 
             statusEl.textContent = 'applied · session restarted';
-            applyBtn.classList.remove('dirty');
 
             // Clear active model since session restarted - will be updated on next stream event
             this._activeModel = null;
             this.updateModelInfo();
+            this.refreshDirty();
         } catch (e) {
             statusEl.textContent = `error: ${e.message}`;
             applyBtn.disabled = false;

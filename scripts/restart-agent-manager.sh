@@ -1,0 +1,1 @@
+docker compose down && ./scripts/build-and-start.sh

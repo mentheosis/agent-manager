@@ -3,37 +3,28 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-import os
 from dataclasses import dataclass, field
-from collections.abc import AsyncIterator
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ResultMessage,
-    SystemMessage,
-    TextBlock,
-    ThinkingBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
-)
+from .artifacts import artifact_path_is_present, extract_artifact_directives
+from .commands import handle_agent_command, parse_agent_command
+from .providers.base import AgentConfig, AgentEvent, AgentInput, AgentRuntime
+from .providers.registry import RuntimeFactory, default_registry
 
 log = logging.getLogger(__name__)
 
-Event = dict[str, Any]
-
+Event = AgentEvent
 HISTORY_CAP = 2000
 
 
 @dataclass
 class Instance:
-    """One long-lived Claude Agent SDK session plus a pub/sub layer over its events."""
+    """One provider-backed coding agent session plus a pub/sub event layer."""
 
     title: str
     path: str
+    provider: str = "claude"  # "claude" now; "codex" once the runtime adapter exists
+    kind: str = "agent"  # "agent" | "loop"
     permission_mode: str = "acceptEdits"
     model: str | None = None
     status: str = "creating"
@@ -42,7 +33,7 @@ class Instance:
     session_id: str | None = None
     add_dirs: list[str] = field(default_factory=list)
     # Orchestration fields
-    instance_type: str = "claude"  # "claude" | "loop"
+    instance_type: str | None = None  # Compatibility alias: provider for agents, "loop" for teams
     parent: str | None = None  # Title of parent loop instance
     children: list[str] = field(default_factory=list)  # Titles of child instances
     agent_preset: str | None = None  # "coder" | "researcher" | "orchestrator"
@@ -55,93 +46,100 @@ class Instance:
     _history: list[Event] = field(default_factory=list, repr=False)
     _next_seq: int = field(default=0, repr=False)  # Monotonic counter stamped on every event
     _subscribers: list[asyncio.Queue[Event]] = field(default_factory=list, repr=False)
+    _runtime_factory: RuntimeFactory | None = field(default=None, repr=False)
+    _runtime: AgentRuntime | None = field(default=None, repr=False)
+    _current_turn_artifact_ids: set[str] = field(default_factory=set, repr=False)
     # Hooks injected by Registry. Both are awaitable; called with no arguments.
     _on_event: Callable[[Event], Awaitable[None]] | None = field(default=None, repr=False)
     _on_state_change: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        # Preserve the old "instance_type" contract while new code uses
+        # provider/kind. Old records used instance_type="claude" for agents.
+        if self.instance_type == "loop":
+            self.kind = "loop"
+        elif self.instance_type in ("claude", "codex"):
+            self.provider = self.instance_type
+            self.kind = "agent"
+        self.sync_instance_type()
+
+    def sync_instance_type(self) -> None:
+        self.instance_type = "loop" if self.kind == "loop" else self.provider
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
     async def _run(self) -> None:
-        opts: dict[str, Any] = {
-            "cwd": self.path,
-            "permission_mode": self.permission_mode,
-        }
-        if self.session_id:
-            # Continue the prior conversation. CLI loads its persisted session jsonl.
-            opts["resume"] = self.session_id
-        if self.add_dirs:
-            opts["add_dirs"] = list(self.add_dirs)
-        if self.model:
-            opts["model"] = self.model
-
-        # Add docker-mcp server if configured via env vars
-        docker_mcp_url = os.environ.get("DOCKER_MCP_URL")
-        docker_mcp_token = os.environ.get("DOCKER_MCP_TOKEN")
-        if docker_mcp_url and docker_mcp_token:
-            opts["mcp_servers"] = {
-                "docker": {
-                    "type": "http",
-                    "url": docker_mcp_url.rstrip("/") + "/",
-                    "headers": {
-                        "Authorization": f"Bearer {docker_mcp_token}",
-                    },
-                },
-            }
-
-        options = ClaudeAgentOptions(**opts)
-        log.info("instance %s: starting SDK client (session_id=%s)", self.title, self.session_id)
+        runtime = self._create_runtime()
+        self._runtime = runtime
         try:
-            async with ClaudeSDKClient(options=options) as client:
+            await runtime.start()
+            await self._set_status("ready")
+            while True:
+                message = await self._inbox.get()
+                log.info(
+                    "instance %s: received message from inbox (type=%s)",
+                    self.title,
+                    type(message).__name__,
+                )
+                agent_input = self._normalize_input(message)
+                await self._publish_user_prompt(agent_input)
+                command = parse_agent_command(agent_input)
+                if command is not None:
+                    for event in handle_agent_command(
+                        command,
+                        provider=self.provider,
+                        session_id=self.session_id,
+                        has_images=bool(agent_input.images),
+                    ):
+                        await self._publish(event)
+                    continue
+                await self._set_status("running")
+                async for event in runtime.run_turn(agent_input):
+                    await self._publish(event)
                 await self._set_status("ready")
-                while True:
-                    message = await self._inbox.get()
-                    log.info("instance %s: received message from inbox (type=%s)",
-                             self.title, type(message).__name__)
-                    await self._set_status("running")
-
-                    # Handle both simple text and multimodal messages
-                    if isinstance(message, dict):
-                        text = message.get("text", "")
-                        images = message.get("images", [])
-                        log.info("instance %s: multimodal message with %d images, text=%d chars",
-                                 self.title, len(images), len(text))
-                        prompt = self._build_multimodal_content(text, images)
-                        # Publish with images for display in UI
-                        await self._publish({
-                            "type": "user_prompt",
-                            "text": text,
-                            "images": images,  # [{media_type, data}, ...]
-                        })
-                    else:
-                        prompt = message
-                        await self._publish({"type": "user_prompt", "text": prompt})
-
-                    log.info("instance %s: calling client.query() with prompt type=%s",
-                             self.title, type(prompt).__name__)
-                    try:
-                        await client.query(prompt)
-                    except Exception as e:
-                        log.exception("instance %s: client.query() failed: %s", self.title, e)
-                        raise
-                    log.info("instance %s: client.query() returned, calling receive_response()", self.title)
-                    response_iter = client.receive_response()
-                    log.info("instance %s: got response iterator, starting iteration", self.title)
-                    msg_count = 0
-                    async for msg in response_iter:
-                        msg_count += 1
-                        log.info("instance %s: received msg #%d type=%s", self.title, msg_count, type(msg).__name__)
-                        for event in self._translate(msg):
-                            await self._publish(event)
-
-                    log.info("instance %s: response complete after %d messages", self.title, msg_count)
-                    await self._set_status("ready")
         except asyncio.CancelledError:
             raise
         except Exception as e:
             log.exception("instance %s crashed", self.title)
             await self._set_status("error")
             await self._publish({"type": "error", "message": f"{type(e).__name__}: {e}"})
+        finally:
+            try:
+                await runtime.close()
+            except Exception:
+                log.exception("instance %s runtime close failed", self.title)
+            if self._runtime is runtime:
+                self._runtime = None
+
+    def _create_runtime(self) -> AgentRuntime:
+        config = AgentConfig(
+            title=self.title,
+            provider=self.provider,
+            cwd=self.path,
+            permission_mode=self.permission_mode,
+            model=self.model,
+            session_id=self.session_id,
+            add_dirs=list(self.add_dirs or []),
+        )
+        if self._runtime_factory is not None:
+            return self._runtime_factory(config)
+        return default_registry.create_runtime(config)
+
+    @staticmethod
+    def _normalize_input(message: str | dict) -> AgentInput:
+        if isinstance(message, dict):
+            return AgentInput(
+                text=str(message.get("text", "")),
+                images=list(message.get("images") or []),
+            )
+        return AgentInput(text=message)
+
+    async def _publish_user_prompt(self, message: AgentInput) -> None:
+        event: Event = {"type": "user_prompt", "text": message.text}
+        if message.images:
+            event["images"] = message.images
+        await self._publish(event)
 
     async def send(self, text: str, images: list[dict] | None = None) -> None:
         """Send a message to the instance.
@@ -157,43 +155,6 @@ class Instance:
         else:
             # Simple text message
             await self._inbox.put(text)
-
-    async def _build_multimodal_content(
-        self, text: str, images: list[dict]
-    ) -> "AsyncIterator[dict]":
-        """Build an async iterator for streaming input mode with images.
-
-        The SDK expects messages wrapped as:
-        {"type": "user", "message": {"role": "user", "content": [...]}}
-
-        See: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
-        """
-        # Build content array: images first, then text
-        content: list[dict] = []
-        for img in images:
-            content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": img["media_type"],
-                    "data": img["data"],
-                },
-            })
-        if text:
-            content.append({"type": "text", "text": text})
-
-        log.info("_build_multimodal_content: yielding user message with %d content blocks", len(content))
-
-        # Yield the properly wrapped message
-        yield {
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": content,
-            },
-        }
-
-        log.info("_build_multimodal_content: generator exhausted")
 
     async def stop(self) -> None:
         if self._task and not self._task.done():
@@ -253,11 +214,80 @@ class Instance:
     def history(self) -> list[Event]:
         return list(self._history)
 
+    def debug_state(self) -> dict[str, object]:
+        task = self._task
+        runtime = self._runtime
+        proc = getattr(runtime, "_proc", None) if runtime is not None else None
+        subprocess_state = None
+        if proc is not None:
+            subprocess_state = {
+                "pid": getattr(proc, "pid", None),
+                "returncode": getattr(proc, "returncode", None),
+            }
+
+        last_event = self._history[-1] if self._history else None
+        return {
+            "status": self.status,
+            "task": {
+                "exists": task is not None,
+                "done": bool(task.done()) if task is not None else None,
+                "cancelled": bool(task.cancelled()) if task is not None else None,
+            },
+            "runtime": type(runtime).__name__ if runtime is not None else None,
+            "subprocess": subprocess_state,
+            "inbox_size": self._inbox.qsize(),
+            "subscriber_count": len(self._subscribers),
+            "history_length": len(self._history),
+            "next_seq": self._next_seq,
+            "last_event": _event_summary(last_event),
+        }
+
     async def _set_status(self, status: str) -> None:
         self.status = status
         await self._publish({"type": "status", "status": status})
 
     async def _publish(self, event: Event) -> None:
+        for expanded in self._expand_artifact_directives(event):
+            await self._publish_one(expanded)
+
+    def _expand_artifact_directives(self, event: Event) -> list[Event]:
+        if event.get("type") == "assistant_text":
+            text = event.get("text")
+            if isinstance(text, str):
+                cleaned, artifacts = extract_artifact_directives(text, source=self.provider)
+                artifacts = self._valid_artifacts(artifacts)
+                if artifacts:
+                    updated = dict(event)
+                    updated["text"] = cleaned
+                    return [updated, *artifacts]
+        if event.get("type") == "tool_result":
+            output = event.get("output")
+            if isinstance(output, str):
+                cleaned, artifacts = extract_artifact_directives(output, source=self.provider)
+                artifacts = self._valid_artifacts(artifacts)
+                if artifacts:
+                    updated = dict(event)
+                    updated["output"] = cleaned
+                    return [updated, *artifacts]
+        return [event]
+
+    @staticmethod
+    def _valid_artifacts(artifacts: list[Event]) -> list[Event]:
+        return [
+            artifact
+            for artifact in artifacts
+            if isinstance(artifact.get("path"), str) and artifact_path_is_present(artifact["path"])
+        ]
+
+    async def _publish_one(self, event: Event) -> None:
+        if event.get("type") == "user_prompt":
+            self._current_turn_artifact_ids.clear()
+        if event.get("type") == "artifact":
+            artifact_id = event.get("artifact_id")
+            if isinstance(artifact_id, str) and artifact_id:
+                if artifact_id in self._current_turn_artifact_ids:
+                    return
+                self._current_turn_artifact_ids.add(artifact_id)
         event.setdefault("ts", dt.datetime.now(dt.timezone.utc).isoformat())
         # Stamp a monotonically-increasing sequence number so clients can
         # resume from a known position after a WebSocket reconnect.
@@ -314,55 +344,24 @@ class Instance:
                 return model
         return None
 
-    def _translate(self, msg: Any) -> list[Event]:
-        events: list[Event] = []
-        if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, TextBlock):
-                    events.append({"type": "assistant_text", "text": block.text})
-                elif isinstance(block, ThinkingBlock):
-                    events.append({"type": "thinking", "text": getattr(block, "thinking", "")})
-                elif isinstance(block, ToolUseBlock):
-                    events.append(
-                        {
-                            "type": "tool_use",
-                            "id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        }
-                    )
-        elif isinstance(msg, UserMessage):
-            content = msg.content
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, ToolResultBlock):
-                        output = block.content
-                        if not isinstance(output, str):
-                            output = str(output)
-                        events.append(
-                            {
-                                "type": "tool_result",
-                                "tool_id": block.tool_use_id,
-                                "output": output,
-                                "is_error": bool(getattr(block, "is_error", False)),
-                            }
-                        )
-        elif isinstance(msg, ResultMessage):
-            usage = getattr(msg, "usage", None)
-            events.append(
-                {
-                    "type": "result",
-                    "subtype": getattr(msg, "subtype", None),
-                    "duration_ms": getattr(msg, "duration_ms", None),
-                    "num_turns": getattr(msg, "num_turns", None),
-                    "total_cost_usd": getattr(msg, "total_cost_usd", None),
-                    "is_error": bool(getattr(msg, "is_error", False)),
-                    "session_id": getattr(msg, "session_id", None),
-                    "usage": usage if isinstance(usage, dict) else None,
-                }
-            )
-        elif isinstance(msg, SystemMessage):
-            subtype = getattr(msg, "subtype", None)
-            if subtype == "init":
-                events.append({"type": "system_init", "data": getattr(msg, "data", {})})
-        return events
+
+def _event_summary(event: Event | None) -> dict[str, object] | None:
+    if not event:
+        return None
+    summary: dict[str, object] = {
+        "type": event.get("type"),
+        "seq": event.get("seq"),
+        "ts": event.get("ts"),
+    }
+    if "subtype" in event:
+        summary["subtype"] = event.get("subtype")
+    if "is_error" in event:
+        summary["is_error"] = event.get("is_error")
+    if "status" in event:
+        summary["status"] = event.get("status")
+    if "session_id" in event:
+        summary["session_id"] = event.get("session_id")
+    text = event.get("text") or event.get("message")
+    if isinstance(text, str):
+        summary["preview"] = text[:240]
+    return summary

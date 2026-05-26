@@ -1,0 +1,21 @@
+# ngrok Traffic Policy for sharing agent-manager safely over ngrok.
+#
+# Usage:
+#   ngrok http 8787 \
+#     --url=pierce-typologic-hylozoistically.ngrok-free.dev \
+#     --traffic-policy-file=ngrok-oauth-policy.yml
+#
+# This uses ngrok's managed Google OAuth application, then restricts access
+# to the single allowlisted Google account below.
+on_http_request:
+  - actions:
+      - type: oauth
+        config:
+          provider: google
+
+  - expressions:
+      - "actions.ngrok.oauth.identity.email != 'mentheosis@gmail.com'"
+    actions:
+      - type: deny
+        config:
+          status_code: 403

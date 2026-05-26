@@ -5,5 +5,14 @@
       "WebSearch",
       "WebFetch"
     ]
+  ,
+  "mcpServers": {
+    "docker": {
+      "type": "http",
+      "url": "http://host.docker.internal:9090/",
+      "headers": {
+        "Authorization": "Bearer ${DOCKER_MCP_TOKEN}"
+      }
+    }
   }
 }

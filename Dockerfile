@@ -14,10 +14,14 @@ FROM go-deps AS go-build
 COPY orchestrator/ ./
 RUN CGO_ENABLED=0 go build -o am-orchestrator .
 
+FROM go-deps AS go-test
+COPY orchestrator/ ./
+RUN go test ./...
+
 # =============================================================================
 # Stage 2: Python application
 # =============================================================================
-FROM python:3.12-slim
+FROM python:3.12-slim AS python-app
 
 # --- System packages (changes rarely) -------------------------------------
 RUN apt-get update \
@@ -37,7 +41,7 @@ RUN apt-get update \
 # --- Create non-root user with /app as home ------------------------------
 ARG UID=1000
 ARG GID=1000
-RUN mkdir -p /app/.claude/backups /var/lib/agent-manager \
+RUN mkdir -p /app/.claude/backups /app/.codex /var/lib/agent-manager \
     && groupadd -g ${GID} agent \
     && useradd -u ${UID} -g agent -s /bin/bash -d /app agent \
     && chown -R agent:agent /app /var/lib/agent-manager
@@ -51,9 +55,9 @@ ENV HOME=/app \
     PATH="/app/.cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 
-# --- Claude CLI (changes rarely) ------------------------------------------
+# --- Provider CLIs (changes rarely) ----------------------------------------
 USER root
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
 # --- Python deps (rebuilds only when pyproject.toml changes) --------------
 # Install only the dependency list — not the project itself — so that
@@ -68,6 +72,12 @@ RUN python -c "import tomllib; d = tomllib.load(open('pyproject.toml','rb')); pr
 COPY --chown=agent:agent README.md ./
 COPY --chown=agent:agent src/ ./src/
 RUN pip install --no-cache-dir --no-deps .
+
+FROM python-app AS python-test
+COPY --chown=agent:agent tests/ ./tests/
+COPY --chown=agent:agent static/ ./static/
+RUN pip install --no-cache-dir -e ".[dev]"
+RUN pytest
 
 # --- Static assets last (rebuilds only on static/ changes) ----------------
 COPY --chown=agent:agent static/ ./static/

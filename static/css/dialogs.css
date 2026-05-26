@@ -95,6 +95,27 @@ dialog #create-btn {
 
 dialog #create-btn:hover { opacity: 0.85; }
 
+.provider-auth-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: -2px 0 2px;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+}
+
+.provider-auth-row .provider-login-btn {
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    font-size: var(--fs-sm);
+}
+
+.provider-auth-row .provider-login-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
 /* Login dialog */
 #login-dialog { min-width: 560px; max-width: 720px; }
 

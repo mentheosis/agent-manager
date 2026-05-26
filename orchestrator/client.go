@@ -32,6 +32,8 @@ type InstanceInfo struct {
 	DisplayTitle string   `json:"display_title,omitempty"`
 	Status       string   `json:"status"`
 	Path         string   `json:"path"`
+	Provider     string   `json:"provider,omitempty"`
+	Kind         string   `json:"kind,omitempty"`
 	Parent       string   `json:"parent,omitempty"`
 	Children     []string `json:"children,omitempty"`
 	AgentPreset  string   `json:"agent_preset,omitempty"`

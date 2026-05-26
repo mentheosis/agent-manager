@@ -25,6 +25,8 @@ class InstanceRecord:
 
     title: str
     path: str
+    provider: str = "claude"
+    kind: str = "agent"
     permission_mode: str = "acceptEdits"
     model: str | None = None
     display_title: str | None = None
@@ -50,6 +52,8 @@ class InstanceRecord:
         return {
             "title": self.title,
             "path": self.path,
+            "provider": self.provider,
+            "kind": self.kind,
             "permission_mode": self.permission_mode,
             "model": self.model,
             "display_title": self.display_title,
@@ -66,16 +70,36 @@ class InstanceRecord:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "InstanceRecord":
+        raw_instance_type = d.get("instance_type")
+        instance_type = raw_instance_type or "claude"
+        provider = d.get("provider")
+        kind = d.get("kind")
+
+        # Backward compatibility for records written before provider/kind.
+        # Old normal agents used instance_type="claude"; old teams used "loop".
+        if kind is None:
+            kind = "loop" if instance_type == "loop" else "agent"
+        if provider is None:
+            provider = instance_type if instance_type in ("claude", "codex") else "claude"
+        if raw_instance_type is None:
+            instance_type = "loop" if kind == "loop" else provider
+        elif instance_type not in ("loop", "claude", "codex"):
+            instance_type = "loop" if kind == "loop" else provider
+        if kind == "loop":
+            instance_type = "loop"
+
         return cls(
             title=d["title"],
             path=d["path"],
+            provider=provider,
+            kind=kind,
             permission_mode=d.get("permission_mode") or "acceptEdits",
             model=d.get("model") or None,
             display_title=d.get("display_title"),
             session_id=d.get("session_id"),
             created_at=d.get("created_at") or "",
             add_dirs=list(d.get("add_dirs") or []),
-            instance_type=d.get("instance_type") or "claude",
+            instance_type=instance_type,
             parent=d.get("parent"),
             children=list(d.get("children") or []),
             agent_preset=d.get("agent_preset"),

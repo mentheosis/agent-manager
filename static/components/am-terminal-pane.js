@@ -33,7 +33,7 @@ class AmTerminalPane extends HTMLElement {
                 </div>
                 <span class="status-text">idle</span>
                 <span class="status-spacer"></span>
-                <span class="status-model" hidden title="Active model reported by the SDK"></span>
+                <span class="status-model" hidden title="Active model reported by the provider"></span>
                 <span class="status-totals">
                     <span class="totals-tokens" title="cumulative input / output tokens">0 in / 0 out</span>
                     <span class="totals-cache" title="cached input tokens (read / created)" hidden>0 cached</span>
@@ -280,7 +280,7 @@ class AmTerminalPane extends HTMLElement {
         if (event.type === 'status') {
             this.updateStatusBar(stream);
             if (event.status === 'ready' && !this.hasMeaningfulOutput()) {
-                this.appendNote('Claude is ready. Send a prompt to get started.');
+                this.appendNote(`${this.providerLabel()} is ready. Send a prompt to get started.`);
             }
             return;
         }
@@ -361,8 +361,8 @@ class AmTerminalPane extends HTMLElement {
         }
 
         // Totals
-        const t = stream?.totals || { cost: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0, turns: 0 };
-        this.querySelector('.totals-cost').textContent = `$${t.cost.toFixed(4)}`;
+        const t = stream?.totals || { cost: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0, cost_estimated: false, turns: 0 };
+        this.querySelector('.totals-cost').textContent = `${t.cost_estimated ? '~' : ''}$${t.cost.toFixed(4)}`;
         this.querySelector('.totals-tokens').textContent = `${this.formatNum(t.input_tokens)} in / ${this.formatNum(t.output_tokens)} out`;
 
         const cacheTotal = t.cache_read + t.cache_creation;
@@ -397,6 +397,16 @@ class AmTerminalPane extends HTMLElement {
             case 'error': return 'error';
             case 'deleted': return 'deleted';
             default: return status;
+        }
+    }
+
+    providerLabel() {
+        const provider = this._instance?.provider || this._instance?.instance_type || 'agent';
+        switch (provider) {
+            case 'claude': return 'Claude';
+            case 'codex': return 'Codex';
+            case 'loop': return 'Agent';
+            default: return 'Agent';
         }
     }
 
@@ -459,7 +469,8 @@ class AmTerminalPane extends HTMLElement {
 
         const text = event.text ?? '';
         const images = event.images || [];
-        const isLong = text.length > 200;
+        const collapsedLimit = this.collapsedPromptLimit();
+        const isLong = text.length > collapsedLimit;
 
         if (isLong) {
             turn.classList.add('turn-long-prompt');
@@ -503,10 +514,7 @@ class AmTerminalPane extends HTMLElement {
         });
 
         if (isLong) {
-            let truncated = text.slice(0, 200);
-            const lastSpace = truncated.lastIndexOf(' ');
-            if (lastSpace > 150) truncated = truncated.slice(0, lastSpace);
-            truncated += '…';
+            const truncated = this.truncatePromptText(text, collapsedLimit);
 
             pre.textContent = truncated;
             pre.dataset.fullText = text;
@@ -549,6 +557,19 @@ class AmTerminalPane extends HTMLElement {
         output.appendChild(turn);
 
         return turn;
+    }
+
+    collapsedPromptLimit() {
+        return window.matchMedia('(max-width: 768px)').matches ? 50 : 200;
+    }
+
+    truncatePromptText(text, limit) {
+        let truncated = text.slice(0, limit);
+        const lastSpace = truncated.lastIndexOf(' ');
+        if (lastSpace > Math.floor(limit * 0.75)) {
+            truncated = truncated.slice(0, lastSpace);
+        }
+        return truncated + '…';
     }
 
     makeToggleButton(turn) {
@@ -633,7 +654,8 @@ class AmTerminalPane extends HTMLElement {
 
         // Handle tool_result specially - nest it under the matching tool_use
         if (event.type === 'tool_result' && event.tool_id) {
-            const toolUse = this.querySelector(`.event-tool_use[data-tool-id="${CSS.escape(event.tool_id)}"]`);
+            const toolUses = this.querySelectorAll(`.event-tool_use[data-tool-id="${CSS.escape(event.tool_id)}"]`);
+            const toolUse = toolUses[toolUses.length - 1];
             if (toolUse) {
                 const resultEl = this.createToolResultElement(event);
                 toolUse.appendChild(resultEl);
@@ -646,6 +668,10 @@ class AmTerminalPane extends HTMLElement {
                     statusEl.title = event.is_error ? 'Error' : 'Success';
                 }
 
+                this.autoScroll();
+                return;
+            }
+            if (this.isOrphanTranscriptMcpResult(event)) {
                 this.autoScroll();
                 return;
             }
@@ -694,12 +720,62 @@ class AmTerminalPane extends HTMLElement {
             labelEl.appendChild(preview);
         }
 
-        const bodyEl = document.createElement('pre');
-        bodyEl.className = 'event-body';
-        bodyEl.textContent = bodyText;
+        const bodyEl = event.type === 'artifact'
+            ? this.createArtifactBody(event)
+            : document.createElement('pre');
+        bodyEl.className = event.type === 'artifact'
+            ? 'event-body artifact-body'
+            : 'event-body';
+        if (event.type !== 'artifact') {
+            bodyEl.textContent = bodyText;
+        }
         el.appendChild(bodyEl);
 
         return el;
+    }
+
+    createArtifactBody(event) {
+        const body = document.createElement('div');
+        const url = this.artifactUrl(event);
+
+        if (event.artifact_type === 'image') {
+            const link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.className = 'artifact-image-link';
+
+            const img = document.createElement('img');
+            img.className = 'artifact-image';
+            img.src = url;
+            img.alt = event.title || event.path || 'Image artifact';
+            img.loading = 'lazy';
+            link.appendChild(img);
+            body.appendChild(link);
+        } else {
+            const card = document.createElement('a');
+            card.href = url;
+            card.target = '_blank';
+            card.rel = 'noopener noreferrer';
+            card.className = 'artifact-file-link';
+            card.textContent = event.title || event.path || 'Open artifact';
+            body.appendChild(card);
+        }
+
+        const meta = document.createElement('div');
+        meta.className = 'artifact-meta';
+        meta.textContent = [event.mime_type, event.path].filter(Boolean).join(' · ');
+        body.appendChild(meta);
+
+        return body;
+    }
+
+    artifactUrl(event) {
+        const artifactId = encodeURIComponent(event.artifact_id || '');
+        if (this._instance?.title) {
+            return `/api/instances/${encodeURIComponent(this._instance.title)}/artifacts/${artifactId}`;
+        }
+        return `/api/artifacts/images/${artifactId}`;
     }
 
     createToolResultElement(event) {
@@ -732,6 +808,13 @@ class AmTerminalPane extends HTMLElement {
         return el;
     }
 
+    isOrphanTranscriptMcpResult(event) {
+        const output = String(event.output ?? '');
+        return output.includes("'Ok': {'content':")
+            || output.includes('"Ok": {"content":')
+            || output.includes('"Ok":{"content":');
+    }
+
     defaultOpenForEvent(type) {
         return type !== 'tool_use' && type !== 'tool_result' && type !== 'system_init' && type !== 'result';
     }
@@ -742,7 +825,9 @@ class AmTerminalPane extends HTMLElement {
             case 'thinking': return 'thinking';
             case 'tool_use': return `tool · ${event.name || 'call'}`;
             case 'tool_result': return `tool · result`;
+            case 'artifact': return event.artifact_type === 'image' ? 'image' : 'artifact';
             case 'result': return `result${event.is_error ? ' (error)' : ''}`;
+            case 'command_result': return event.is_error ? 'command · error' : 'command · result';
             case 'error': return 'error';
             case 'aborted': return 'cancelled';
             case 'system_init': return 'system · init';
@@ -756,9 +841,11 @@ class AmTerminalPane extends HTMLElement {
             case 'thinking':
                 return event.text ?? '';
             case 'tool_use':
-                return JSON.stringify(event.input ?? {}, null, 2);
+                return this.formatToolInput(event.input);
             case 'tool_result':
                 return event.output ?? '';
+            case 'artifact':
+                return [event.title, event.path].filter(Boolean).join('\n');
             case 'result': {
                 const usage = event.usage || event.data?.usage;
                 return [
@@ -767,12 +854,19 @@ class AmTerminalPane extends HTMLElement {
                     event.num_turns != null && `turns: ${event.num_turns}`,
                     usage?.input_tokens != null && `input tokens: ${usage.input_tokens.toLocaleString()}`,
                     usage?.output_tokens != null && `output tokens: ${usage.output_tokens.toLocaleString()}`,
-                    (usage?.cache_read_input_tokens || usage?.cache_read) && `cache read: ${(usage.cache_read_input_tokens || usage.cache_read).toLocaleString()}`,
+                    usage?.reasoning_output_tokens != null && `reasoning output tokens: ${usage.reasoning_output_tokens.toLocaleString()}`,
+                    (usage?.cached_input_tokens || usage?.cache_read_input_tokens || usage?.cache_read) && `cache read: ${(usage.cached_input_tokens || usage.cache_read_input_tokens || usage.cache_read).toLocaleString()}`,
                     (usage?.cache_creation_input_tokens || usage?.cache_creation) && `cache creation: ${(usage.cache_creation_input_tokens || usage.cache_creation).toLocaleString()}`,
                     event.total_cost_usd != null && `cost: $${event.total_cost_usd.toFixed(4)}`,
+                    event.total_cost_usd == null && event.estimated_cost_usd != null && !this.isCodexCumulativeUsage(usage) && `estimated cost: ~$${event.estimated_cost_usd.toFixed(4)}${event.estimated_cost_model ? ` (${event.estimated_cost_model})` : ''}`,
                     event.session_id && `session: ${event.session_id}`,
                 ].filter(Boolean).join('\n');
             }
+            case 'command_result':
+                return [
+                    event.command && `command: ${event.command}`,
+                    event.message,
+                ].filter(Boolean).join('\n');
             case 'error':
             case 'aborted':
                 return event.message ?? JSON.stringify(event);
@@ -790,6 +884,8 @@ class AmTerminalPane extends HTMLElement {
     toolUsePreview(event) {
         const input = event.input || {};
         const name = event.name || '';
+        const normalizedName = name.toLowerCase();
+        if (typeof input === 'string') return this.shortPreview(input, 60);
 
         // Tool-specific previews
         switch (name) {
@@ -808,11 +904,32 @@ class AmTerminalPane extends HTMLElement {
             case 'Agent':
                 return input.description || this.shortPreview(input.prompt || '', 50);
             default:
+                if (normalizedName.includes('web_search')) {
+                    return this.shortPreview(input.query || input.search_query || this.firstStringValue(input), 60);
+                }
                 // Generic: show first string value or JSON preview
-                const firstVal = Object.values(input).find(v => typeof v === 'string');
+                const firstVal = this.firstStringValue(input);
                 if (firstVal) return this.shortPreview(firstVal, 60);
                 return this.shortPreview(JSON.stringify(input), 60);
         }
+    }
+
+    formatToolInput(input) {
+        if (input == null) return '';
+        if (typeof input === 'string') return input;
+        return JSON.stringify(input, null, 2);
+    }
+
+    firstStringValue(input) {
+        if (!input || typeof input !== 'object') return '';
+        return Object.values(input).find(v => typeof v === 'string') || '';
+    }
+
+    isCodexCumulativeUsage(usage) {
+        return usage && (
+            Object.hasOwn(usage, 'cached_input_tokens')
+            || Object.hasOwn(usage, 'reasoning_output_tokens')
+        );
     }
 
     // --- Image handling ---

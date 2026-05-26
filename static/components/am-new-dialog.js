@@ -8,6 +8,7 @@ class AmNewDialog extends HTMLElement {
     constructor() {
         super();
         this._mode = 'agent';  // 'agent' | 'team' | 'batch'
+        this.providers = [];
     }
 
     connectedCallback() {
@@ -20,7 +21,7 @@ class AmNewDialog extends HTMLElement {
                         <button type="button" class="mode-btn active" data-mode="agent">
                             <span class="mode-icon">🤖</span>
                             <span class="mode-label">Agent</span>
-                            <span class="mode-desc">Single Claude instance</span>
+                            <span class="mode-desc">Single coding agent</span>
                         </button>
                         <button type="button" class="mode-btn" data-mode="team">
                             <span class="mode-icon">👥</span>
@@ -37,6 +38,16 @@ class AmNewDialog extends HTMLElement {
                     <!-- Agent Form -->
                     <form id="agent-form" class="mode-form active">
                         <label>
+                            Provider
+                            <select name="provider">
+                                <option value="claude" selected>Claude Code</option>
+                            </select>
+                        </label>
+                        <div class="provider-auth-row">
+                            <span class="provider-auth-status"></span>
+                            <button type="button" class="provider-login-btn">Log in</button>
+                        </div>
+                        <label>
                             Name
                             <input name="name" autocomplete="off" placeholder="My cool project">
                             <small class="hint">Used as the display label. Can be set in YAML instead.</small>
@@ -50,9 +61,6 @@ class AmNewDialog extends HTMLElement {
                             Permission mode
                             <select name="permission_mode">
                                 <option value="acceptEdits" selected>acceptEdits</option>
-                                <option value="default">default</option>
-                                <option value="plan">plan</option>
-                                <option value="bypassPermissions">bypassPermissions</option>
                             </select>
                         </label>
                         <label>
@@ -70,6 +78,7 @@ class AmNewDialog extends HTMLElement {
                             <textarea name="agent_yaml" class="yaml-input" rows="10" spellcheck="false" placeholder="# Optional YAML config (overrides form fields)
 name: my-agent
 path: /path/to/workspace
+provider: claude
 permission_mode: acceptEdits
 model: claude-sonnet-4-20250514
 add_dirs:
@@ -78,7 +87,7 @@ permissions:
   allow:
     - 'Bash(npm *)'
     - 'WebFetch'"></textarea>
-                            <div class="yaml-hint">Permissions are merged into .claude/settings.json</div>
+                            <div class="yaml-hint">Claude permissions are merged into .claude/settings.json</div>
                         </details>
                         <menu>
                             <button type="button" class="btn-cancel">Cancel</button>
@@ -91,15 +100,18 @@ permissions:
                         <p class="form-hint">Define your team using YAML configuration:</p>
                         <textarea id="team-yaml" class="yaml-input" spellcheck="false" placeholder="title: my-team
 path: /path/to/workspace
+provider: claude
 model: claude-sonnet-4-20250514  # optional
 task: Build feature X with tests
 agents:
   - name: coder-1
     path: /path/to/repo
+    provider: claude
     preset: coder
     model: claude-opus-4-20250514  # optional
   - name: researcher
     path: /path/to/docs
+    provider: claude
     preset: researcher"></textarea>
                         <div id="yaml-error" class="yaml-error"></div>
                         <menu>
@@ -149,6 +161,19 @@ agents:
         this.querySelector('#agent-form').addEventListener('submit', (e) => {
             e.preventDefault();
             this.createAgent();
+        });
+
+        this.querySelector('select[name="provider"]').addEventListener('change', (e) => {
+            this.applyProvider(e.target.value);
+        });
+
+        this.querySelector('.provider-login-btn').addEventListener('click', () => {
+            const provider = this.querySelector('select[name="provider"]').value || 'claude';
+            this.querySelector('#new-dialog').close();
+            this.dispatchEvent(new CustomEvent('open-login-dialog', {
+                bubbles: true,
+                detail: { provider },
+            }));
         });
 
         // Team form submit
@@ -211,6 +236,9 @@ agents:
         delete data.agent_yaml;
 
         // Handle model - only include if set
+        let provider = data.provider || 'claude';
+        delete data.provider;
+
         let model = data.model || null;
         delete data.model;
 
@@ -235,6 +263,7 @@ agents:
                 // Override form fields with YAML values
                 if (config.name) name = config.name;
                 if (config.path) path = config.path;
+                if (config.provider) provider = config.provider;
                 if (config.permission_mode) permission_mode = config.permission_mode;
                 if (config.model) model = config.model;
                 if (config.add_dirs && Array.isArray(config.add_dirs)) {
@@ -270,7 +299,7 @@ agents:
         submitBtn.textContent = 'Creating...';
 
         try {
-            const inst = await api.createInstance({ name, path, permission_mode, model, add_dirs, settings_json });
+            const inst = await api.createInstance({ name, path, provider, kind: 'agent', permission_mode, model, add_dirs, settings_json });
             this.close();
             form.reset();
 
@@ -498,6 +527,8 @@ agents:
                     const inst = await api.createInstance({
                         name: config.name,
                         path: config.path || '~',
+                        provider: config.provider || 'claude',
+                        kind: 'agent',
                         permission_mode: config.permission_mode || 'acceptEdits',
                         model: config.model || null,
                         add_dirs: config.add_dirs || [],
@@ -674,13 +705,81 @@ agents:
 
     async open(mode = 'agent') {
         this.setMode(mode);
-        await this.loadModels();
+        await this.loadProviders();
+        await this.applyProvider(this.querySelector('select[name="provider"]').value || 'claude');
         this.querySelector('#new-dialog').showModal();
     }
 
-    async loadModels() {
+    async loadProviders() {
         try {
-            const models = await api.fetchModels();
+            this.providers = await api.fetchProviders();
+            const select = this.querySelector('select[name="provider"]');
+            select.innerHTML = '';
+            for (const provider of this.providers) {
+                const opt = document.createElement('option');
+                opt.value = provider.provider;
+                opt.textContent = provider.enabled ? provider.label : `${provider.label} (coming soon)`;
+                opt.disabled = !provider.enabled;
+                select.appendChild(opt);
+            }
+            if (!select.value) select.value = 'claude';
+        } catch (e) {
+            console.error('Failed to load providers:', e);
+        }
+    }
+
+    async applyProvider(providerName) {
+        const provider = this.providers.find((p) => p.provider === providerName)
+            || await api.fetchProvider(providerName).catch(() => null);
+        if (!provider) return;
+
+        const modeSelect = this.querySelector('select[name="permission_mode"]');
+        const modes = provider.runtime_options?.permission_modes || [];
+        const defaultMode = provider.runtime_options?.default_permission_mode || '';
+        modeSelect.innerHTML = '';
+        for (const mode of modes) {
+            const opt = document.createElement('option');
+            opt.value = mode;
+            opt.textContent = mode;
+            opt.selected = mode === defaultMode;
+            modeSelect.appendChild(opt);
+        }
+        modeSelect.disabled = modes.length === 0;
+
+        await this.checkProviderAuth(providerName, provider);
+        await this.loadModels(providerName);
+    }
+
+    async checkProviderAuth(providerName, provider) {
+        const statusEl = this.querySelector('.provider-auth-status');
+        const loginBtn = this.querySelector('.provider-login-btn');
+        statusEl.textContent = '';
+        loginBtn.hidden = false;
+        loginBtn.disabled = true;
+        loginBtn.textContent = 'Checking auth...';
+
+        try {
+            const status = await api.checkAuth(providerName);
+            loginBtn.textContent = `Log in to ${provider.label || providerName}`;
+            if (status.authed) {
+                statusEl.textContent = `${provider.label || providerName} authenticated`;
+                loginBtn.disabled = true;
+                loginBtn.textContent = 'Authenticated';
+                return;
+            }
+            statusEl.textContent = `${provider.label || providerName} not authenticated`;
+            loginBtn.disabled = !provider.auth?.login_supported;
+            if (loginBtn.disabled) loginBtn.textContent = 'Login unavailable';
+        } catch {
+            statusEl.textContent = `${provider.label || providerName} auth status unavailable`;
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Login unavailable';
+        }
+    }
+
+    async loadModels(provider = 'claude') {
+        try {
+            const models = await api.fetchModels(provider);
             const select = this.querySelector('select[name="model"]');
 
             // Clear existing options except default

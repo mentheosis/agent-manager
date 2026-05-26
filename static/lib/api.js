@@ -4,8 +4,20 @@
 
 const BASE = '/api';
 
-export async function fetchModels() {
-    const r = await fetch(`${BASE}/models`);
+export async function fetchProviders() {
+    const r = await fetch(`${BASE}/providers`);
+    if (!r.ok) return [];
+    return r.json();
+}
+
+export async function fetchProvider(provider = 'claude') {
+    const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}`);
+    if (!r.ok) throw new Error(`Failed to fetch provider: ${r.status}`);
+    return r.json();
+}
+
+export async function fetchModels(provider = 'claude') {
+    const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/models`);
     return r.ok ? r.json() : [];
 }
 
@@ -21,11 +33,11 @@ export async function fetchInstance(title) {
     return r.json();
 }
 
-export async function createInstance({ name, path, permission_mode, model, add_dirs, settings_json }) {
+export async function createInstance({ name, path, provider = 'claude', kind = 'agent', permission_mode, model, add_dirs, settings_json }) {
     const r = await fetch(`${BASE}/instances`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, permission_mode, model, add_dirs, settings_json }),
+        body: JSON.stringify({ name, path, provider, kind, permission_mode, model, add_dirs, settings_json }),
     });
     if (!r.ok) {
         const text = await r.text();
@@ -126,20 +138,20 @@ export async function saveFile(title, endpoint, path, content) {
     return r.json();
 }
 
-export async function checkAuth() {
-    const r = await fetch(`${BASE}/auth/status`);
+export async function checkAuth(provider = 'claude') {
+    const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/auth/status`);
     if (!r.ok) return { authed: false };
     return r.json();
 }
 
-export async function startLogin() {
-    const r = await fetch(`${BASE}/auth/login`, { method: 'POST' });
+export async function startLogin(provider = 'claude') {
+    const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/auth/login`, { method: 'POST' });
     if (!r.ok) throw new Error(`Failed to start login: ${r.status}`);
     return r.json();
 }
 
-export async function sendLoginInput(sessionId, data) {
-    const r = await fetch(`${BASE}/auth/login/${encodeURIComponent(sessionId)}/input`, {
+export async function sendLoginInput(sessionId, data, provider = 'claude') {
+    const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/auth/login/${encodeURIComponent(sessionId)}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data }),
@@ -147,13 +159,13 @@ export async function sendLoginInput(sessionId, data) {
     if (!r.ok) throw new Error(`Failed to send login input: ${r.status}`);
 }
 
-export async function cancelLogin(sessionId) {
-    await fetch(`${BASE}/auth/login/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+export async function cancelLogin(sessionId, provider = 'claude') {
+    await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/auth/login/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
 }
 
-export function loginWebSocketUrl(sessionId) {
+export function loginWebSocketUrl(sessionId, provider = 'claude') {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${proto}://${location.host}${BASE}/auth/login/${encodeURIComponent(sessionId)}`;
+    return `${proto}://${location.host}${BASE}/providers/${encodeURIComponent(provider)}/auth/login/${encodeURIComponent(sessionId)}`;
 }
 
 export function eventsWebSocketUrl(title, sinceSeq = -1) {

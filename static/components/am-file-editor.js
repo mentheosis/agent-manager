@@ -1,6 +1,6 @@
 /**
  * File editor component - reusable editor for settings/plans/memory tabs.
- * Supports an optional SDK settings panel as the first tab.
+ * Supports an optional runtime settings panel as the first tab.
  */
 
 import * as api from '../lib/api.js';
@@ -44,9 +44,9 @@ class AmFileEditor extends HTMLElement {
             case 'rules':
                 return 'Select a file above...';
             case 'plans':
-                return 'No plan files yet - agent writes them to .claude/plans/ when you run /plan.';
+                return 'No plan files yet.';
             case 'memory':
-                return 'Memory files appear here as Claude writes them.';
+                return 'Memory files appear here when the provider writes them.';
             default:
                 return '';
         }
@@ -92,7 +92,7 @@ class AmFileEditor extends HTMLElement {
                 return;
             }
 
-            // Default to SDK Settings tab if this pane has it
+            // Default to Runtime Settings tab if this pane has it
             if (this.hasPermissionsTab && this.activeIndex < 0) {
                 await this.selectPermissions();
                 return;
@@ -115,13 +115,13 @@ class AmFileEditor extends HTMLElement {
         const tabsEl = this.querySelector('.file-tabs');
         tabsEl.innerHTML = '';
 
-        // SDK Settings tab first if enabled
+        // Runtime Settings tab first if enabled
         if (this.hasPermissionsTab) {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'file-tab perm-tab';
             btn.classList.toggle('active', this.activeIndex === PERMISSIONS_TAB_INDEX);
-            btn.textContent = 'SDK Settings';
+            btn.textContent = 'Runtime Settings';
             btn.addEventListener('click', () => this.selectPermissions());
             tabsEl.appendChild(btn);
         }
@@ -144,6 +144,7 @@ class AmFileEditor extends HTMLElement {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'file-tab';
+            btn.dataset.fileIndex = String(i);
             btn.classList.toggle('active', i === this.activeIndex);
             if (f.exists === false) {
                 btn.classList.add('missing');
@@ -236,8 +237,7 @@ class AmFileEditor extends HTMLElement {
         }
 
         // Mark active tab dirty
-        const tabs = this.querySelectorAll('.file-tab');
-        const activeTab = tabs[this.hasPermissionsTab ? this.activeIndex + 1 : this.activeIndex];
+        const activeTab = this.activeFileTab();
         if (activeTab) activeTab.classList.toggle('dirty', isDirty);
     }
 
@@ -263,8 +263,7 @@ class AmFileEditor extends HTMLElement {
             statusEl.className = 'file-status saved';
             statusEl.textContent = 'saved';
 
-            const tabs = this.querySelectorAll('.file-tab');
-            const activeTab = tabs[this.hasPermissionsTab ? this.activeIndex + 1 : this.activeIndex];
+            const activeTab = this.activeFileTab();
             if (activeTab) {
                 activeTab.classList.remove('dirty', 'missing');
             }
@@ -272,6 +271,11 @@ class AmFileEditor extends HTMLElement {
             statusEl.className = 'file-status error';
             statusEl.textContent = `save failed: ${e.message}`;
         }
+    }
+
+    activeFileTab() {
+        if (this.activeIndex < 0) return null;
+        return this.querySelector(`.file-tab[data-file-index="${CSS.escape(String(this.activeIndex))}"]`);
     }
 }
 

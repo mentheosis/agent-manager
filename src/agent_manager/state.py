@@ -12,6 +12,7 @@ from .persistence import InstanceRecord, Persistence
 log = logging.getLogger(__name__)
 
 
+_UNSET = object()
 _SLUG_WS = re.compile(r"\s+")
 _SLUG_BAD = re.compile(r"[^a-z0-9_-]")
 _SLUG_DUP_UNDERSCORE = re.compile(r"_+")
@@ -25,6 +26,7 @@ def slugify(name: str, max_len: int = 64) -> str:
     """
     s = name.lower().strip()
     s = _SLUG_WS.sub("_", s)
+    s = "".join(ch for ch in s if ch.isascii())
     s = _SLUG_BAD.sub("", s)
     s = _SLUG_DUP_UNDERSCORE.sub("_", s)
     s = s.strip("_-")
@@ -62,6 +64,8 @@ class Registry:
             inst = Instance(
                 title=rec.title,
                 path=rec.path,
+                provider=rec.provider or "claude",
+                kind=rec.kind or ("loop" if rec.instance_type == "loop" else "agent"),
                 permission_mode=rec.permission_mode,
                 model=rec.model or None,
                 display_title=rec.display_title,
@@ -114,6 +118,8 @@ class Registry:
         permission_mode: str = "acceptEdits",
         model: str | None = None,
         add_dirs: list[str] | None = None,
+        provider: str = "claude",
+        kind: str = "agent",
     ) -> Instance:
         """Create an instance from a free-form display name.
 
@@ -124,6 +130,9 @@ class Registry:
         cleaned = name.strip()
         if not cleaned:
             raise ValueError("name must not be empty")
+        provider = _normalize_provider(provider)
+        kind = _normalize_kind(kind)
+        permission_mode = _normalize_permission_mode(provider, permission_mode)
         base = slugify(cleaned)
         expanded = str(Path(path).expanduser().resolve())
 
@@ -140,6 +149,9 @@ class Registry:
             inst = Instance(
                 title=title,
                 path=expanded,
+                provider=provider,
+                kind=kind,
+                instance_type="loop" if kind == "loop" else provider,
                 permission_mode=permission_mode,
                 model=model or None,
                 display_title=display_title,
@@ -156,7 +168,7 @@ class Registry:
         self,
         title: str,
         permission_mode: str | None = None,
-        model: str | None = None,
+        model: str | None | object = _UNSET,
         add_dirs: list[str] | None = None,
     ) -> Instance | None:
         """Update permission_mode / model / add_dirs and reload the SDK session."""
@@ -165,9 +177,9 @@ class Registry:
             if inst is None:
                 return None
             if permission_mode is not None:
-                inst.permission_mode = permission_mode
-            if model is not None:
-                inst.model = model if model else None
+                inst.permission_mode = _normalize_permission_mode(inst.provider, permission_mode)
+            if model is not _UNSET:
+                inst.model = model if isinstance(model, str) and model else None
             if add_dirs is not None:
                 inst.add_dirs = _normalize_dirs(add_dirs)
         await self._save_records()
@@ -207,7 +219,7 @@ class Registry:
 
             # Collect child instances to delete if this is a loop instance
             child_instances: list[Instance] = []
-            if cascade and inst.instance_type == "loop" and inst.children:
+            if cascade and inst.kind == "loop" and inst.children:
                 child_instances = [
                     self._instances[c] for c in inst.children if c in self._instances
                 ]
@@ -278,7 +290,7 @@ class Registry:
                 return None
 
             # Validation
-            if inst.instance_type == "loop":
+            if inst.kind == "loop":
                 raise ValueError("loop instances cannot be reparented")
             if inst.agent_preset == "orchestrator" and new_parent is None:
                 raise ValueError("orchestrator agents cannot be removed from their team")
@@ -287,7 +299,7 @@ class Registry:
                 parent_inst = self._instances.get(new_parent)
                 if parent_inst is None:
                     raise ValueError(f"parent instance not found: {new_parent}")
-                if parent_inst.instance_type != "loop":
+                if parent_inst.kind != "loop":
                     raise ValueError("can only reparent into loop instances")
 
             # Remove from old parent's children list
@@ -321,7 +333,7 @@ class Registry:
             inst = self._instances.get(title)
             if inst is None:
                 return None
-            if inst.instance_type != "loop":
+            if inst.kind != "loop":
                 raise ValueError("task can only be set on loop instances")
             inst.task = task
         await self._save_records()
@@ -331,17 +343,32 @@ class Registry:
         self,
         title: str,
         instance_type: str | None = None,
+        kind: str | None = None,
+        provider: str | None = None,
         agent_preset: str | None = None,
     ) -> Instance | None:
-        """Update instance_type and/or agent_preset."""
+        """Update instance kind/provider compatibility fields and/or agent_preset."""
         async with self._lock:
             inst = self._instances.get(title)
             if inst is None:
                 return None
+            if kind is not None:
+                inst.kind = _normalize_kind(kind)
+            if provider is not None:
+                normalized_provider = _normalize_provider(provider)
+                inst.provider = normalized_provider
             if instance_type is not None:
-                if instance_type not in ("claude", "loop"):
-                    raise ValueError("instance_type must be 'claude' or 'loop'")
-                inst.instance_type = instance_type
+                if instance_type == "loop":
+                    inst.kind = "loop"
+                elif instance_type in ("claude", "agent"):
+                    inst.kind = "agent"
+                    inst.provider = "claude"
+                elif instance_type == "codex":
+                    inst.kind = "agent"
+                    inst.provider = "codex"
+                else:
+                    raise ValueError("instance_type must be 'claude', 'agent', 'codex', or 'loop'")
+            inst.sync_instance_type()
             if agent_preset is not None:
                 if agent_preset not in ("coder", "researcher", "orchestrator", ""):
                     raise ValueError("agent_preset must be 'coder', 'researcher', 'orchestrator', or empty")
@@ -375,6 +402,8 @@ class Registry:
                 InstanceRecord(
                     title=i.title,
                     path=i.path,
+                    provider=i.provider,
+                    kind=i.kind,
                     permission_mode=i.permission_mode,
                     model=i.model or None,
                     display_title=i.display_title,
@@ -408,3 +437,32 @@ def _normalize_dirs(dirs: list[str]) -> list[str]:
             seen.add(p)
             out.append(p)
     return out
+
+
+def _normalize_provider(provider: str | None) -> str:
+    value = (provider or "claude").strip().lower()
+    if value not in ("claude", "codex"):
+        raise ValueError("provider must be 'claude' or 'codex'")
+    return value
+
+
+def _normalize_permission_mode(provider: str, permission_mode: str | None) -> str:
+    mode = (permission_mode or "").strip()
+    if provider == "codex" and mode in {"", "default", "acceptEdits", "plan", "bypassPermissions"}:
+        return {
+            "": "workspace-write",
+            "default": "workspace-write",
+            "acceptEdits": "workspace-write",
+            "plan": "read-only",
+            "bypassPermissions": "danger-full-access",
+        }[mode]
+    if provider == "codex" and mode not in {"workspace-write", "read-only", "danger-full-access"}:
+        return "workspace-write"
+    return mode or "acceptEdits"
+
+
+def _normalize_kind(kind: str | None) -> str:
+    value = (kind or "agent").strip().lower()
+    if value not in ("agent", "loop"):
+        raise ValueError("kind must be 'agent' or 'loop'")
+    return value

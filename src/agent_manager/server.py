@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
 import time
 from contextlib import asynccontextmanager
@@ -11,11 +12,12 @@ from typing import Any
 import httpx
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
-from .auth import AuthRegistry
+from .auth import AuthRegistry, CODEX_AUTH_PATH, CODEX_LOGIN_COMMAND, codex_auth_raw_status
+from .artifacts import path_for_artifact_id
 from .files import (
     memory_dir_for,
     read_md_files,
@@ -26,7 +28,9 @@ from .files import (
 from .instance import Instance
 from .orchestrator import get_manager as get_orchestrator_manager
 from .persistence import Persistence
-from .state import Registry
+from .providers.capabilities import list_provider_capabilities, provider_capabilities
+from .providers.codex_metadata import fetch_codex_models
+from .state import Registry, _UNSET
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +89,56 @@ def _find_static_dir() -> Path | None:
     return None
 
 
+_ARTIFACT_PREVIEW_LIMIT_BYTES = 50 * 1024 * 1024
+_FORBIDDEN_ARTIFACT_NAMES = {
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    "id_rsa",
+    "id_ed25519",
+    "credentials",
+    "credentials.json",
+}
+
+
+def _artifact_roots(extra_roots: list[str | Path] | None = None) -> list[Path]:
+    roots = [
+        Path("/app/.codex/generated_images"),
+        Path.home() / ".codex" / "generated_images",
+        Path("/tmp"),
+        Path("/var/lib/agent-manager"),
+    ]
+    roots.extend(Path(root) for root in (extra_roots or []))
+    return [root.resolve() for root in roots if root.exists()]
+
+
+def _resolve_artifact(artifact_id: str, *, roots: list[Path]) -> Path:
+    try:
+        path = path_for_artifact_id(artifact_id).expanduser().resolve()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="invalid artifact id") from e
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    if not any(path == root or root in path.parents for root in roots):
+        raise HTTPException(status_code=403, detail="artifact path is not allowed")
+    if _is_forbidden_artifact_path(path):
+        raise HTTPException(status_code=403, detail="artifact path is not allowed")
+    try:
+        if path.stat().st_size > _ARTIFACT_PREVIEW_LIMIT_BYTES:
+            raise HTTPException(status_code=413, detail="artifact is too large to preview")
+    except OSError as e:
+        raise HTTPException(status_code=404, detail="artifact not found") from e
+    return path
+
+
+def _is_forbidden_artifact_path(path: Path) -> bool:
+    lowered_parts = {part.lower() for part in path.parts}
+    if lowered_parts.intersection({".ssh", ".aws", ".config"}):
+        return True
+    name = path.name.lower()
+    return name in _FORBIDDEN_ARTIFACT_NAMES or "secret" in name or "token" in name
+
+
 def _merge_settings_json(workdir: Path, settings: dict[str, Any]) -> None:
     """Merge settings into .claude/settings.json, creating it if needed.
 
@@ -125,6 +179,8 @@ def _merge_settings_json(workdir: Path, settings: dict[str, Any]) -> None:
 class CreateInstanceBody(BaseModel):
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
+    provider: str = "claude"
+    kind: str = "agent"
     permission_mode: str = "acceptEdits"
     model: str | None = None
     add_dirs: list[str] = Field(default_factory=list)
@@ -179,7 +235,9 @@ class TaskBody(BaseModel):
 
 
 class InstanceTypeBody(BaseModel):
-    instance_type: str | None = None  # "claude" | "loop"
+    instance_type: str | None = None  # Compatibility: "claude" | "agent" | "loop"
+    kind: str | None = None  # "agent" | "loop"
+    provider: str | None = None  # "claude" | "codex"
     agent_preset: str | None = None  # "coder" | "researcher" | "orchestrator"
 
 
@@ -192,6 +250,8 @@ def _summary(inst: Instance) -> dict[str, Any]:
         "title": inst.title,
         "display_title": inst.display_title,
         "path": inst.path,
+        "provider": inst.provider,
+        "kind": inst.kind,
         "permission_mode": inst.permission_mode,
         "model": inst.model or None,
         "status": inst.status,
@@ -206,6 +266,68 @@ def _summary(inst: Instance) -> dict[str, Any]:
         # Organization
         "folder": inst.folder,
     }
+
+
+def _find_instance_by_identifier(registry: Registry, identifier: str) -> Instance | None:
+    inst = registry.get(identifier)
+    if inst is not None:
+        return inst
+    for candidate in registry.list():
+        if candidate.session_id == identifier:
+            return candidate
+    return None
+
+
+def _codex_session_debug(session_id: str | None, raw_tail: int = 0) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    sessions_dir = Path.home() / ".codex" / "sessions"
+    matches = sorted(sessions_dir.glob(f"**/*{session_id}*.jsonl")) if sessions_dir.exists() else []
+    if not matches:
+        return {
+            "session_id": session_id,
+            "found": False,
+            "sessions_dir": str(sessions_dir),
+        }
+
+    path = matches[-1]
+    stat = path.stat()
+    debug: dict[str, Any] = {
+        "session_id": session_id,
+        "found": True,
+        "path": str(path),
+        "size_bytes": stat.st_size,
+        "mtime_unix": stat.st_mtime,
+        "line_count": _line_count(path),
+    }
+    raw_tail = max(0, min(raw_tail, 20))
+    if raw_tail:
+        debug["raw_tail"] = _tail_text_lines(path, raw_tail, max_chars=120_000)
+    return debug
+
+
+def _line_count(path: Path) -> int:
+    try:
+        with path.open("rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
+def _tail_text_lines(path: Path, count: int, max_chars: int = 80_000) -> list[str]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out = lines[-count:]
+    total = 0
+    trimmed: list[str] = []
+    for line in reversed(out):
+        total += len(line)
+        if total > max_chars:
+            break
+        trimmed.append(line)
+    return list(reversed(trimmed))
 
 
 _FALLBACK_MODELS = [
@@ -246,11 +368,29 @@ async def _fetch_models() -> list[str]:
     return _FALLBACK_MODELS
 
 
+async def _fetch_provider_models(provider: str) -> list[str]:
+    if provider == "claude":
+        return await _fetch_models()
+    if provider == "codex":
+        return await fetch_codex_models()
+    raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
+
+
 def build_app() -> FastAPI:
     persistence = Persistence()
     persistence.ensure_dirs()
     registry = Registry(persistence)
     auth = AuthRegistry()
+    provider_auth = {
+        "claude": auth,
+        "codex": AuthRegistry(
+            provider="codex",
+            login_command=CODEX_LOGIN_COMMAND,
+            credentials_path=CODEX_AUTH_PATH,
+            status_func=codex_auth_raw_status,
+            login_supported=True,
+        ),
+    }
 
     # Initialize orchestrator manager
     orchestrator_manager = get_orchestrator_manager(base_url="http://localhost:8765")
@@ -272,15 +412,22 @@ def build_app() -> FastAPI:
         finally:
             await orchestrator_manager.shutdown()
             await registry.shutdown()
-            await auth.shutdown()
+            for auth_registry in provider_auth.values():
+                await auth_registry.shutdown()
 
     app = FastAPI(title="agent-manager", version="0.1.0", lifespan=lifespan)
     app.state.registry = registry
     app.state.auth = auth
+    app.state.provider_auth = provider_auth
     app.state.persistence = persistence
 
     # Polling endpoints that should log at DEBUG instead of INFO
-    _QUIET_PATHS = {"/api/auth/status", "/api/instances"}
+    _QUIET_PATHS = {
+        "/api/auth/status",
+        "/api/providers/claude/auth/status",
+        "/api/providers/codex/auth/status",
+        "/api/instances",
+    }
 
     @app.middleware("http")
     async def access_log_middleware(request: Request, call_next):
@@ -292,13 +439,55 @@ def build_app() -> FastAPI:
         log.log(level, '%s %s %s %.0fms', request.method, path, response.status_code, duration_ms)
         return response
 
+    def _provider_auth(provider: str) -> AuthRegistry:
+        auth_registry = provider_auth.get(provider)
+        if auth_registry is None:
+            raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
+        return auth_registry
+
+    @app.get("/api/providers")
+    async def list_providers() -> list[dict[str, Any]]:
+        return list_provider_capabilities()
+
+    @app.get("/api/providers/{provider}")
+    async def get_provider(provider: str) -> dict[str, Any]:
+        try:
+            return provider_capabilities(provider)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
+
+    @app.get("/api/providers/{provider}/models")
+    async def list_provider_models(provider: str) -> list[str]:
+        return await _fetch_provider_models(provider)
+
     @app.get("/api/models")
-    async def list_models() -> list[str]:
-        return await _fetch_models()
+    async def list_models(provider: str = "claude") -> list[str]:
+        return await _fetch_provider_models(provider)
 
     @app.get("/api/instances")
     async def list_instances() -> list[dict[str, Any]]:
         return [_summary(i) for i in registry.list()]
+
+    @app.get("/api/debug/sessions/{identifier}")
+    async def debug_session(identifier: str, tail: int = 20, raw_tail: int = 0) -> dict[str, Any]:
+        """Inspect a running or persisted instance by title or provider session id."""
+        inst = _find_instance_by_identifier(registry, identifier)
+        if not inst:
+            raise HTTPException(status_code=404)
+
+        tail = max(1, min(tail, 100))
+        history = inst.history()
+        recent_events = history[-tail:] if tail < len(history) else history
+        return {
+            "matched_by": "title" if inst.title == identifier else "session_id",
+            "instance": _summary(inst),
+            "session_id": inst.session_id,
+            "debug": inst.debug_state(),
+            "recent_events": recent_events,
+            "codex_session": _codex_session_debug(inst.session_id, raw_tail=raw_tail)
+            if inst.provider == "codex"
+            else None,
+        }
 
     @app.get("/api/batch/scan")
     async def scan_batch_directory(directory: str) -> dict[str, Any]:
@@ -336,15 +525,22 @@ def build_app() -> FastAPI:
     async def create_instance(body: CreateInstanceBody) -> dict[str, Any]:
         try:
             inst = await registry.create(
-                body.name, body.path, body.permission_mode, body.model, body.add_dirs
+                body.name,
+                body.path,
+                body.permission_mode,
+                body.model,
+                body.add_dirs,
+                provider=body.provider,
+                kind=body.kind,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except FileNotFoundError as e:
             raise HTTPException(status_code=400, detail=f"path not found: {e}")
 
-        # Merge settings_json into .claude/settings.json if provided
-        if body.settings_json:
+        # Merge settings_json into .claude/settings.json if provided.
+        # This payload is Claude-specific until provider_options replaces it.
+        if body.settings_json and inst.provider == "claude":
             try:
                 _merge_settings_json(Path(inst.path), body.settings_json)
             except Exception as e:
@@ -363,7 +559,7 @@ def build_app() -> FastAPI:
     async def delete_instance(title: str) -> Response:
         # Stop orchestrator if this is a loop instance
         inst = registry.get(title)
-        if inst and inst.instance_type == "loop":
+        if inst and inst.kind == "loop":
             await orchestrator_manager.stop(title)
 
         ok = await registry.delete(title)
@@ -383,7 +579,7 @@ def build_app() -> FastAPI:
         inst = await registry.update_permissions(
             title,
             permission_mode=body.permission_mode,
-            model=body.model,
+            model=body.model if "model" in body.model_fields_set else _UNSET,
             add_dirs=body.add_dirs,
         )
         if inst is None:
@@ -425,6 +621,8 @@ def build_app() -> FastAPI:
             inst = await registry.update_instance_type(
                 title,
                 instance_type=body.instance_type,
+                kind=body.kind,
+                provider=body.provider,
                 agent_preset=body.agent_preset,
             )
         except ValueError as e:
@@ -454,7 +652,7 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
-        if inst.instance_type != "loop":
+        if inst.kind != "loop":
             raise HTTPException(status_code=400, detail="can only start orchestrator for loop instances")
 
         children = registry.get_children(title)
@@ -485,7 +683,7 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
-        if inst.instance_type != "loop":
+        if inst.kind != "loop":
             raise HTTPException(status_code=400, detail="can only restart orchestrator for loop instances")
 
         children = registry.get_children(title)
@@ -576,6 +774,22 @@ def build_app() -> FastAPI:
             "has_more": has_more,
         }
 
+    @app.get("/api/instances/{title}/artifacts/{artifact_id}")
+    async def get_instance_artifact(title: str, artifact_id: str) -> FileResponse:
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(status_code=404)
+        roots = _artifact_roots([inst.path, *list(inst.add_dirs or [])])
+        path = _resolve_artifact(artifact_id, roots=roots)
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(path, media_type=media_type, filename=path.name)
+
+    @app.get("/api/artifacts/images/{artifact_id}")
+    async def get_image_artifact(artifact_id: str) -> FileResponse:
+        path = _resolve_artifact(artifact_id, roots=_artifact_roots())
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(path, media_type=media_type, filename=path.name)
+
     @app.post("/api/instances/reorder")
     async def reorder_instances(body: ReorderBody) -> list[dict[str, Any]]:
         try:
@@ -643,6 +857,33 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=404)
         return inst
 
+    def _rules_file_specs(inst: Instance, workdir: Path) -> list[tuple[str, Path]]:
+        if inst.provider == "codex":
+            return [
+                ("AGENTS.md", workdir / "AGENTS.md"),
+                ("~/.codex/config.toml", Path.home() / ".codex" / "config.toml"),
+                (".mcp.json", workdir / ".mcp.json"),
+            ]
+        return [
+            ("CLAUDE.md", workdir / "CLAUDE.md"),
+            (".claude/settings.json", workdir / ".claude" / "settings.json"),
+            (".claude/settings.local.json", workdir / ".claude" / "settings.local.json"),
+            (".mcp.json", workdir / ".mcp.json"),
+        ]
+
+    def _write_rules_file(inst: Instance, workdir: Path, requested_path: str, content: str) -> Path:
+        requested = Path(requested_path).expanduser().resolve()
+        allowed_absolute_paths = {
+            path.expanduser().resolve()
+            for _, path in _rules_file_specs(inst, workdir)
+            if path.is_absolute()
+        }
+        if requested in allowed_absolute_paths:
+            requested.parent.mkdir(parents=True, exist_ok=True)
+            requested.write_text(content, encoding="utf-8")
+            return requested
+        return write_file_under(workdir, requested_path, content)
+
     @app.get("/api/instances/{title}/diff")
     async def get_diff(title: str) -> dict[str, Any]:
         inst = _require_instance(title)
@@ -663,12 +904,7 @@ def build_app() -> FastAPI:
     async def get_rules(title: str) -> dict[str, Any]:
         inst = _require_instance(title)
         workdir = Path(inst.path)
-        specs = [
-            ("CLAUDE.md", workdir / "CLAUDE.md"),
-            (".claude/settings.json", workdir / ".claude" / "settings.json"),
-            (".claude/settings.local.json", workdir / ".claude" / "settings.local.json"),
-            (".mcp.json", workdir / ".mcp.json"),
-        ]
+        specs = _rules_file_specs(inst, workdir)
         return {"files": read_named_files(specs)}
 
     @app.put("/api/instances/{title}/rules")
@@ -676,7 +912,7 @@ def build_app() -> FastAPI:
         inst = _require_instance(title)
         workdir = Path(inst.path)
         try:
-            target = write_file_under(workdir, body.path, body.content)
+            target = _write_rules_file(inst, workdir, body.path, body.content)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except OSError as e:
@@ -723,18 +959,22 @@ def build_app() -> FastAPI:
 
     # --- Auth endpoints ---------------------------------------------------
 
-    @app.get("/api/auth/status")
-    async def auth_status() -> dict[str, Any]:
-        return AuthRegistry.status()
+    @app.get("/api/providers/{provider}/auth/status")
+    async def provider_auth_status(provider: str) -> dict[str, Any]:
+        return _provider_auth(provider).provider_status()
 
-    @app.post("/api/auth/login", status_code=201)
-    async def auth_login_start() -> dict[str, Any]:
-        session = await auth.start()
-        return {"id": session.id}
+    @app.post("/api/providers/{provider}/auth/login", status_code=201)
+    async def provider_auth_login_start(provider: str) -> dict[str, Any]:
+        auth_registry = _provider_auth(provider)
+        try:
+            session = await auth_registry.start()
+        except RuntimeError as e:
+            raise HTTPException(status_code=501, detail=str(e))
+        return {"id": session.id, "provider": provider}
 
-    @app.post("/api/auth/login/{sid}/input")
-    async def auth_login_input(sid: str, body: InputBody) -> dict[str, Any]:
-        session = auth.get(sid)
+    @app.post("/api/providers/{provider}/auth/login/{sid}/input")
+    async def provider_auth_login_input(provider: str, sid: str, body: InputBody) -> dict[str, Any]:
+        session = _provider_auth(provider).get(sid)
         if not session:
             raise HTTPException(status_code=404)
         try:
@@ -743,12 +983,57 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(e))
         return {"ok": True}
 
+    @app.delete("/api/providers/{provider}/auth/login/{sid}", status_code=204)
+    async def provider_auth_login_cancel(provider: str, sid: str) -> Response:
+        auth_registry = _provider_auth(provider)
+        if auth_registry.get(sid) is None:
+            raise HTTPException(status_code=404)
+        await auth_registry.close(sid)
+        return Response(status_code=204)
+
+    @app.websocket("/api/providers/{provider}/auth/login/{sid}")
+    async def provider_auth_login_ws(ws: WebSocket, provider: str, sid: str) -> None:
+        try:
+            auth_registry = _provider_auth(provider)
+        except HTTPException:
+            await ws.close(code=1008, reason="unknown provider")
+            return
+        session = auth_registry.get(sid)
+        if not session:
+            await ws.close(code=1008, reason="login session not found")
+            return
+        await ws.accept()
+        for event in session.history():
+            await ws.send_text(json.dumps(event))
+        if session.done:
+            return
+        q = session.subscribe()
+        try:
+            while True:
+                event = await q.get()
+                await ws.send_text(json.dumps(event))
+                if event.get("type") == "done":
+                    break
+        except WebSocketDisconnect:
+            pass
+        finally:
+            session.unsubscribe(q)
+
+    @app.get("/api/auth/status")
+    async def auth_status() -> dict[str, Any]:
+        return _provider_auth("claude").provider_status()
+
+    @app.post("/api/auth/login", status_code=201)
+    async def auth_login_start() -> dict[str, Any]:
+        return await provider_auth_login_start("claude")
+
+    @app.post("/api/auth/login/{sid}/input")
+    async def auth_login_input(sid: str, body: InputBody) -> dict[str, Any]:
+        return await provider_auth_login_input("claude", sid, body)
+
     @app.delete("/api/auth/login/{sid}", status_code=204)
     async def auth_login_cancel(sid: str) -> Response:
-        if auth.get(sid) is None:
-            raise HTTPException(status_code=404)
-        await auth.close(sid)
-        return Response(status_code=204)
+        return await provider_auth_login_cancel("claude", sid)
 
     @app.websocket("/api/auth/login/{sid}")
     async def auth_login_ws(ws: WebSocket, sid: str) -> None:

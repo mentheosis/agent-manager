@@ -1,5 +1,5 @@
 /**
- * Login dialog component - authenticates Claude Code in the container.
+ * Login dialog component - authenticates a provider CLI in the container.
  */
 
 import * as api from '../lib/api.js';
@@ -10,13 +10,15 @@ class AmLoginDialog extends HTMLElement {
         this.sessionId = null;
         this.ws = null;
         this._doneHandling = false;
+        this.provider = 'claude';
+        this.providerLabel = 'Claude Code';
     }
 
     connectedCallback() {
         this.innerHTML = `
             <dialog id="login-dialog">
-                <h2>Authenticate Claude Code</h2>
-                <p class="hint">
+                <h2>Authenticate <span id="login-provider-label">Claude Code</span></h2>
+                <p class="hint" id="login-provider-hint">
                     Running <code>claude auth login</code> inside the container. On first run you'll see
                     the setup wizard (theme picker, folder trust) - use Enter / arrow keys below to
                     drive it. Once the authorization URL appears, open it in your browser, copy the
@@ -83,9 +85,12 @@ class AmLoginDialog extends HTMLElement {
         return attr;
     }
 
-    async open() {
+    async open(provider = 'claude') {
         const output = this.querySelector('#login-output');
         const input = this.querySelector('#login-text');
+
+        this.provider = provider || 'claude';
+        await this.loadProviderCopy();
 
         output.textContent = '';
         input.value = '';
@@ -95,14 +100,14 @@ class AmLoginDialog extends HTMLElement {
         this.querySelector('#login-dialog').showModal();
 
         try {
-            const { id } = await api.startLogin();
+            const { id } = await api.startLogin(this.provider);
             this.sessionId = id;
             this._doneHandling = false;
             input.disabled = false;
             this.querySelector('#login-submit').disabled = false;
             input.focus();
 
-            this.ws = new WebSocket(api.loginWebSocketUrl(id));
+            this.ws = new WebSocket(api.loginWebSocketUrl(id, this.provider));
 
             this.ws.onmessage = (ev) => {
                 try {
@@ -142,7 +147,7 @@ class AmLoginDialog extends HTMLElement {
 
         let status = { authed: false };
         try {
-            status = await api.checkAuth();
+            status = await api.checkAuth(this.provider);
         } catch (err) {
             this.appendOutput(`\n[error] failed to check auth status: ${err.message}\n`);
         }
@@ -168,7 +173,7 @@ class AmLoginDialog extends HTMLElement {
     async cancel() {
         if (this.sessionId) {
             try {
-                await api.cancelLogin(this.sessionId);
+                await api.cancelLogin(this.sessionId, this.provider);
             } catch {
                 // Ignore
             }
@@ -228,7 +233,7 @@ class AmLoginDialog extends HTMLElement {
         if (!data) return;
 
         try {
-            await api.sendLoginInput(this.sessionId, data);
+            await api.sendLoginInput(this.sessionId, data, this.provider);
         } catch (err) {
             this.appendOutput(`\n[error] send input failed: ${err.message}\n`);
         }
@@ -241,6 +246,30 @@ class AmLoginDialog extends HTMLElement {
         input.value = '';
         await this.sendInput(text + '\r');
         input.focus();
+    }
+
+    async loadProviderCopy() {
+        try {
+            const provider = await api.fetchProvider(this.provider);
+            this.providerLabel = provider.label || this.provider;
+        } catch {
+            this.providerLabel = this.provider;
+        }
+        this.querySelector('#login-provider-label').textContent = this.providerLabel;
+        if (this.provider === 'claude') {
+            this.querySelector('#login-provider-hint').innerHTML = `
+                Running <code>claude auth login</code> inside the container. On first run you'll see
+                the setup wizard (theme picker, folder trust) - use Enter / arrow keys below to
+                drive it. Once the authorization URL appears, open it in your browser, copy the
+                code Anthropic shows, and paste it below.
+            `;
+        } else {
+            this.querySelector('#login-provider-hint').innerHTML = `
+                Running <code>codex login</code> inside the container. Open the sign-in URL
+                if one appears, complete ChatGPT authorization in your browser, then follow
+                any remaining terminal prompts here.
+            `;
+        }
     }
 }
 

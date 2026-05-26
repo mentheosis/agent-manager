@@ -9,7 +9,14 @@ docker compose up --build
 # → http://localhost:8787
 ```
 
-On first launch, the container is not yet authenticated with Claude. A red banner in the UI invites you to click **Log in**; that runs `claude login` inside the container, streams the authorization URL to the browser, and lets you paste the returned code back. Credentials are written to a named docker volume (`claude-auth`) so they persist across rebuilds.
+## Test
+
+```bash
+docker build --target python-test -t agent-manager:python-test .
+docker build --target go-test -t agent-manager:go-test .
+```
+
+On first launch, the container is not yet authenticated with Claude. A red banner in the UI invites you to click **Log in**; that runs `claude auth login` inside the container, streams the authorization URL to the browser, and lets you paste the returned code back. Credentials are written to a named docker volume (`claude-auth`) so they persist across rebuilds.
 
 ## Working on host projects
 
@@ -26,21 +33,31 @@ Then run with both files:
 docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 ```
 
-Convention: **mount at the same absolute path** on both sides (e.g. `${HOME}/wrk/foo:${HOME}/wrk/foo`) so the path you paste into the UI's *Working directory* field works identically inside and outside the container. The container's `HOME` is `/root`, so `~` in the UI does *not* mean your host home — type the full absolute path.
+Convention: **mount at the same absolute path** on both sides (e.g. `${HOME}/wrk/foo:${HOME}/wrk/foo`) so the path you paste into the UI's *Working directory* field works identically inside and outside the container. The container's `HOME` is `/app`, so `~` in the UI does *not* mean your host home.
+
+For testing this repo from inside the container, mount it at `/app/agent-manager` and use that as the UI working directory:
+
+```yaml
+services:
+  agent-manager:
+    volumes:
+      - ${HOME}/codes/agent-manager:/app/agent-manager
+```
 
 `docker-compose.local.yml` is git-ignored so each developer keeps their own.
 
 ## How it works
 
-The Python server wraps the official `claude-agent-sdk` Python package. That package spawns the `claude` CLI (from `@anthropic-ai/claude-code`) as a subprocess and pipes JSON in/out — **both** are installed in the container.
+The Python server wraps provider runtimes behind a common instance/event layer. Claude uses the official `claude-agent-sdk` Python package, which spawns the `claude` CLI from `@anthropic-ai/claude-code`. Codex uses `codex exec --json` from `@openai/codex`. Both CLIs are installed in the container.
 
-Each UI "instance" is one long-lived `ClaudeSDKClient` backed by one `claude` subprocess, running asynchronously inside the FastAPI server. The browser subscribes to a per-instance WebSocket and receives structured events (`assistant_text`, `tool_use`, `tool_result`, `thinking`, `result`, …) as the agent works. Per-instance WSs stay open in the background, so status indicators and conversation transcripts continue to update for non-selected conversations.
+Each UI "instance" runs asynchronously inside the FastAPI server and publishes provider-normalized events. The browser subscribes to a per-instance WebSocket and receives structured events (`assistant_text`, `tool_use`, `tool_result`, `thinking`, `result`, …) as the agent works. Per-instance WSs stay open in the background, so status indicators and conversation transcripts continue to update for non-selected conversations.
 
 ## Persistence
 
-Two named volumes survive `docker compose down`:
+Three named volumes survive `docker compose down`:
 
-- `claude-auth` → `/root/.claude` — Claude's credentials and per-session jsonl transcripts. The latter is what makes session resumption work.
+- `claude-auth` → `/app/.claude` — Claude's credentials and per-session jsonl transcripts. The latter is what makes session resumption work.
+- `codex-auth` → `/app/.codex` — Codex auth, config, and session storage used by `codex exec resume`.
 - `agent-manager-state` → `/var/lib/agent-manager` — `instances.json` (registry: title, display_title, path, permission_mode, session_id, created_at, order) plus `events/{title}.jsonl` per instance (every UI event for replay).
 
 On restart, persisted instances are re-created with their stored `session_id` passed as `resume=…` in `ClaudeAgentOptions`, so the agent picks up exactly where it left off.

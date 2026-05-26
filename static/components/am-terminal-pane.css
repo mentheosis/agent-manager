@@ -161,6 +161,9 @@
 .event-error { border-left-color: var(--red); }
 .event-error .label { color: var(--red); }
 
+.event-command_result { border-left-color: var(--cyan); }
+.event-command_result .label { color: var(--cyan); }
+
 .event-aborted { border-left-color: var(--orange); }
 .event-aborted .label { color: var(--orange); }
 
@@ -169,6 +172,51 @@
 .event-system_init pre {
     font-size: var(--fs-base);
     color: var(--text-dim);
+}
+
+.event-artifact { border-left-color: var(--cyan); }
+.event-artifact .label { color: var(--cyan); }
+
+.artifact-body {
+    white-space: normal;
+    max-height: none;
+}
+
+.artifact-image-link {
+    display: inline-block;
+    max-width: min(100%, 760px);
+}
+
+.artifact-image {
+    display: block;
+    max-width: 100%;
+    max-height: 520px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    object-fit: contain;
+}
+
+.artifact-file-link {
+    display: inline-block;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--cyan);
+    text-decoration: none;
+    background: var(--bg-elevated);
+    overflow-wrap: anywhere;
+}
+
+.artifact-file-link:hover {
+    border-color: var(--cyan);
+}
+
+.artifact-meta {
+    margin-top: 6px;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+    overflow-wrap: anywhere;
 }
 
 .event-note {
@@ -417,7 +465,11 @@
     font-variant-numeric: tabular-nums;
 }
 
-#status-bar .totals-tokens { color: var(--text-dim); }
+#status-bar .totals-tokens { 
+    color: var(--text-dim); 
+    max-height: 1.5rem;
+    overflow: hidden;
+}
 #status-bar .totals-cache { color: var(--cyan); }
 #status-bar .totals-cost { color: var(--green); }
 #status-bar .totals-turns { color: var(--text-dim); }
@@ -474,22 +526,22 @@
 /* On narrow screens (phones in responsive test mode and real devices), ensure the
    prompt form clears the browser chrome / system nav bar. Uses a fixed 20px floor
    so it's visible in browser dev tools responsive mode as well as on real devices. */
-@media (max-width: 768px) {
+@media (max-width: 1100px) {
     #prompt-form {
         padding-bottom: max(20px, calc(12px + env(safe-area-inset-bottom, 0px)));
     }
     #status-bar .spinner {
-        width: 48px;
-        height: 48px;
-        border-width: 5px;
+        width: 1rem;
+        height: 1rem;
+        border-width: 3px;
     }
     #status-bar .status-dot {
-        width: 32px;
-        height: 32px;
+        width: var(--fs-xl);
+        height: var(--fs-xl);
     }
     #status-bar .status-icon {
-        width: 56px;
-        height: 56px;
+        width: var(--fs-xl);
+        height: var(--fs-xl);
     }
 }
 

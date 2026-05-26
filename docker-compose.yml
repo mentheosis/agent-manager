@@ -15,6 +15,8 @@ services:
       # from the host. Note: ~/.claude.json lives outside this volume, so the
       # server restores it from ~/.claude/backups/ on startup if missing.
       - claude-auth:/app/.claude
+      # Persist Codex auth, config, and session storage across rebuilds.
+      - codex-auth:/app/.codex
       # Persist instance metadata + per-instance event logs across rebuilds.
       # Conversation continuity comes from Claude's own session jsonl (under
       # ~/.claude/projects/) which lives in the claude-auth volume — we
@@ -24,4 +26,5 @@ services:
 
 volumes:
   claude-auth:
+  codex-auth:
   agent-manager-state:

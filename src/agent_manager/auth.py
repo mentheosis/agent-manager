@@ -11,14 +11,16 @@ import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
 AuthEvent = dict[str, Any]
 
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+CODEX_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 LOGIN_COMMAND = ("claude", "auth", "login")
+CODEX_LOGIN_COMMAND = ("codex", "login")
 
 
 def _parse_auth_status(raw: str) -> dict[str, Any]:
@@ -47,6 +49,33 @@ def _claude_auth_status() -> dict[str, Any]:
     return _parse_auth_status(proc.stdout)
 
 
+def _codex_auth_status() -> dict[str, Any]:
+    """Return best-effort Codex auth status.
+
+    Codex is not installed in the current Docker image yet, so this deliberately
+    degrades to an unauthenticated file check until Phase 4 wires the runtime.
+    """
+    if shutil.which("codex") is None:
+        return {}
+    try:
+        proc = subprocess.run(
+            ["codex", "login", "status"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    parsed = _parse_auth_status(proc.stdout)
+    if parsed:
+        return parsed
+    if proc.returncode == 0 and "logged in" in proc.stdout.lower():
+        return {"loggedIn": True, "authMethod": proc.stdout.strip()}
+    return {}
+
+
 @dataclass
 class LoginSession:
     """One in-flight `claude login` subprocess.
@@ -57,6 +86,7 @@ class LoginSession:
     """
 
     id: str
+    command: tuple[str, ...] = LOGIN_COMMAND
     _proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
     _master_fd: int | None = field(default=None, repr=False)
     _history: list[AuthEvent] = field(default_factory=list, repr=False)
@@ -70,7 +100,7 @@ class LoginSession:
         self._master_fd = master_fd
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                *LOGIN_COMMAND,
+                *self.command,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
@@ -158,7 +188,20 @@ class LoginSession:
 
 
 class AuthRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        provider: str = "claude",
+        login_command: tuple[str, ...] = LOGIN_COMMAND,
+        credentials_path: Path = CREDENTIALS_PATH,
+        status_func: Callable[[], dict[str, Any]] | None = None,
+        login_supported: bool = True,
+    ) -> None:
+        self.provider = provider
+        self.login_command = login_command
+        self.credentials_path = credentials_path
+        self.status_func = status_func or _claude_auth_status
+        self.login_supported = login_supported
         self._sessions: dict[str, LoginSession] = {}
 
     @staticmethod
@@ -170,21 +213,18 @@ class AuthRegistry:
 
     @staticmethod
     def status() -> dict[str, Any]:
-        status = _claude_auth_status()
-        authed = bool(status.get("loggedIn")) if "loggedIn" in status else CREDENTIALS_PATH.exists()
-        return {
-            "authed": authed,
-            "credentials_path": str(CREDENTIALS_PATH),
-            "auth_method": status.get("authMethod"),
-            "api_provider": status.get("apiProvider"),
-        }
+        return claude_auth_status()
 
     @staticmethod
     def credentials_path() -> str:
         return str(CREDENTIALS_PATH)
 
     async def start(self) -> LoginSession:
-        session = LoginSession(id=str(uuid.uuid4()))
+        if not self.login_supported:
+            raise RuntimeError(f"{self.provider} login is not supported yet")
+        if shutil.which(self.login_command[0]) is None:
+            raise RuntimeError(f"{self.login_command[0]} CLI is not installed")
+        session = LoginSession(id=str(uuid.uuid4()), command=self.login_command)
         await session.start()
         self._sessions[session.id] = session
         return session
@@ -202,3 +242,51 @@ class AuthRegistry:
         self._sessions.clear()
         for session in sessions:
             await session.stop()
+
+    def provider_status(self) -> dict[str, Any]:
+        return _status_payload(
+            provider=self.provider,
+            status=self.status_func(),
+            credentials_path=self.credentials_path,
+            login_supported=self.login_supported,
+        )
+
+
+def _status_payload(
+    *,
+    provider: str,
+    status: dict[str, Any],
+    credentials_path: Path,
+    login_supported: bool,
+) -> dict[str, Any]:
+    authed = bool(status.get("loggedIn")) if "loggedIn" in status else credentials_path.exists()
+    return {
+        "provider": provider,
+        "authed": authed,
+        "credentials_path": str(credentials_path),
+        "auth_method": status.get("authMethod") or status.get("auth_method"),
+        "api_provider": status.get("apiProvider") or status.get("api_provider"),
+        "login_supported": login_supported,
+    }
+
+
+def claude_auth_status() -> dict[str, Any]:
+    return _status_payload(
+        provider="claude",
+        status=_claude_auth_status(),
+        credentials_path=CREDENTIALS_PATH,
+        login_supported=True,
+    )
+
+
+def codex_auth_status() -> dict[str, Any]:
+    return _status_payload(
+        provider="codex",
+        status=_codex_auth_status(),
+        credentials_path=CODEX_AUTH_PATH,
+        login_supported=False,
+    )
+
+
+def codex_auth_raw_status() -> dict[str, Any]:
+    return _codex_auth_status()

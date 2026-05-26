@@ -1,5 +1,5 @@
 /**
- * Auth status banner - shows when disconnected or when Claude is not authenticated.
+ * Auth status banner - shows when disconnected or when the default provider is not authenticated.
  *
  * Modes (mutually exclusive, disconnected takes priority):
  *   disconnected — orange banner, "Reconnect" button
@@ -64,7 +64,7 @@ class AmAuthBanner extends HTMLElement {
         } else if (!this._authed) {
             this.hidden = false;
             this.dataset.mode = 'unauthed';
-            this.querySelector('#auth-banner-text').textContent = 'Claude is not authenticated in the container.';
+            this.querySelector('#auth-banner-text').textContent = 'Default provider is not authenticated in the container.';
             this.querySelector('#login-btn').hidden = false;
             this.querySelector('#reconnect-btn').hidden = true;
         } else {

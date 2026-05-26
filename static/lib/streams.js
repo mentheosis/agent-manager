@@ -6,6 +6,21 @@
 
 import { eventsWebSocketUrl } from './api.js';
 
+const PRICE_PER_M_TOKENS = {
+    'gpt-5.2-codex': [1.75, 0.175, 14.00],
+    'gpt-5.1-codex-max': [1.25, 0.125, 10.00],
+    'gpt-5.1-codex': [1.25, 0.125, 10.00],
+    'gpt-5-codex': [1.25, 0.125, 10.00],
+    'gpt-5.5': [5.00, 0.50, 30.00],
+    'gpt-5.4-mini': [0.75, 0.075, 4.50],
+    'gpt-5.4': [2.50, 0.25, 15.00],
+    'gpt-5.2': [1.75, 0.175, 14.00],
+    'gpt-5.1': [1.25, 0.125, 10.00],
+    'gpt-5-mini': [0.25, 0.025, 2.00],
+    'gpt-5-nano': [0.05, 0.005, 0.40],
+    'gpt-5': [1.25, 0.125, 10.00],
+};
+
 class Stream {
     constructor(title) {
         this.title = title;
@@ -19,8 +34,10 @@ class Stream {
             output_tokens: 0,
             cache_read: 0,
             cache_creation: 0,
+            cost_estimated: false,
             turns: 0,
         };
+        this._lastCodexUsage = null;
         this.listeners = new Set();
         this.eventHistory = [];  // Buffer events for replay to new subscribers
         this.historyComplete = false;  // True once the server's history_end sentinel arrives
@@ -147,9 +164,10 @@ class Stream {
             this.status = event.status;
         }
 
-        // Track active model from system_init
+        // Track active model from system_init. Providers may report an exact
+        // model id or only a display-safe label for their configured default.
         if (event.type === 'system_init') {
-            const model = event.data && event.data.model;
+            const model = event.data && (event.data.model || event.data.active_model_label);
             if (model) {
                 this.activeModel = model;
             }
@@ -166,16 +184,78 @@ class Stream {
     accumulateTotals(event) {
         if (event.is_error) return;
         const usage = event.usage || event.data?.usage;
+        let usageForTotals = null;
         if (usage) {
-            this.totals.input_tokens += usage.input_tokens || 0;
-            this.totals.output_tokens += usage.output_tokens || 0;
-            this.totals.cache_read += usage.cache_read_input_tokens || usage.cache_read || 0;
-            this.totals.cache_creation += usage.cache_creation_input_tokens || usage.cache_creation || 0;
+            usageForTotals = this.usageForTotals(usage);
+            const cachedInput = usageForTotals.cached_input_tokens || usageForTotals.cache_read_input_tokens || usageForTotals.cache_read || 0;
+            const reasoningOutput = usageForTotals.reasoning_output_tokens || 0;
+            this.totals.input_tokens += usageForTotals.input_tokens || 0;
+            this.totals.output_tokens += (usageForTotals.output_tokens || 0) + reasoningOutput;
+            this.totals.cache_read += cachedInput;
+            this.totals.cache_creation += usageForTotals.cache_creation_input_tokens || usageForTotals.cache_creation || 0;
         }
         if (typeof event.total_cost_usd === 'number') {
             this.totals.cost += event.total_cost_usd;
+        } else if (usage) {
+            const estimate = this.estimateCostForUsage(event.estimated_cost_model || this.activeModel, usageForTotals);
+            if (typeof estimate === 'number') {
+                this.totals.cost += estimate;
+                this.totals.cost_estimated = true;
+            }
+        } else if (typeof event.estimated_cost_usd === 'number') {
+            this.totals.cost += event.estimated_cost_usd;
+            this.totals.cost_estimated = true;
         }
         this.totals.turns += 1;
+    }
+
+    usageForTotals(usage, { peek = false } = {}) {
+        if (!this.isCodexCumulativeUsage(usage)) return usage;
+        const previous = this._lastCodexUsage;
+        const current = this.codexUsageSnapshot(usage);
+        if (!peek) this._lastCodexUsage = current;
+        if (!previous) return current;
+
+        const delta = {};
+        for (const key of Object.keys(current)) {
+            delta[key] = Math.max(current[key] - (previous[key] || 0), 0);
+        }
+        return delta;
+    }
+
+    isCodexCumulativeUsage(usage) {
+        return usage && (
+            Object.hasOwn(usage, 'cached_input_tokens')
+            || Object.hasOwn(usage, 'reasoning_output_tokens')
+        );
+    }
+
+    codexUsageSnapshot(usage) {
+        return {
+            input_tokens: usage.input_tokens || 0,
+            cached_input_tokens: usage.cached_input_tokens || 0,
+            output_tokens: usage.output_tokens || 0,
+            reasoning_output_tokens: usage.reasoning_output_tokens || 0,
+        };
+    }
+
+    estimateCostForUsage(model, usage) {
+        const rates = this.ratesForModel(model);
+        if (!rates || !usage) return null;
+        const [inputRate, cachedInputRate, outputRate] = rates;
+        const cachedInput = usage.cached_input_tokens || usage.cache_read_input_tokens || usage.cache_read || 0;
+        const input = Math.max((usage.input_tokens || 0) - cachedInput, 0);
+        const output = (usage.output_tokens || 0) + (usage.reasoning_output_tokens || 0);
+        return ((input * inputRate) + (cachedInput * cachedInputRate) + (output * outputRate)) / 1_000_000;
+    }
+
+    ratesForModel(model) {
+        if (!model) return null;
+        const normalized = model.trim().toLowerCase();
+        const match = Object.entries(PRICE_PER_M_TOKENS)
+            .sort((a, b) => b[0].length - a[0].length)
+            .find(([key]) => normalized === key || normalized.startsWith(`${key}-`));
+        return match?.[1] || null;
     }
 
     subscribe(callback, { replay = true } = {}) {

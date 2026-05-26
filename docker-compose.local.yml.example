@@ -14,10 +14,14 @@
 # are preserved; this file only ADDS extra bind mounts to the same service.
 #
 # Path convention: mount at the SAME absolute path inside the container as on
-# the host. That way the path you paste in the UI's "Working directory" field
-# is identical on both sides, with no translation. Type the full absolute path
-# (e.g. /Users/kris-w/wrk/myproject) — the container's HOME is /root, so `~`
-# in the UI does NOT mean your host home.
+# the host when you want to paste host paths directly into the UI. The
+# container's HOME is /app, so `~` in the UI means /app, not your host home.
+#
+# For testing agent-manager itself, a convenient convention is:
+#
+#   ${HOME}/codes/agent-manager:/app/agent-manager
+#
+# Then use /app/agent-manager as the UI's "Working directory".
 #
 # docker-compose.local.yml is gitignored; this *.example file is the template.
 
@@ -28,6 +32,9 @@ services:
       #   <host absolute path>:<container path>:<options>
       #
       # Examples (uncomment + edit, or add your own):
+
+      # This repo, mounted at the path used by the local smoke-test workflow:
+      # - ${HOME}/codes/agent-manager:/app/agent-manager
 
       # A specific project, read/write:
       # - ${HOME}/wrk/my-project:${HOME}/wrk/my-project

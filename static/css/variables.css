@@ -22,21 +22,32 @@
    All font sizes in the app use these variables so a single mobile breakpoint
    doubles every text size for comfortable reading on small screens.          */
 :root {
-    --fs-xs:   10px;   /* tiny badges, instance paths */
-    --fs-sm:   11px;   /* secondary labels, small controls */
-    --fs-base: 12px;   /* tertiary content, toolbar buttons */
-    --fs-md:   13px;   /* primary content text, inputs */
-    --fs-lg:   14px;   /* headings, emphasis */
-    --fs-xl:   16px;   /* large icon-text */
+    --fs-xs:   0.5rem;   /* tiny badges, instance paths */
+    --fs-sm:   0.66rem;   /* secondary labels, small controls */
+    --fs-base: 0.72rem;   /* tertiary content, toolbar buttons */
+    --fs-md:   0.78rem;   /* primary content text, inputs */
+    --fs-lg:   0.82rem;   /* headings, emphasis */
+    --fs-xl:   1rem;   /* large icon-text */
 }
 
+/* :root {
+    --fs-xs:   0.7rem;   /* tiny badges, instance paths */
+    --fs-sm:   0.76rem;   /* secondary labels, small controls */
+    --fs-base: 0.82rem;   /* tertiary content, toolbar buttons */
+    --fs-md:   0.88rem;   /* primary content text, inputs */
+    --fs-lg:   0.92rem;   /* headings, emphasis */
+    --fs-xl:   1rem;   /* large icon-text */
+} */
+
+/* 
 @media (max-width: 1100px) {
     :root {
-        --fs-xs:   20px;
-        --fs-sm:   22px;
-        --fs-base: 24px;
-        --fs-md:   28px;
-        --fs-lg:   32px;
-        --fs-xl:   38px;
-    }
-}
+        --fs-xs:   0.8rem;   /* tiny badges, instance paths */
+        --fs-sm:   0.84rem;   /* secondary labels, small controls */
+        --fs-base: 0.88rem;   /* tertiary content, toolbar buttons */
+        --fs-md:   0.9rem;   /* primary content text, inputs */
+        --fs-lg:   0.95rem;   /* headings, emphasis */
+        --fs-xl:   1rem;   /* large icon-text */
+        }
+} 
+*/
