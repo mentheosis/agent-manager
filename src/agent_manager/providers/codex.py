@@ -72,6 +72,8 @@ class CodexRuntime:
             stderr_task = asyncio.create_task(self._read_stderr(stderr_chunks))
             transcript_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
             transcript_task = self._start_transcript_tail(transcript_queue, system_context)
+            seen_assistant_texts: set[str] = set()
+            seen_result = {"emitted": False}
             saw_result = False
             try:
                 assert self._proc.stdout is not None
@@ -85,7 +87,14 @@ class CodexRuntime:
                     done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
 
                     if transcript_get is not None and transcript_get in done:
-                        yield transcript_get.result()
+                        event = transcript_get.result()
+                        if event.get("type") == "result":
+                            saw_result = True
+                        if _should_emit_event(event, seen_assistant_texts, seen_result):
+                            yield event
+                        if _is_terminal_result(event):
+                            await self._terminate()
+                            return
                         continue
                     if transcript_get is not None:
                         transcript_get.cancel()
@@ -126,15 +135,38 @@ class CodexRuntime:
                                 reported_generated_images,
                             ):
                                 yield image_event
-                        yield event
+                        if _should_emit_event(event, seen_assistant_texts, seen_result):
+                            yield event
 
                 while not transcript_queue.empty():
                     event = transcript_queue.get_nowait()
                     if event.get("type") == "artifact":
                         self._track_artifact_path(event, reported_generated_images)
-                    yield event
+                    if event.get("type") == "result":
+                        saw_result = True
+                    if _should_emit_event(event, seen_assistant_texts, seen_result):
+                        yield event
+                    if _is_terminal_result(event):
+                        await self._terminate()
+                        return
 
                 returncode = await self._proc.wait()
+                if transcript_task is not None and not transcript_task.done():
+                    try:
+                        await asyncio.wait_for(transcript_task, timeout=1)
+                    except asyncio.TimeoutError:
+                        pass
+                while not transcript_queue.empty():
+                    event = transcript_queue.get_nowait()
+                    if event.get("type") == "artifact":
+                        self._track_artifact_path(event, reported_generated_images)
+                    if event.get("type") == "result":
+                        saw_result = True
+                    if _should_emit_event(event, seen_assistant_texts, seen_result):
+                        yield event
+                    if _is_terminal_result(event):
+                        await self._terminate()
+                        return
                 await stderr_task
                 if returncode != 0:
                     stderr = "".join(stderr_chunks).strip()
@@ -408,7 +440,7 @@ class CodexRuntime:
         queue: asyncio.Queue[AgentEvent],
         system_context: dict[str, Any],
     ) -> None:
-        while self._proc is not None and self._proc.returncode is None:
+        while True:
             try:
                 size = path.stat().st_size
                 if size > offset:
@@ -429,6 +461,8 @@ class CodexRuntime:
                     offset = size
             except OSError:
                 pass
+            if self._proc is None or self._proc.returncode is not None:
+                break
             await asyncio.sleep(0.25)
 
     async def _terminate(self) -> None:
@@ -458,6 +492,32 @@ def _suffix_for_media_type(media_type: str) -> str:
 
 def _is_stream_limit_error(e: BaseException) -> bool:
     return isinstance(e, asyncio.LimitOverrunError) or _STREAM_LIMIT_ERROR in str(e)
+
+
+def _should_emit_event(
+    event: AgentEvent,
+    seen_assistant_texts: set[str],
+    seen_result: dict[str, bool],
+) -> bool:
+    if event.get("type") == "result":
+        if seen_result.get("emitted"):
+            return False
+        seen_result["emitted"] = True
+        return True
+
+    if event.get("type") != "assistant_text":
+        return True
+    text = event.get("text")
+    if not isinstance(text, str) or not text:
+        return True
+    if text in seen_assistant_texts:
+        return False
+    seen_assistant_texts.add(text)
+    return True
+
+
+def _is_terminal_result(event: AgentEvent) -> bool:
+    return event.get("type") == "result" and event.get("terminal") is True
 
 
 def _stream_limit_message(stream: str, e: BaseException) -> str:

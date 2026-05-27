@@ -103,14 +103,7 @@ def translate_codex_event(raw: dict[str, Any], system_context: dict[str, Any] | 
             tool_name = str(item.get("name") or item.get("tool_name") or item_type or "codex_tool")
             tool_id = item_id or f"codex-{abs(hash(str(raw))) & 0xffffffff:x}"
             if event_type == "item.started":
-                events.append(
-                    {
-                        "type": "tool_use",
-                        "id": tool_id,
-                        "name": tool_name,
-                        "input": _tool_input_from(item, raw),
-                    }
-                )
+                events.append(_tool_use_event(tool_id, tool_name, _tool_input_from(item, raw)))
             elif event_type in {"item.failed", "item.cancelled"}:
                 output = _output_from(item) or _output_from(raw) or item_type
                 events.append(
@@ -166,12 +159,11 @@ def translate_codex_transcript_event(raw: dict[str, Any], system_context: dict[s
         name = str(payload.get("name") or "custom_tool_call")
         tool_id = _first_str(payload, "call_id", "id") or f"codex-patch-{abs(hash(str(raw))) & 0xffffffff:x}"
         return [
-            {
-                "type": "tool_use",
-                "id": tool_id,
-                "name": name if name != "custom_tool_call" else payload_type,
-                "input": payload.get("input") or _tool_input_from(payload, raw),
-            }
+            _tool_use_event(
+                tool_id,
+                name if name != "custom_tool_call" else payload_type,
+                payload.get("input") or _tool_input_from(payload, raw),
+            )
         ]
 
     if raw.get("type") == "response_item" and payload_type in {
@@ -202,6 +194,23 @@ def translate_codex_transcript_event(raw: dict[str, Any], system_context: dict[s
 
     if raw.get("type") == "event_msg" and payload_type == "mcp_tool_call_end":
         return _mcp_tool_call_events(payload)
+
+    if raw.get("type") == "event_msg" and payload_type == "agent_message":
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return [{"type": "assistant_text", "text": message}]
+        return []
+
+    if raw.get("type") == "event_msg" and payload_type == "task_complete":
+        return [
+            {
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": payload.get("duration_ms"),
+                "is_error": False,
+                "terminal": True,
+            }
+        ]
 
     if _is_image_tool_item(payload_type, str(payload.get("name") or "")):
         return _image_artifact_events_from_raw(raw)
@@ -288,16 +297,15 @@ def _mcp_tool_call_events(payload: dict[str, Any]) -> list[AgentEvent]:
     result = _dict(payload.get("result"))
     output = _mcp_result_output(result)
     return [
-        {
-            "type": "tool_use",
-            "id": tool_id,
-            "name": tool_name,
-            "input": {
+        _tool_use_event(
+            tool_id,
+            tool_name,
+            {
                 "server": server,
                 "tool": tool,
                 "arguments": invocation.get("arguments") or {},
             },
-        },
+        ),
         {
             "type": "tool_result",
             "tool_id": tool_id,
@@ -305,6 +313,86 @@ def _mcp_tool_call_events(payload: dict[str, Any]) -> list[AgentEvent]:
             "is_error": _mcp_result_is_error(result),
         },
     ]
+
+
+def _tool_use_event(tool_id: str, name: str, input_value: Any) -> AgentEvent:
+    event: AgentEvent = {
+        "type": "tool_use",
+        "id": tool_id,
+        "name": name,
+        "input": input_value,
+    }
+    if _tool_concludes_turn(name, input_value):
+        event["concludes_turn"] = True
+    display_text = _tool_display_text(name, input_value)
+    if display_text:
+        event["display_text"] = display_text
+    return event
+
+
+def _tool_display_text(name: str, input_value: Any) -> str:
+    if name == "update_goal":
+        goal_input = _coerce_json_object(input_value)
+        status = goal_input.get("status")
+        if status == "complete":
+            return "Goal marked complete."
+        if status == "blocked":
+            return "Goal marked blocked."
+        return ""
+
+    if name != "update_plan":
+        return ""
+
+    plan_input = _coerce_json_object(input_value)
+    if not plan_input:
+        return ""
+
+    lines: list[str] = []
+    explanation = plan_input.get("explanation")
+    if isinstance(explanation, str) and explanation.strip():
+        lines.append(explanation.strip())
+
+    in_progress_steps = _in_progress_plan_steps(plan_input.get("plan"))
+    if in_progress_steps:
+        lines.extend(f"In progress: {step}" for step in in_progress_steps)
+
+    return "\n".join(lines) or "Plan updated."
+
+
+def _tool_concludes_turn(name: str, input_value: Any) -> bool:
+    if name != "update_goal":
+        return False
+    goal_input = _coerce_json_object(input_value)
+    return goal_input.get("status") in {"complete", "blocked"}
+
+
+def _coerce_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _in_progress_plan_steps(plan: Any) -> list[str]:
+    if not isinstance(plan, list):
+        return []
+
+    steps: list[str] = []
+    for item in plan:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if status not in {"in_progress", "in_progess"}:
+            continue
+        step = item.get("step")
+        if isinstance(step, str) and step.strip():
+            steps.append(step.strip())
+    return steps
 
 
 def _mcp_result_output(result: dict[str, Any]) -> str:

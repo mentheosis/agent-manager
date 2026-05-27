@@ -9,6 +9,7 @@ from typing import Any
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+VIDEO_SUFFIXES = {".mp4", ".webm", ".ogv", ".ogg", ".mov", ".m4v"}
 ARTIFACT_DIRECTIVE_RE = re.compile(r"\[\[agent-manager:artifact\s+(?P<attrs>[^\]]+)\]\]")
 
 
@@ -31,7 +32,7 @@ def artifact_event(
     artifact_type: str | None = None,
 ) -> dict[str, Any]:
     artifact_path = Path(path)
-    inferred_type = artifact_type or ("image" if is_image_path(artifact_path) else "file")
+    inferred_type = artifact_type or _artifact_type_for_path(artifact_path)
     event = {
         "type": "artifact",
         "artifact_type": inferred_type,
@@ -51,6 +52,18 @@ def image_artifact_event(path: str | Path, *, title: str | None = None, source: 
 
 def is_image_path(path: str | Path) -> bool:
     return Path(path).suffix.lower() in IMAGE_SUFFIXES
+
+
+def is_video_path(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in VIDEO_SUFFIXES
+
+
+def _artifact_type_for_path(path: str | Path) -> str:
+    if is_image_path(path):
+        return "image"
+    if is_video_path(path):
+        return "video"
+    return "file"
 
 
 def extract_artifact_directives(text: str, *, source: str | None = None) -> tuple[str, list[dict[str, Any]]]:
@@ -118,4 +131,6 @@ def _mime_type_for_path(path: Path) -> str:
         return guessed
     if is_image_path(path):
         return "image/png"
+    if is_video_path(path):
+        return "video/mp4"
     return "application/octet-stream"

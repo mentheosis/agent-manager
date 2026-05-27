@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 import sqlite3
 import time
 import uuid
@@ -23,13 +22,11 @@ def parse_agent_command(message: AgentInput) -> AgentCommand | None:
     text = message.text.strip()
     if not text.startswith("/"):
         return None
-    try:
-        parts = shlex.split(text)
-    except ValueError as e:
-        return AgentCommand(raw=text, name="/", args=[f"parse error: {e}"])
+    parts = text.split(maxsplit=1)
     if not parts:
         return None
-    return AgentCommand(raw=text, name=parts[0].lower(), args=parts[1:])
+    args = parts[1].split() if len(parts) > 1 else []
+    return AgentCommand(raw=text, name=parts[0].lower(), args=args)
 
 
 def handle_agent_command(
@@ -53,7 +50,7 @@ def handle_agent_command(
 
 def _handle_codex_goal_command(raw: str, args: list[str], session_id: str | None) -> dict[str, Any]:
     if not args:
-        return _command_error(raw, "Usage: /goal <objective>, /goal clear, /goal pause, or /goal resume")
+        return _get_codex_goal(raw, session_id)
 
     action = args[0].lower()
     if len(args) == 1 and action == "clear":
@@ -85,6 +82,52 @@ def _clear_codex_goal(raw: str, session_id: str | None) -> dict[str, Any]:
     else:
         message = f"No Codex goal was set for session {session_id}."
     return _command_result(raw, message, {"session_id": session_id, "deleted": deleted})
+
+
+def _get_codex_goal(raw: str, session_id: str | None) -> dict[str, Any]:
+    if not session_id:
+        return _command_error(raw, "Cannot read goal before Codex has reported a session id.")
+
+    db_path = _codex_goals_db()
+    if not db_path.is_file():
+        return _command_error(raw, f"Codex goals database was not found: {db_path}")
+
+    try:
+        with sqlite3.connect(db_path, timeout=5) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute(
+                """
+                SELECT
+                    thread_id,
+                    objective,
+                    status,
+                    token_budget,
+                    tokens_used,
+                    time_used_seconds,
+                    created_at_ms,
+                    updated_at_ms
+                FROM thread_goals
+                WHERE thread_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+    except sqlite3.Error as e:
+        return _command_error(raw, f"Failed to read Codex goal: {e}")
+
+    if row is None:
+        return _command_result(raw, f"No Codex goal is set for session {session_id}.", {"session_id": session_id})
+
+    goal = {
+        "thread_id": row["thread_id"],
+        "objective": row["objective"],
+        "status": row["status"],
+        "token_budget": row["token_budget"],
+        "tokens_used": row["tokens_used"],
+        "time_used_seconds": row["time_used_seconds"],
+        "created_at_ms": row["created_at_ms"],
+        "updated_at_ms": row["updated_at_ms"],
+    }
+    return _command_result(raw, _goal_summary(goal), {"session_id": session_id, "goal": goal})
 
 
 def _set_codex_goal(raw: str, session_id: str | None, objective: str) -> dict[str, Any]:
@@ -168,7 +211,22 @@ def _set_codex_goal_status(raw: str, session_id: str | None, status: str) -> dic
 
 
 def _goal_objective_from_raw(raw: str) -> str:
-    return raw[len("/goal") :].strip()
+    parts = raw.split(maxsplit=1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
+
+
+def _goal_summary(goal: dict[str, Any]) -> str:
+    lines = [
+        f"Goal status: {goal['status']}",
+        f"Objective: {goal['objective']}",
+        f"Tokens used: {goal['tokens_used']}",
+        f"Time used: {goal['time_used_seconds']}s",
+    ]
+    if goal.get("token_budget") is not None:
+        lines.append(f"Token budget: {goal['token_budget']}")
+    return "\n".join(lines)
 
 
 def _codex_goals_db() -> Path:

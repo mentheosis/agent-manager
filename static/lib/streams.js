@@ -163,7 +163,6 @@ class Stream {
         if (event.type === 'status') {
             this.status = event.status;
         }
-
         // Track active model from system_init. Providers may report an exact
         // model id or only a display-safe label for their configured default.
         if (event.type === 'system_init') {

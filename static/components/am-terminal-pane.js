@@ -658,7 +658,12 @@ class AmTerminalPane extends HTMLElement {
             const toolUse = toolUses[toolUses.length - 1];
             if (toolUse) {
                 const resultEl = this.createToolResultElement(event);
-                toolUse.appendChild(resultEl);
+                const rawContent = toolUse.querySelector(':scope > .tool-raw-details > .tool-raw-content');
+                if (rawContent) {
+                    rawContent.appendChild(resultEl);
+                } else {
+                    toolUse.appendChild(resultEl);
+                }
 
                 // Update tool_use status indicator
                 const statusEl = toolUse.querySelector('.tool-status');
@@ -679,16 +684,36 @@ class AmTerminalPane extends HTMLElement {
         }
 
         const body = this.getOrCreateCurrentTurnBody();
+        if (this.isDuplicateAssistantText(body, event) || this.isDuplicateResult(body, event)) {
+            this.autoScroll();
+            return;
+        }
         const el = this.createEventElement(event);
         body.appendChild(el);
         this.autoScroll();
+    }
+
+    isDuplicateAssistantText(body, event) {
+        if (event.type !== 'assistant_text') return false;
+        const text = event.text ?? '';
+        if (!text) return false;
+        const last = body.lastElementChild;
+        if (!last || !last.classList.contains('event-assistant_text')) return false;
+        const lastBody = last.querySelector(':scope > .event-body');
+        return lastBody?.textContent === text;
+    }
+
+    isDuplicateResult(body, event) {
+        if (event.type !== 'result') return false;
+        const last = body.lastElementChild;
+        return Boolean(last?.classList.contains('event-result'));
     }
 
     createEventElement(event) {
         const el = document.createElement('div');
         el.className = `event event-${event.type}`;
 
-        if (this.defaultOpenForEvent(event.type)) {
+        if (this.defaultOpenForEvent(event.type) || this.isSummaryToolUse(event)) {
             el.classList.add('open');
         }
 
@@ -720,18 +745,56 @@ class AmTerminalPane extends HTMLElement {
             labelEl.appendChild(preview);
         }
 
-        const bodyEl = event.type === 'artifact'
-            ? this.createArtifactBody(event)
-            : document.createElement('pre');
-        bodyEl.className = event.type === 'artifact'
-            ? 'event-body artifact-body'
-            : 'event-body';
-        if (event.type !== 'artifact') {
-            bodyEl.textContent = bodyText;
+        const toolSummaryText = this.summaryTextForToolUse(event);
+        if (event.type === 'tool_use' && toolSummaryText) {
+            const displayEl = document.createElement('pre');
+            displayEl.className = 'tool-display-text';
+            displayEl.textContent = toolSummaryText;
+            el.appendChild(displayEl);
         }
-        el.appendChild(bodyEl);
+
+        if (this.isSummaryToolUse(event)) {
+            el.appendChild(this.createToolRawDetails(bodyText));
+        } else {
+            const bodyEl = event.type === 'artifact'
+                ? this.createArtifactBody(event)
+                : document.createElement('pre');
+            bodyEl.className = event.type === 'artifact'
+                ? 'event-body artifact-body'
+                : 'event-body';
+            if (event.type !== 'artifact') {
+                bodyEl.textContent = bodyText;
+            }
+            el.appendChild(bodyEl);
+        }
 
         return el;
+    }
+
+    createToolRawDetails(bodyText) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'tool-raw-details';
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tool-raw-toggle';
+        button.textContent = 'show details';
+        button.addEventListener('click', () => {
+            const open = wrapper.classList.toggle('open');
+            button.textContent = open ? 'hide details' : 'show details';
+        });
+
+        const content = document.createElement('div');
+        content.className = 'tool-raw-content';
+
+        const bodyEl = document.createElement('pre');
+        bodyEl.className = 'event-body';
+        bodyEl.textContent = bodyText;
+        content.appendChild(bodyEl);
+
+        wrapper.appendChild(button);
+        wrapper.appendChild(content);
+        return wrapper;
     }
 
     createArtifactBody(event) {
@@ -751,6 +814,22 @@ class AmTerminalPane extends HTMLElement {
             img.alt = event.title || event.path || 'Image artifact';
             img.loading = 'lazy';
             link.appendChild(img);
+            body.appendChild(link);
+        } else if (event.artifact_type === 'video' || this.isVideoArtifact(event)) {
+            const video = document.createElement('video');
+            video.className = 'artifact-video';
+            video.src = url;
+            video.controls = true;
+            video.preload = 'metadata';
+            video.playsInline = true;
+            body.appendChild(video);
+
+            const link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.className = 'artifact-open-link';
+            link.textContent = event.title || event.path || 'Open video';
             body.appendChild(link);
         } else {
             const card = document.createElement('a');
@@ -776,6 +855,13 @@ class AmTerminalPane extends HTMLElement {
             return `/api/instances/${encodeURIComponent(this._instance.title)}/artifacts/${artifactId}`;
         }
         return `/api/artifacts/images/${artifactId}`;
+    }
+
+    isVideoArtifact(event) {
+        const mime = String(event.mime_type || '').toLowerCase();
+        const path = String(event.path || '').toLowerCase();
+        return mime.startsWith('video/')
+            || /\.(mp4|webm|ogv|ogg|mov|m4v)$/.test(path);
     }
 
     createToolResultElement(event) {
@@ -825,7 +911,10 @@ class AmTerminalPane extends HTMLElement {
             case 'thinking': return 'thinking';
             case 'tool_use': return `tool · ${event.name || 'call'}`;
             case 'tool_result': return `tool · result`;
-            case 'artifact': return event.artifact_type === 'image' ? 'image' : 'artifact';
+            case 'artifact':
+                if (event.artifact_type === 'image') return 'image';
+                if (event.artifact_type === 'video' || this.isVideoArtifact(event)) return 'video';
+                return 'artifact';
             case 'result': return `result${event.is_error ? ' (error)' : ''}`;
             case 'command_result': return event.is_error ? 'command · error' : 'command · result';
             case 'error': return 'error';
@@ -885,6 +974,8 @@ class AmTerminalPane extends HTMLElement {
         const input = event.input || {};
         const name = event.name || '';
         const normalizedName = name.toLowerCase();
+        const summaryText = this.summaryTextForToolUse(event);
+        if (summaryText) return this.shortPreview(summaryText, 60);
         if (typeof input === 'string') return this.shortPreview(input, 60);
 
         // Tool-specific previews
@@ -911,6 +1002,49 @@ class AmTerminalPane extends HTMLElement {
                 const firstVal = this.firstStringValue(input);
                 if (firstVal) return this.shortPreview(firstVal, 60);
                 return this.shortPreview(JSON.stringify(input), 60);
+        }
+    }
+
+    isSummaryToolUse(event) {
+        return event.type === 'tool_use' && Boolean(this.summaryTextForToolUse(event));
+    }
+
+    summaryTextForToolUse(event) {
+        if (event.type !== 'tool_use') return '';
+        if (event.display_text) return event.display_text;
+
+        const input = this.parseToolInput(event.input);
+        if (event.name === 'update_goal') {
+            if (input?.status === 'complete') return 'Goal marked complete.';
+            if (input?.status === 'blocked') return 'Goal marked blocked.';
+            return '';
+        }
+        if (event.name !== 'update_plan' || !input) return '';
+
+        const lines = [];
+        if (typeof input.explanation === 'string' && input.explanation.trim()) {
+            lines.push(input.explanation.trim());
+        }
+        if (Array.isArray(input.plan)) {
+            for (const item of input.plan) {
+                if (!item || typeof item !== 'object') continue;
+                if (item.status !== 'in_progress' && item.status !== 'in_progess') continue;
+                if (typeof item.step === 'string' && item.step.trim()) {
+                    lines.push(`In progress: ${item.step.trim()}`);
+                }
+            }
+        }
+        return lines.join('\n') || 'Plan updated.';
+    }
+
+    parseToolInput(input) {
+        if (input && typeof input === 'object') return input;
+        if (typeof input !== 'string') return null;
+        try {
+            const parsed = JSON.parse(input);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch {
+            return null;
         }
     }
 

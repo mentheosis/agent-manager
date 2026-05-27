@@ -8,7 +8,7 @@ import pytest
 
 from agent_manager.artifacts import artifact_id_for_path
 from agent_manager.providers.base import AgentConfig, AgentInput
-from agent_manager.providers.codex import CodexRuntime, _normalize_rate_limits
+from agent_manager.providers.codex import CodexRuntime, _normalize_rate_limits, _should_emit_event
 from agent_manager.providers.codex_events import translate_codex_event, translate_codex_transcript_event
 from agent_manager.providers.codex_metadata import (
     _parse_codex_doctor_metadata,
@@ -143,6 +143,56 @@ def test_translate_codex_assistant_and_tool_items(tmp_path: Path) -> None:
             "id": "search-1",
             "name": "web_search_call",
             "input": {"query": "current OpenAI API models"},
+        }
+    ]
+
+    assert translate_codex_event({
+        "type": "item.started",
+        "item_id": "plan-1",
+        "item": {
+            "type": "function_call",
+            "name": "update_plan",
+            "arguments": {
+                "explanation": "Checking the affected parser and renderer.",
+                "plan": [
+                    {"step": "Read event parser", "status": "completed"},
+                    {"step": "Patch update_plan display", "status": "in_progress"},
+                ],
+            },
+        },
+    }) == [
+        {
+            "type": "tool_use",
+            "id": "plan-1",
+            "name": "update_plan",
+            "input": {
+                "explanation": "Checking the affected parser and renderer.",
+                "plan": [
+                    {"step": "Read event parser", "status": "completed"},
+                    {"step": "Patch update_plan display", "status": "in_progress"},
+                ],
+            },
+            "display_text": "Checking the affected parser and renderer.\nIn progress: Patch update_plan display",
+        }
+    ]
+
+    assert translate_codex_event({
+        "type": "item.started",
+        "item_id": "plan-2",
+        "item": {
+            "type": "function_call",
+            "name": "update_plan",
+            "arguments": {
+                "plan": [{"step": "Finish", "status": "completed"}],
+            },
+        },
+    }) == [
+        {
+            "type": "tool_use",
+            "id": "plan-2",
+            "name": "update_plan",
+            "input": {"plan": [{"step": "Finish", "status": "completed"}]},
+            "display_text": "Plan updated.",
         }
     ]
 
@@ -288,6 +338,83 @@ def test_translate_codex_transcript_function_and_tool_search_events() -> None:
         }
     ]
 
+    assert translate_codex_transcript_event({
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "update_plan",
+            "arguments": json.dumps({
+                "explanation": "Now wiring the terminal display.",
+                "plan": [
+                    {"step": "Parse plan summaries", "status": "completed"},
+                    {"step": "Render summary text", "status": "in_progress"},
+                ],
+            }),
+            "call_id": "call-plan",
+        },
+    }) == [
+        {
+            "type": "tool_use",
+            "id": "call-plan",
+            "name": "update_plan",
+            "input": json.dumps({
+                "explanation": "Now wiring the terminal display.",
+                "plan": [
+                    {"step": "Parse plan summaries", "status": "completed"},
+                    {"step": "Render summary text", "status": "in_progress"},
+                ],
+            }),
+            "display_text": "Now wiring the terminal display.\nIn progress: Render summary text",
+        }
+    ]
+
+    assert translate_codex_transcript_event({
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "update_goal",
+            "arguments": "{\"status\":\"complete\"}",
+            "call_id": "call-goal",
+        },
+    }) == [
+        {
+            "type": "tool_use",
+            "id": "call-goal",
+            "name": "update_goal",
+            "input": "{\"status\":\"complete\"}",
+            "concludes_turn": True,
+            "display_text": "Goal marked complete.",
+        }
+    ]
+
+
+def test_translate_codex_transcript_final_agent_message_and_task_complete() -> None:
+    assert translate_codex_transcript_event({
+        "type": "event_msg",
+        "payload": {
+            "type": "agent_message",
+            "message": "Finished the goal.",
+            "phase": "final_answer",
+        },
+    }) == [{"type": "assistant_text", "text": "Finished the goal."}]
+
+    assert translate_codex_transcript_event({
+        "type": "event_msg",
+        "payload": {
+            "type": "task_complete",
+            "duration_ms": 856271,
+            "last_agent_message": "Finished the goal.",
+        },
+    }) == [
+        {
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 856271,
+            "is_error": False,
+            "terminal": True,
+        }
+    ]
+
 
 def test_parse_codex_model_catalog_filters_to_visible_available_models() -> None:
     assert _parse_codex_model_catalog({
@@ -411,6 +538,24 @@ def test_normalize_rate_limits_adds_reset_iso() -> None:
             "resets_at_iso": "2026-05-30T20:15:39+00:00",
         },
     }
+
+
+def test_should_emit_event_dedupes_assistant_text_within_turn() -> None:
+    seen: set[str] = set()
+    seen_result = {"emitted": False}
+
+    assert _should_emit_event({"type": "assistant_text", "text": "hello"}, seen, seen_result) is True
+    assert _should_emit_event({"type": "assistant_text", "text": "hello"}, seen, seen_result) is False
+    assert _should_emit_event({"type": "assistant_text", "text": "different"}, seen, seen_result) is True
+    assert _should_emit_event({"type": "tool_use", "name": "update_plan"}, seen, seen_result) is True
+
+
+def test_should_emit_event_dedupes_result_within_turn() -> None:
+    seen: set[str] = set()
+    seen_result = {"emitted": False}
+
+    assert _should_emit_event({"type": "result", "subtype": "success"}, seen, seen_result) is True
+    assert _should_emit_event({"type": "result", "subtype": "success"}, seen, seen_result) is False
 
 
 @pytest.mark.asyncio

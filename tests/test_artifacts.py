@@ -34,5 +34,16 @@ def test_extract_artifact_directive_for_generic_file() -> None:
     assert artifacts[0]["mime_type"] == "application/json"
 
 
+def test_extract_artifact_directive_for_mp4_video() -> None:
+    cleaned, artifacts = extract_artifact_directives(
+        'Video: [[agent-manager:artifact path="/tmp/walkthrough.mp4" title="Walkthrough"]]',
+        source="codex",
+    )
+
+    assert cleaned == "Video:"
+    assert artifacts[0]["artifact_type"] == "video"
+    assert artifacts[0]["mime_type"] == "video/mp4"
+
+
 def test_placeholder_artifact_path_is_not_present() -> None:
     assert artifact_path_is_present("/real/absolute/path/to/file.png") is False

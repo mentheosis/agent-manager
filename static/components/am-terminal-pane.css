@@ -69,6 +69,44 @@
 .event-tool_use { border-left-color: var(--purple); }
 .event-tool_use .label { color: var(--purple); }
 
+.event-tool_use > .tool-display-text {
+    margin: 0 0 8px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: var(--fs-md);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tool-raw-details {
+    margin-top: 4px;
+}
+
+.tool-raw-toggle {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: var(--fs-xs);
+    padding: 2px 8px;
+    cursor: pointer;
+}
+
+.tool-raw-toggle:hover {
+    color: var(--text);
+    border-color: var(--text-dim);
+}
+
+.tool-raw-content {
+    margin-top: 8px;
+}
+
+.tool-raw-details:not(.open) > .tool-raw-content {
+    display: none;
+}
+
 /* Tool status indicator */
 .tool-status {
     display: inline-block;
@@ -195,6 +233,27 @@
     border-radius: 6px;
     background: var(--bg);
     object-fit: contain;
+}
+
+.artifact-video {
+    display: block;
+    width: min(100%, 760px);
+    max-height: 520px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #000;
+}
+
+.artifact-open-link {
+    display: inline-block;
+    margin-top: 8px;
+    color: var(--cyan);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.artifact-open-link:hover {
+    text-decoration: underline;
 }
 
 .artifact-file-link {
@@ -362,6 +421,8 @@
 /* Per-event collapse toggle */
 .event:not(.open) > pre,
 .event:not(.open) > .event-body,
+.event:not(.open) > .tool-display-text,
+.event:not(.open) > .tool-raw-details,
 .event:not(.open) > .event-nested {
     display: none;
 }
