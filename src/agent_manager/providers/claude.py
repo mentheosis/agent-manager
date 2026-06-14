@@ -20,7 +20,7 @@ from claude_agent_sdk import (
 
 from agent_manager.artifacts import artifact_instruction
 
-from .base import AgentConfig, AgentEvent, AgentInput
+from .base import AgentConfig, AgentEvent, AgentInput, build_prompt_with_context, format_memory_block
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,33 @@ class ClaudeRuntime:
             opts["add_dirs"] = list(self.config.add_dirs)
         if self.config.model:
             opts["model"] = self.config.model
+
+        # Move stable per-instance instructions (memory file + artifact protocol)
+        # into the system prompt rather than per-turn user prompts. This puts them
+        # in the cacheable prefix (Anthropic prompt caching, 5-min TTL, 90% discount
+        # on hits) so we pay ~0.1x token cost per subsequent turn instead of 1.0x.
+        # Uses the SDK's "append" preset feature which adds our content after
+        # Claude Code's default system prompt.
+        append_parts: list[str] = []
+        memory_block = format_memory_block(self.config.memory_file)
+        if memory_block:
+            append_parts.append(memory_block)
+        # Always include the artifact instruction — it's stable per build.
+        append_parts.append(artifact_instruction().strip())
+
+        if append_parts:
+            append_text = "\n\n".join(append_parts)
+            log.info(
+                "instance %s: appending %d chars to system prompt (memory=%s)",
+                self.config.title,
+                len(append_text),
+                "yes" if memory_block else "no",
+            )
+            opts["system_prompt"] = {
+                "type": "preset",
+                "preset": "claude_code",
+                "append": append_text,
+            }
 
         docker_mcp_url = os.environ.get("DOCKER_MCP_URL")
         docker_mcp_token = os.environ.get("DOCKER_MCP_TOKEN")
@@ -81,9 +108,9 @@ class ClaudeRuntime:
                 len(message.images),
                 len(message.text),
             )
-            prompt = self._build_multimodal_content(self._prompt_with_artifact_instruction(message.text), message.images)
+            prompt = self._build_multimodal_content(self._prompt_with_context(message.text), message.images)
         else:
-            prompt = self._prompt_with_artifact_instruction(message.text)
+            prompt = self._prompt_with_context(message.text)
 
         log.info(
             "instance %s: calling Claude client.query() with prompt type=%s",
@@ -147,9 +174,18 @@ class ClaudeRuntime:
             },
         }
 
-    @staticmethod
-    def _prompt_with_artifact_instruction(text: str) -> str:
-        return text + artifact_instruction()
+    def _prompt_with_context(self, text: str) -> str:
+        """Build the per-turn prompt.
+
+        For Claude, both memory_file content and the artifact instruction live in
+        the system prompt at startup (cacheable, ~90% token discount on hits).
+        The per-turn prompt is therefore just the user's actual input.
+        """
+        return build_prompt_with_context(
+            text,
+            memory_file=None,
+            include_artifact_instruction=False,
+        )
 
 
 def translate_claude_message(msg: Any) -> list[AgentEvent]:

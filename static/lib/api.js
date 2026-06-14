@@ -73,11 +73,11 @@ export async function reorderInstances(titles) {
     return r.json();
 }
 
-export async function updatePermissions(title, { permission_mode, model, add_dirs }) {
+export async function updatePermissions(title, { permission_mode, model, add_dirs, memory_file }) {
     const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/permissions`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ permission_mode, model, add_dirs }),
+        body: JSON.stringify({ permission_mode, model, add_dirs, memory_file }),
     });
     if (!r.ok) {
         const text = await r.text();

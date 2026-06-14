@@ -78,6 +78,7 @@ class Registry:
                 agent_preset=rec.agent_preset,
                 task=rec.task,
                 folder=rec.folder,
+                memory_file=rec.memory_file,
             )
             inst._history = await self.persistence.load_events(rec.title)
             # Restore _next_seq so events published in this run never collide
@@ -170,8 +171,10 @@ class Registry:
         permission_mode: str | None = None,
         model: str | None | object = _UNSET,
         add_dirs: list[str] | None = None,
+        memory_file: str | None | object = _UNSET,
+        path: str | None = None,
     ) -> Instance | None:
-        """Update permission_mode / model / add_dirs and reload the SDK session."""
+        """Update permission_mode / model / add_dirs / memory_file / path and reload the SDK session."""
         async with self._lock:
             inst = self._instances.get(title)
             if inst is None:
@@ -182,6 +185,14 @@ class Registry:
                 inst.model = model if isinstance(model, str) and model else None
             if add_dirs is not None:
                 inst.add_dirs = _normalize_dirs(add_dirs)
+            if memory_file is not _UNSET:
+                inst.memory_file = memory_file if isinstance(memory_file, str) and memory_file else None
+            if path is not None:
+                expanded = str(Path(path).expanduser().resolve())
+                expanded_path = Path(expanded)
+                if not expanded_path.exists():
+                    raise ValueError(f"path does not exist: {expanded}")
+                inst.path = expanded
         await self._save_records()
         await inst.reload_options()
         return inst
@@ -386,6 +397,19 @@ class Registry:
         await self._save_records()
         return inst
 
+    async def update_memory_file(self, title: str, memory_file: str | None) -> Instance | None:
+        """Update the memory file path for an instance.
+
+        The contents of this file will be prepended to every prompt sent to the agent.
+        """
+        async with self._lock:
+            inst = self._instances.get(title)
+            if inst is None:
+                return None
+            inst.memory_file = memory_file.strip() if memory_file else None
+        await self._save_records()
+        return inst
+
     def get_folders(self) -> list[str]:
         """Get list of unique folder names across all instances."""
         folders: set[str] = set()
@@ -416,6 +440,7 @@ class Registry:
                     agent_preset=i.agent_preset,
                     task=i.task,
                     folder=i.folder,
+                    memory_file=i.memory_file,
                 )
                 for i in self._instances.values()
             ]

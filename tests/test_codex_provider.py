@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_manager.artifacts import artifact_id_for_path
+from agent_manager.artifacts import artifact_id_for_path, artifact_instruction
 from agent_manager.providers.base import AgentConfig, AgentInput
 from agent_manager.providers.codex import CodexRuntime, _normalize_rate_limits, _should_emit_event
 from agent_manager.providers.codex_events import translate_codex_event, translate_codex_transcript_event
@@ -456,6 +456,10 @@ def test_parse_codex_doctor_metadata_is_sanitized() -> None:
 
 
 def test_codex_command_builder_fresh_and_resume() -> None:
+    # The artifact instruction is always injected via developer_instructions
+    # (no memory file → just the artifact protocol).
+    expected_dev = f"developer_instructions={json.dumps(artifact_instruction().strip())}"
+
     fresh = CodexRuntime(AgentConfig(
         title="new",
         provider="codex",
@@ -470,6 +474,8 @@ def test_codex_command_builder_fresh_and_resume() -> None:
         "--json",
         "--cd",
         "/repo",
+        "-c",
+        expected_dev,
         "--sandbox",
         "workspace-write",
         "--skip-git-repo-check",
@@ -493,6 +499,8 @@ def test_codex_command_builder_fresh_and_resume() -> None:
         "resume",
         "--json",
         "--skip-git-repo-check",
+        "-c",
+        expected_dev,
         "session-1",
         "again",
     ]
@@ -510,10 +518,37 @@ def test_codex_command_builder_fresh_and_resume() -> None:
         "resume",
         "--json",
         "--skip-git-repo-check",
+        "-c",
+        expected_dev,
         "--dangerously-bypass-approvals-and-sandbox",
         "session-1",
         "again",
     ]
+
+
+def test_codex_developer_instructions_includes_memory(tmp_path: Path) -> None:
+    """When memory_file is set, the developer_instructions TOML value embeds it."""
+    memory_file = tmp_path / "memory.md"
+    memory_file.write_text("Remember: this is a test project.")
+
+    runtime = CodexRuntime(AgentConfig(
+        title="with_memory",
+        provider="codex",
+        cwd="/repo",
+        permission_mode="workspace-write",
+        memory_file=str(memory_file),
+    ))
+
+    dev = runtime._developer_instructions()
+    assert dev is not None
+    assert dev.startswith("developer_instructions=")
+    # The TOML value should JSON-decode back to a string containing both pieces.
+    toml_value = dev.split("=", 1)[1]
+    decoded = json.loads(toml_value)
+    assert "Remember: this is a test project." in decoded
+    assert "<memory" in decoded
+    # Artifact instruction is also in the system block.
+    assert "artifact" in decoded.lower()
 
 
 def test_normalize_rate_limits_adds_reset_iso() -> None:
@@ -735,7 +770,8 @@ async def test_codex_runtime_resumes_after_capturing_session_id(tmp_path: Path, 
     fake_codex = bin_dir / "codex"
     fake_codex.write_text(
         "#!/bin/sh\n"
-        "printf '%s\\n' \"$*\" >> \"$CODEX_ARGS_LOG\"\n"
+        "printf '%s' \"$*\" | tr '\\n' ' ' >> \"$CODEX_ARGS_LOG\"\n"
+        "printf '\\n' >> \"$CODEX_ARGS_LOG\"\n"
         "printf '%s\\n' '{\"type\":\"thread.started\",\"id\":\"session-1\"}'\n"
         "printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}'\n"
         "printf '%s\\n' '{\"type\":\"turn.completed\",\"session_id\":\"session-1\"}'\n",
@@ -765,7 +801,13 @@ async def test_codex_runtime_resumes_after_capturing_session_id(tmp_path: Path, 
     assert second[0]["data"]["resume"] is True
     assert second[0]["data"]["command"] == "codex exec resume"
     args = args_log.read_text(encoding="utf-8").splitlines()
-    assert args[0].startswith(f"exec --json --cd {tmp_path} --sandbox workspace-write --skip-git-repo-check first")
-    assert args[1].startswith("exec resume --json --skip-git-repo-check session-1 second")
+    # The artifact instruction is now injected via -c developer_instructions=...
+    # rather than appended to the user prompt, so the command starts with
+    # `exec --json --cd <tmp> -c developer_instructions="..."` now.
+    assert args[0].startswith(f"exec --json --cd {tmp_path} -c developer_instructions=")
+    assert args[1].startswith("exec resume --json --skip-git-repo-check -c developer_instructions=")
+    assert " first" in args[0]
+    assert " second" in args[1]
+    # The artifact protocol is now embedded in the developer_instructions value.
     assert "agent-manager:artifact" in args[0]
     assert "agent-manager:artifact" in args[1]

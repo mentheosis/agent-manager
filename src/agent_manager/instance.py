@@ -8,7 +8,7 @@ from typing import Awaitable, Callable
 
 from .artifacts import artifact_path_is_present, extract_artifact_directives
 from .commands import handle_agent_command, parse_agent_command
-from .providers.base import AgentConfig, AgentEvent, AgentInput, AgentRuntime
+from .providers.base import AgentConfig, AgentEvent, AgentInput, AgentRuntime, MemoryFileTracker
 from .providers.registry import RuntimeFactory, default_registry
 
 log = logging.getLogger(__name__)
@@ -40,6 +40,8 @@ class Instance:
     task: str | None = None  # Task description for loop instances
     # Organization
     folder: str | None = None  # Folder name for grouping in sidebar
+    # Memory file - contents prepended to every prompt
+    memory_file: str | None = None
 
     _task: asyncio.Task | None = field(default=None, repr=False)
     _inbox: asyncio.Queue[str | dict] = field(default_factory=asyncio.Queue, repr=False)
@@ -72,6 +74,12 @@ class Instance:
     async def _run(self) -> None:
         runtime = self._create_runtime()
         self._runtime = runtime
+        # Track the memory file's hash so we can detect edits between turns.
+        # Claude embeds the memory in its system prompt at SDK startup, so
+        # picking up edits requires restarting the runtime. Codex re-reads the
+        # file on every turn anyway (fresh subprocess), but the restart is
+        # cheap and keeps both providers on the same code path.
+        memory_tracker = MemoryFileTracker(self.memory_file)
         try:
             await runtime.start()
             await self._set_status("ready")
@@ -94,6 +102,30 @@ class Instance:
                     ):
                         await self._publish(event)
                     continue
+                # Detect memory-file edits before dispatching the turn. If the
+                # contents changed since last check, tear down the runtime and
+                # rebuild it — _create_runtime() picks up the latest memory_file
+                # path AND the latest captured session_id from self, so the new
+                # client resumes the same conversation with the updated memory.
+                if memory_tracker.refresh():
+                    log.info(
+                        "instance %s: memory file changed, restarting runtime",
+                        self.title,
+                    )
+                    await self._publish({
+                        "type": "status",
+                        "status": "reloading_memory",
+                    })
+                    try:
+                        await runtime.close()
+                    except Exception:
+                        log.exception(
+                            "instance %s: error closing runtime for memory reload",
+                            self.title,
+                        )
+                    runtime = self._create_runtime()
+                    self._runtime = runtime
+                    await runtime.start()
                 await self._set_status("running")
                 async for event in runtime.run_turn(agent_input):
                     await self._publish(event)
@@ -121,6 +153,7 @@ class Instance:
             model=self.model,
             session_id=self.session_id,
             add_dirs=list(self.add_dirs or []),
+            memory_file=self.memory_file,
         )
         if self._runtime_factory is not None:
             return self._runtime_factory(config)

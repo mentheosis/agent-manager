@@ -5,7 +5,7 @@
       "WebSearch",
       "WebFetch"
     ]
-  ,
+  },
   "mcpServers": {
     "docker": {
       "type": "http",

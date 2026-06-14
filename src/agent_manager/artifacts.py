@@ -92,12 +92,8 @@ def extract_artifact_directives(text: str, *, source: str | None = None) -> tupl
 
 def artifact_instruction() -> str:
     return (
-        " Agent Manager UI artifact protocol: when you want to show the user a local file "
-        "that already exists on disk, emit "
+        " Note: if you want to display a file to the user in our custom UI, such as an existing image, you can emit this syntax filling in the actual filepath: "
         '[[agent-manager:artifact path="/real/absolute/path/to/file.png" title="Short title"]]. '
-        "Do not emit that example path literally. "
-        "Use this for screenshots, generated images, animated GIFs, reports, and other files "
-        "the user should inspect in the UI."
     )
 
 

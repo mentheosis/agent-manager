@@ -169,6 +169,44 @@
 
 .permissions-panel .dir-add-btn:hover { border-color: var(--accent); }
 
+/* Memory file section */
+.permissions-panel .memory-file-row {
+    display: flex;
+    gap: 6px;
+}
+
+.permissions-panel .memory-file-input {
+    flex: 1;
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    border-radius: 4px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: var(--fs-base);
+}
+
+.permissions-panel .memory-file-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.permissions-panel .memory-file-clear-btn {
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 0 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+}
+
+.permissions-panel .memory-file-clear-btn:hover {
+    border-color: var(--red);
+    color: var(--red);
+}
+
 .permissions-panel .perm-actions {
     display: flex;
     align-items: center;

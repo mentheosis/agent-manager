@@ -224,6 +224,8 @@ class PermissionsBody(BaseModel):
     permission_mode: str | None = None
     model: str | None = None
     add_dirs: list[str] | None = None
+    memory_file: str | None = None
+    path: str | None = None  # Working directory - can fix typos
 
 
 class ReparentBody(BaseModel):
@@ -243,6 +245,10 @@ class InstanceTypeBody(BaseModel):
 
 class FolderBody(BaseModel):
     folder: str | None = None  # Folder name, or None to remove from folder
+
+
+class MemoryFileBody(BaseModel):
+    memory_file: str | None = None  # Path to memory file, or None to clear
 
 
 def _summary(inst: Instance) -> dict[str, Any]:
@@ -265,6 +271,8 @@ def _summary(inst: Instance) -> dict[str, Any]:
         "task": inst.task,
         # Organization
         "folder": inst.folder,
+        # Memory
+        "memory_file": inst.memory_file,
     }
 
 
@@ -581,6 +589,8 @@ def build_app() -> FastAPI:
             permission_mode=body.permission_mode,
             model=body.model if "model" in body.model_fields_set else _UNSET,
             add_dirs=body.add_dirs,
+            memory_file=body.memory_file if "memory_file" in body.model_fields_set else _UNSET,
+            path=body.path,
         )
         if inst is None:
             raise HTTPException(status_code=404)
@@ -635,6 +645,17 @@ def build_app() -> FastAPI:
     async def update_folder(title: str, body: FolderBody) -> dict[str, Any]:
         """Update the folder for an instance (sidebar organization)."""
         inst = await registry.update_folder(title, body.folder)
+        if inst is None:
+            raise HTTPException(status_code=404)
+        return _summary(inst)
+
+    @app.patch("/api/instances/{title}/memory-file")
+    async def update_memory_file(title: str, body: MemoryFileBody) -> dict[str, Any]:
+        """Update the memory file for an instance.
+
+        The contents of this file will be prepended to every prompt sent to the agent.
+        """
+        inst = await registry.update_memory_file(title, body.memory_file)
         if inst is None:
             raise HTTPException(status_code=404)
         return _summary(inst)

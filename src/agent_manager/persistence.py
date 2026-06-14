@@ -41,6 +41,8 @@ class InstanceRecord:
     task: str | None = None
     # Organization
     folder: str | None = None
+    # Memory file - contents prepended to every prompt
+    memory_file: str | None = None
 
     def __post_init__(self) -> None:
         if self.add_dirs is None:
@@ -66,6 +68,7 @@ class InstanceRecord:
             "agent_preset": self.agent_preset,
             "task": self.task,
             "folder": self.folder,
+            "memory_file": self.memory_file,
         }
 
     @classmethod
@@ -105,6 +108,7 @@ class InstanceRecord:
             agent_preset=d.get("agent_preset"),
             task=d.get("task"),
             folder=d.get("folder"),
+            memory_file=d.get("memory_file"),
         )
 
 

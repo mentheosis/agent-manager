@@ -14,7 +14,7 @@ from typing import Any
 
 from agent_manager.artifacts import artifact_instruction, image_artifact_event, is_image_path
 
-from .base import AgentConfig, AgentEvent, AgentInput
+from .base import AgentConfig, AgentEvent, AgentInput, build_prompt_with_context, format_memory_block
 from .codex_events import translate_codex_event, translate_codex_transcript_event
 from .codex_metadata import fetch_codex_runtime_metadata
 
@@ -48,7 +48,7 @@ class CodexRuntime:
                 yield {"type": "result", "subtype": "error", "is_error": True}
                 return
 
-            cmd = self._build_command(self._prompt_with_artifact_instruction(message.text), image_paths)
+            cmd = self._build_command(self._prompt_with_context(message.text), image_paths)
             system_context = await self._system_init_context()
             log.info("instance %s: starting Codex command: %s", self.config.title, cmd[:4])
 
@@ -228,8 +228,14 @@ class CodexRuntime:
         await self._terminate()
 
     def _build_command(self, prompt: str, image_paths: list[Path]) -> list[str]:
+        # Build the developer_instructions config override once; same value for
+        # fresh + resume so the model sees a stable system block (better caching).
+        dev_instructions = self._developer_instructions()
+
         if self._session_id:
             cmd = ["codex", "exec", "resume", "--json", "--skip-git-repo-check"]
+            if dev_instructions:
+                cmd.extend(["-c", dev_instructions])
             if self._bypass_sandbox():
                 cmd.append("--dangerously-bypass-approvals-and-sandbox")
             if self.config.model:
@@ -246,6 +252,8 @@ class CodexRuntime:
             "--cd",
             self.config.cwd,
         ]
+        if dev_instructions:
+            cmd.extend(["-c", dev_instructions])
         if self._bypass_sandbox():
             cmd.append("--dangerously-bypass-approvals-and-sandbox")
         else:
@@ -260,9 +268,45 @@ class CodexRuntime:
         cmd.append(prompt)
         return cmd
 
-    @staticmethod
-    def _prompt_with_artifact_instruction(text: str) -> str:
-        return text + artifact_instruction()
+    def _developer_instructions(self) -> str | None:
+        """Build the TOML config override for codex's developer_instructions.
+
+        Returns a string like:
+            developer_instructions="<memory>...</memory>\\n\\n[artifact instr]"
+
+        Suitable for passing via `codex -c <value>`. The value is parsed as TOML
+        by codex, so we JSON-encode the inner string (JSON basic-string escapes
+        are a subset of TOML basic-string escapes).
+
+        Returns None if nothing to inject.
+        """
+        parts: list[str] = []
+        memory_block = format_memory_block(self.config.memory_file)
+        if memory_block:
+            parts.append(memory_block)
+        # Artifact instruction is stable per build — include it always.
+        parts.append(artifact_instruction().strip())
+
+        if not parts:
+            return None
+
+        combined = "\n\n".join(parts)
+        # json.dumps gives us a properly-escaped basic string; TOML accepts it.
+        escaped = json.dumps(combined)
+        return f"developer_instructions={escaped}"
+
+    def _prompt_with_context(self, text: str) -> str:
+        """Build the per-turn prompt.
+
+        For Codex, both memory_file content and the artifact instruction live in
+        the `developer_instructions` system block (passed via -c flag), so the
+        per-turn prompt is just the user's actual input.
+        """
+        return build_prompt_with_context(
+            text,
+            memory_file=None,
+            include_artifact_instruction=False,
+        )
 
     def _sandbox_mode(self) -> str:
         mode = (self.config.permission_mode or "").strip()

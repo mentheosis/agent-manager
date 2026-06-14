@@ -14,9 +14,11 @@ class AmPermissionsPanel extends HTMLElement {
         this.permission_mode = 'acceptEdits';
         this.model = '';
         this.dirs = [];
+        this.memoryFile = '';  // Path to memory file
         this.savedMode = 'acceptEdits';
         this.savedModel = '';
         this.savedDirs = [];
+        this.savedMemoryFile = '';
     }
 
     connectedCallback() {
@@ -53,6 +55,15 @@ class AmPermissionsPanel extends HTMLElement {
                 <small class="hint">Each directory must also be mounted into the container via <code>docker-compose.local.yml</code>.</small>
             </div>
 
+            <div class="perm-section">
+                <label class="perm-label">Memory file</label>
+                <div class="memory-file-row">
+                    <input class="memory-file-input" type="text" placeholder="/path/to/memory.md" autocomplete="off" spellcheck="false">
+                    <button type="button" class="memory-file-clear-btn" title="Clear">Clear</button>
+                </div>
+                <small class="hint">Contents are injected as persistent context: appended to Claude's system prompt, or passed as Codex's <code>developer_instructions</code>. Cacheable, so edits are picked up between turns without re-billing the tokens.</small>
+            </div>
+
             <div class="perm-actions">
                 <button type="button" class="perm-apply-btn">Restart and apply</button>
                 <span class="perm-apply-status"></span>
@@ -70,6 +81,8 @@ class AmPermissionsPanel extends HTMLElement {
         const addBtn = this.querySelector('.dir-add-btn');
         const addInput = this.querySelector('.dir-add-input');
         const applyBtn = this.querySelector('.perm-apply-btn');
+        const memoryFileInput = this.querySelector('.memory-file-input');
+        const memoryFileClearBtn = this.querySelector('.memory-file-clear-btn');
 
         modelEl.addEventListener('change', () => {
             this.model = modelEl.value;
@@ -88,6 +101,17 @@ class AmPermissionsPanel extends HTMLElement {
                 e.preventDefault();
                 this.addDir();
             }
+        });
+
+        memoryFileInput.addEventListener('input', () => {
+            this.memoryFile = memoryFileInput.value;
+            this.refreshDirty();
+        });
+
+        memoryFileClearBtn.addEventListener('click', () => {
+            this.memoryFile = '';
+            memoryFileInput.value = '';
+            this.refreshDirty();
         });
 
         applyBtn.addEventListener('click', () => this.apply());
@@ -117,14 +141,17 @@ class AmPermissionsPanel extends HTMLElement {
             this.permission_mode = this.resolvePermissionMode(provider, inst.permission_mode || defaultMode);
             this.model = inst.model || '';
             this.dirs = (inst.add_dirs || []).slice();
+            this.memoryFile = inst.memory_file || '';
             this.savedMode = this.permission_mode;
             this.savedModel = this.model;
             this.savedDirs = this.dirs.slice();
+            this.savedMemoryFile = this.memoryFile;
 
             this.populatePermissionModes(provider, this.permission_mode);
             this.updateProviderLabels(provider);
             this.populateModelDropdown(models, this.model);
             this.renderDirs();
+            this.querySelector('.memory-file-input').value = this.memoryFile;
             this.updateModelInfo();
 
             statusEl.textContent = '';
@@ -265,7 +292,8 @@ class AmPermissionsPanel extends HTMLElement {
     refreshDirty() {
         const dirty = this.permission_mode !== this.savedMode
             || this.model !== this.savedModel
-            || !this.sameStringList(this.dirs, this.savedDirs);
+            || !this.sameStringList(this.dirs, this.savedDirs)
+            || this.memoryFile !== this.savedMemoryFile;
 
         const applyBtn = this.querySelector('.perm-apply-btn');
         const statusEl = this.querySelector('.perm-apply-status');
@@ -331,6 +359,7 @@ class AmPermissionsPanel extends HTMLElement {
                 permission_mode: this.permission_mode,
                 model: this.model || null,
                 add_dirs: this.dirs,
+                memory_file: this.memoryFile || null,
             });
 
             this.permission_mode = this.resolvePermissionMode(
@@ -339,12 +368,15 @@ class AmPermissionsPanel extends HTMLElement {
             );
             this.model = inst.model || '';
             this.dirs = (inst.add_dirs || []).slice();
+            this.memoryFile = inst.memory_file || '';
             this.savedMode = this.permission_mode;
             this.savedModel = this.model;
             this.savedDirs = this.dirs.slice();
+            this.savedMemoryFile = this.memoryFile;
 
             this.querySelector('.perm-mode').value = this.permission_mode;
             this.querySelector('.perm-model').value = this.model;
+            this.querySelector('.memory-file-input').value = this.memoryFile;
             this.renderDirs();
 
             statusEl.textContent = 'applied · session restarted';
