@@ -29,6 +29,7 @@ RUN apt-get update \
         curl \
         gnupg \
         git \
+        ripgrep \
         ca-certificates \
         build-essential \
         pkg-config \

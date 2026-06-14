@@ -137,6 +137,9 @@ class CodexRuntime:
                                 yield image_event
                         if _should_emit_event(event, seen_assistant_texts, seen_result):
                             yield event
+                        if _is_terminal_result(event):
+                            await self._terminate()
+                            return
 
                 while not transcript_queue.empty():
                     event = transcript_queue.get_nowait()

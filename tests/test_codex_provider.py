@@ -69,6 +69,36 @@ def test_translate_codex_thread_started_and_result() -> None:
     assert estimated[0]["estimated_cost_usd"] == pytest.approx(0.00155)
 
 
+def test_translate_codex_provider_error_is_terminal() -> None:
+    assert translate_codex_event({
+        "type": "error",
+        "error": {
+            "type": "image_generation_user_error",
+            "code": "invalid_value",
+            "message": "The model 'gpt-image-2' does not exist.",
+            "param": "tools",
+        },
+        "status": 400,
+    }) == [
+        {
+            "type": "error",
+            "message": "The model 'gpt-image-2' does not exist.",
+            "data": {
+                "error_type": "image_generation_user_error",
+                "code": "invalid_value",
+                "param": "tools",
+                "status": 400,
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "error",
+            "is_error": True,
+            "terminal": True,
+        },
+    ]
+
+
 def test_translate_codex_assistant_and_tool_items(tmp_path: Path) -> None:
     assert translate_codex_event({
         "type": "item.completed",
@@ -683,6 +713,65 @@ async def test_codex_runtime_reads_jsonl_from_subprocess(tmp_path: Path, monkeyp
                 "is_error": False,
                 "session_id": "session-1",
                 "usage": None,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_stops_on_terminal_provider_error(tmp_path: Path, monkeypatch) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, time\n"
+        "print(json.dumps({\n"
+        "    'type': 'error',\n"
+        "    'error': {\n"
+        "        'type': 'image_generation_user_error',\n"
+        "        'code': 'invalid_value',\n"
+        "        'message': \"The model 'gpt-image-2' does not exist.\",\n"
+        "        'param': 'tools',\n"
+        "    },\n"
+        "    'status': 400,\n"
+        "}), flush=True)\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    async def fake_metadata(cwd: str | None = None) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr("agent_manager.providers.codex.fetch_codex_runtime_metadata", fake_metadata)
+
+    runtime = CodexRuntime(AgentConfig(
+        title="codex",
+        provider="codex",
+        cwd=str(tmp_path),
+        permission_mode="workspace-write",
+    ))
+
+    await runtime.start()
+    events = [event async for event in runtime.run_turn(AgentInput("hello"))]
+
+    assert events == [
+        {
+            "type": "error",
+            "message": "The model 'gpt-image-2' does not exist.",
+            "data": {
+                "error_type": "image_generation_user_error",
+                "code": "invalid_value",
+                "param": "tools",
+                "status": 400,
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "error",
+            "is_error": True,
+            "terminal": True,
         },
     ]
 

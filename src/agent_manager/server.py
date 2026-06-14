@@ -131,6 +131,27 @@ def _resolve_artifact(artifact_id: str, *, roots: list[Path]) -> Path:
     return path
 
 
+def _artifact_file_response(path: Path, media_type: str) -> FileResponse:
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=_versioned_artifact_filename(path),
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+def _versioned_artifact_filename(path: Path) -> str:
+    stamp = int(time.time() * 1000)
+    if path.suffix:
+        return f"{path.stem}-{stamp}{path.suffix}"
+    return f"{path.name}-{stamp}"
+
+
 def _is_forbidden_artifact_path(path: Path) -> bool:
     lowered_parts = {part.lower() for part in path.parts}
     if lowered_parts.intersection({".ssh", ".aws", ".config"}):
@@ -803,13 +824,13 @@ def build_app() -> FastAPI:
         roots = _artifact_roots([inst.path, *list(inst.add_dirs or [])])
         path = _resolve_artifact(artifact_id, roots=roots)
         media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        return FileResponse(path, media_type=media_type, filename=path.name)
+        return _artifact_file_response(path, media_type)
 
     @app.get("/api/artifacts/images/{artifact_id}")
     async def get_image_artifact(artifact_id: str) -> FileResponse:
         path = _resolve_artifact(artifact_id, roots=_artifact_roots())
         media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        return FileResponse(path, media_type=media_type, filename=path.name)
+        return _artifact_file_response(path, media_type)
 
     @app.post("/api/instances/reorder")
     async def reorder_instances(body: ReorderBody) -> list[dict[str, Any]]:

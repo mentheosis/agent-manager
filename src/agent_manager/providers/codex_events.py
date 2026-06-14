@@ -74,7 +74,19 @@ def translate_codex_event(raw: dict[str, Any], system_context: dict[str, Any] | 
 
     if event_type == "error":
         message = _text_from(raw) or "Codex error"
-        return [{"type": "error", "message": message}]
+        error_event: AgentEvent = {"type": "error", "message": message}
+        data = _provider_error_data(raw)
+        if data:
+            error_event["data"] = data
+        return [
+            error_event,
+            {
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "terminal": True,
+            },
+        ]
 
     if event_type.startswith("item."):
         item = _dict(raw.get("item")) or _dict(raw.get("data")) or raw
@@ -227,6 +239,24 @@ def _first_str(data: dict[str, Any], *keys: str) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _provider_error_data(raw: dict[str, Any]) -> dict[str, Any]:
+    error = _dict(raw.get("error"))
+    data: dict[str, Any] = {}
+    error_type = _first_str(error, "type")
+    code = _first_str(error, "code")
+    param = _first_str(error, "param")
+    if error_type:
+        data["error_type"] = error_type
+    if code:
+        data["code"] = code
+    if param:
+        data["param"] = param
+    status = raw.get("status")
+    if isinstance(status, int):
+        data["status"] = status
+    return data
 
 
 def _text_from(data: dict[str, Any]) -> str:

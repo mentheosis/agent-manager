@@ -851,10 +851,16 @@ class AmTerminalPane extends HTMLElement {
 
     artifactUrl(event) {
         const artifactId = encodeURIComponent(event.artifact_id || '');
+        const cacheKey = encodeURIComponent(this.artifactCacheKey(event));
+        const suffix = cacheKey ? `?v=${cacheKey}` : '';
         if (this._instance?.title) {
-            return `/api/instances/${encodeURIComponent(this._instance.title)}/artifacts/${artifactId}`;
+            return `/api/instances/${encodeURIComponent(this._instance.title)}/artifacts/${artifactId}${suffix}`;
         }
-        return `/api/artifacts/images/${artifactId}`;
+        return `/api/artifacts/images/${artifactId}${suffix}`;
+    }
+
+    artifactCacheKey(event) {
+        return String(event.seq ?? event.ts ?? Date.now());
     }
 
     isVideoArtifact(event) {

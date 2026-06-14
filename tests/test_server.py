@@ -140,6 +140,12 @@ def test_image_artifact_route_serves_allowed_png(tmp_path) -> None:
         assert r.status_code == 200
         assert r.content == b"\x89PNG\r\n\x1a\n"
         assert r.headers["content-type"] == "image/png"
+        assert r.headers["cache-control"] == "no-store, max-age=0"
+        assert r.headers["pragma"] == "no-cache"
+        assert r.headers["expires"] == "0"
+        assert "inline" in r.headers["content-disposition"]
+        assert "shot-" in r.headers["content-disposition"]
+        assert ".png" in r.headers["content-disposition"]
 
 
 def test_instance_artifact_route_serves_workspace_gif(tmp_path) -> None:
@@ -158,6 +164,7 @@ def test_instance_artifact_route_serves_workspace_gif(tmp_path) -> None:
         assert r.status_code == 200
         assert r.content == b"GIF89a"
         assert r.headers["content-type"] == "image/gif"
+        assert r.headers["cache-control"] == "no-store, max-age=0"
 
 
 def test_instance_artifact_route_rejects_secret_file(tmp_path) -> None:
