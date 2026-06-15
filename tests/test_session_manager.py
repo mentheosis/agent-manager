@@ -130,6 +130,30 @@ def test_pressure_shape():
                 "soft_threshold", "hard_threshold", "in_cooldown"]).issubset(p)
 
 
+def test_next_split_trigger_precedence():
+    # hard wins over soft when both are armed and live reading is high
+    cm = ContextMonitor(SessionConfig(soft_context_percentage=70, hard_context_percentage=90))
+    cm.ingest_context_usage(_usage(92))
+    assert cm.next_split_trigger() == "hard_context_92%"
+
+    # soft-only at 75%
+    cm2 = ContextMonitor(SessionConfig(soft_context_percentage=70, hard_context_percentage=90))
+    cm2.ingest_context_usage(_usage(75))
+    assert cm2.next_split_trigger() == "soft_context_75%"
+
+    # manual wins over (absent) soft at low context
+    cm3 = ContextMonitor(SessionConfig(soft_context_percentage=70))
+    cm3.ingest_context_usage(_usage(10))
+    assert cm3.next_split_trigger() is None
+    cm3.request_manual_split()
+    assert cm3.next_split_trigger() == "manual"
+
+    # nothing armed → None
+    cm4 = ContextMonitor(SessionConfig(soft_context_percentage=70))
+    cm4.ingest_context_usage(_usage(5))
+    assert cm4.next_split_trigger() is None
+
+
 def test_session_state_roundtrip():
     st = SessionState(current_session=3)
     st.checkpoints.append(__import__("agent_manager.session_manager", fromlist=["CheckpointMeta"]).CheckpointMeta(

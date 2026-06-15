@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .instance import Event, Instance
 from .persistence import InstanceRecord, Persistence
+from .session_manager import SessionConfig, SessionState
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,8 @@ class Registry:
                 task=rec.task,
                 folder=rec.folder,
                 memory_file=rec.memory_file,
+                session_config=SessionConfig.from_dict(rec.session_config),
+                session_state=SessionState.from_dict(rec.session_state),
             )
             inst._history = await self.persistence.load_events(rec.title)
             # Restore _next_seq so events published in this run never collide
@@ -441,6 +444,8 @@ class Registry:
                     task=i.task,
                     folder=i.folder,
                     memory_file=i.memory_file,
+                    session_config=i.session_config.to_dict(),
+                    session_state=i.session_state.to_dict(),
                 )
                 for i in self._instances.values()
             ]

@@ -210,6 +210,22 @@ class ContextMonitor:
     def should_manual_split(self) -> bool:
         return self._manual_requested
 
+    # --- fire-on-idle decision (precedence: hard > manual > soft) -----------
+
+    def next_split_trigger(self) -> str | None:
+        """The trigger string for a split that should fire now (called on the idle
+        gate), or None. Hard takes precedence (it used the urgent wrap-up prompt),
+        then an explicit manual request, then soft. Manual is honored regardless of
+        the live reading or cooldown; soft/hard are live-revalidated + cooldown-gated.
+        """
+        if self.should_hard_split_now():
+            return f"hard_context_{int(self._used_pct)}%"
+        if self.should_manual_split():
+            return "manual"
+        if self.should_soft_split_now():
+            return f"soft_context_{int(self._used_pct)}%"
+        return None
+
     # --- cooldown -----------------------------------------------------------
 
     def in_cooldown(self) -> bool:

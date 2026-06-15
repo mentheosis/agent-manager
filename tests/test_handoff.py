@@ -196,6 +196,23 @@ def test_hard_vs_soft_wrapup_prompt():
     asyncio.run(run())
 
 
+def test_persistence_record_session_fields_roundtrip():
+    from agent_manager.persistence import InstanceRecord
+
+    rec = InstanceRecord(
+        title="x", path="/p",
+        session_config={"enabled": True, "soft_context_percentage": 65},
+        session_state={"current_session": 4, "checkpoints": []},
+    )
+    rt = InstanceRecord.from_dict(rec.to_dict())
+    assert rt.session_config == {"enabled": True, "soft_context_percentage": 65}
+    assert rt.session_state == {"current_session": 4, "checkpoints": []}
+
+    # Backward compatibility: a legacy record with no session fields defaults to None.
+    legacy = InstanceRecord.from_dict({"title": "y", "path": "/q"})
+    assert legacy.session_config is None and legacy.session_state is None
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

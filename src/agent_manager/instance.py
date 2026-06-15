@@ -11,6 +11,14 @@ from .commands import handle_agent_command, parse_agent_command
 from .providers.base import AgentConfig, AgentEvent, AgentInput, AgentRuntime, MemoryFileTracker
 from .providers.registry import RuntimeFactory, default_registry
 
+from .session_manager import (
+    DEFAULT_CONTEXT_WINDOW_SIZE,
+    ContextMonitor,
+    SessionConfig,
+    SessionState,
+)
+from .handoff import HandoffCallbacks, HandoffCoordinator
+
 log = logging.getLogger(__name__)
 
 Event = AgentEvent
@@ -42,6 +50,9 @@ class Instance:
     folder: str | None = None  # Folder name for grouping in sidebar
     # Memory file - contents prepended to every prompt
     memory_file: str | None = None
+    # Session management (optional, per-instance; disabled by default)
+    session_config: SessionConfig = field(default_factory=SessionConfig)
+    session_state: SessionState = field(default_factory=SessionState)
 
     _task: asyncio.Task | None = field(default=None, repr=False)
     _inbox: asyncio.Queue[str | dict] = field(default_factory=asyncio.Queue, repr=False)
@@ -54,6 +65,10 @@ class Instance:
     # Hooks injected by Registry. Both are awaitable; called with no arguments.
     _on_event: Callable[[Event], Awaitable[None]] | None = field(default=None, repr=False)
     _on_state_change: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
+    # Session-management runtime (built lazily when session_config.enabled).
+    _monitor: ContextMonitor | None = field(default=None, repr=False)
+    _coordinator: HandoffCoordinator | None = field(default=None, repr=False)
+    _handoff_was_active: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         # Preserve the old "instance_type" contract while new code uses
@@ -69,6 +84,7 @@ class Instance:
         self.instance_type = "loop" if self.kind == "loop" else self.provider
 
     async def start(self) -> None:
+        self._ensure_session_mgmt()
         self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
     async def _run(self) -> None:
@@ -235,6 +251,97 @@ class Instance:
         await self._set_status("creating")
         self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
+    # --- session management -------------------------------------------------
+
+    def _ensure_session_mgmt(self) -> None:
+        """Build the ContextMonitor + HandoffCoordinator when session management is
+        enabled. Idempotent; a no-op when disabled."""
+        if not self.session_config.enabled or self._coordinator is not None:
+            return
+        self._monitor = ContextMonitor(self.session_config)
+        self._coordinator = HandoffCoordinator(
+            self.title,
+            self.session_config,
+            self.session_state,
+            HandoffCallbacks(
+                send_prompt=self.send,
+                respawn_fresh=self.restart_fresh,
+                get_status=lambda: self.status,
+                on_save=self._save_session_state,
+            ),
+        )
+
+    def request_manual_split(self) -> bool:
+        """Arm a manual split (Split button). Fires when the agent is next idle.
+        Returns False if session management is not enabled."""
+        self._ensure_session_mgmt()
+        if self._monitor is None:
+            return False
+        self._monitor.request_manual_split()
+        return True
+
+    def _resolve_window(self) -> int:
+        """Best-effort context-window size for percentage math. Explicit config wins;
+        otherwise infer from the model family, defaulting to 200K with a loud warning
+        (a silent small default would trip thresholds ~5x too early on a 1M model)."""
+        if self.session_config.context_window_size > 0:
+            return self.session_config.context_window_size
+        m = (self.model or "").lower()
+        if "haiku" in m:
+            return 200_000
+        if "[1m]" in m or "opus-4" in m or "sonnet-4" in m or "fable" in m:
+            return 1_000_000
+        log.warning(
+            "instance %s: unknown context window for model %r; defaulting to 200K", self.title, self.model
+        )
+        return DEFAULT_CONTEXT_WINDOW_SIZE
+
+    async def _save_session_state(self, state: SessionState) -> None:
+        self.session_state = state
+        if self._on_state_change is not None:
+            await self._on_state_change()
+
+    async def _maybe_handle_session_boundary(self, status: str) -> None:
+        """Event-driven analog of the Go pollMetadata idle gate. Resets the monitor
+        once a handoff finishes (opening the cooldown), then — when idle and no handoff
+        is running — fires the highest-precedence pending split."""
+        coord, mon = self._coordinator, self._monitor
+        if coord is None or mon is None:
+            return
+        in_progress = coord.handoff_in_progress()
+        # Reset exactly once on the in-progress -> done edge (fresh session begun).
+        if self._handoff_was_active and not in_progress:
+            mon.reset()
+            log.info("instance %s: handoff finished, monitor reset (cooldown open)", self.title)
+        self._handoff_was_active = in_progress
+        if in_progress or status != "ready":
+            return
+        trigger = mon.next_split_trigger()
+        if trigger is None:
+            return
+        log.info("instance %s: triggering %s split (agent idle)", self.title, trigger)
+        try:
+            await coord.trigger_split(trigger)
+        except Exception:
+            log.exception("instance %s: failed to trigger split", self.title)
+
+    async def restart_fresh(self) -> None:
+        """Respawn the SDK client into a FRESH session (no resume) — the context-reset
+        half of a split. Unlike reload_options (which preserves the conversation via
+        resume), this clears session_id so the new session starts at ~0 tokens and
+        rehydrates from the checkpoint the previous session wrote."""
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("instance %s task ended with error during restart_fresh", self.title)
+        self.session_id = None  # no resume -> fresh conversation
+        await self._set_status("creating")
+        self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
+
     def subscribe(self) -> asyncio.Queue[Event]:
         q: asyncio.Queue[Event] = asyncio.Queue()
         self._subscribers.append(q)
@@ -278,6 +385,7 @@ class Instance:
     async def _set_status(self, status: str) -> None:
         self.status = status
         await self._publish({"type": "status", "status": status})
+        await self._maybe_handle_session_boundary(status)
 
     async def _publish(self, event: Event) -> None:
         for expanded in self._expand_artifact_directives(event):
@@ -343,6 +451,17 @@ class Instance:
         self._history.append(event)
         if len(self._history) > HISTORY_CAP:
             del self._history[: len(self._history) - HISTORY_CAP]
+        # Feed real token usage to the context monitor. Skip while a handoff is in
+        # progress so the dying session's readings can't re-arm a split — the monitor
+        # is reset when the handoff completes (see _maybe_handle_session_boundary).
+        if (
+            event.get("type") == "result"
+            and self._monitor is not None
+            and (self._coordinator is None or not self._coordinator.handoff_in_progress())
+        ):
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                self._monitor.ingest_context_usage(usage, self._resolve_window())
         if self._on_event is not None:
             try:
                 await self._on_event(event)
