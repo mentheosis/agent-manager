@@ -359,15 +359,16 @@ def _tail_text_lines(path: Path, count: int, max_chars: int = 80_000) -> list[st
     return list(reversed(trimmed))
 
 
+_models_cache: list[str] | None = None
+_MODEL_PROVIDERS = ("claude", "codex")
 _FALLBACK_MODELS = [
+    "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-7",
     "claude-opus-4-5",
     "claude-sonnet-4-5",
     "claude-haiku-3-5",
 ]
-
-_models_cache: list[str] | None = None
 
 
 async def _fetch_models() -> list[str]:
@@ -377,7 +378,7 @@ async def _fetch_models() -> list[str]:
         return _models_cache
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        log.info("ANTHROPIC_API_KEY not set; using fallback model list")
+        log.info("ANTHROPIC_API_KEY not set; using fallback Claude model list")
         return _FALLBACK_MODELS
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -393,7 +394,7 @@ async def _fetch_models() -> list[str]:
                 log.info("fetched %d model(s) from Anthropic API", len(ids))
                 return ids
     except Exception:
-        log.warning("failed to fetch models from Anthropic API; using fallback list", exc_info=True)
+        log.warning("failed to fetch models from Anthropic API; using fallback Claude model list", exc_info=True)
     return _FALLBACK_MODELS
 
 
@@ -403,6 +404,14 @@ async def _fetch_provider_models(provider: str) -> list[str]:
     if provider == "codex":
         return await fetch_codex_models()
     raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
+
+
+async def _prefetch_provider_models() -> None:
+    for provider in _MODEL_PROVIDERS:
+        try:
+            await _fetch_provider_models(provider)
+        except Exception:
+            log.exception("model pre-fetch failed for provider %s; will retry on first request", provider)
 
 
 def build_app() -> FastAPI:
@@ -432,10 +441,7 @@ def build_app() -> FastAPI:
             await registry.load_from_disk()
         except Exception:
             log.exception("failed to load persisted state; continuing with empty registry")
-        try:
-            await _fetch_models()
-        except Exception:
-            log.exception("model pre-fetch failed; will retry on first /api/models request")
+        await _prefetch_provider_models()
         try:
             yield
         finally:

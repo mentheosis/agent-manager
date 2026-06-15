@@ -255,6 +255,17 @@ def test_provider_models_and_compat_models(monkeypatch) -> None:
         assert c.get("/api/providers/nope/models").status_code == 404
 
 
+def test_claude_models_return_fallback_without_api_key(monkeypatch) -> None:
+    import agent_manager.server as server_mod
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(server_mod, "_models_cache", None)
+
+    app = build_app()
+    with TestClient(app) as c:
+        assert c.get("/api/providers/claude/models").json()[0] == "claude-opus-4-8"
+
+
 def test_provider_auth_status_and_compat_alias() -> None:
     app = build_app()
     with TestClient(app) as c:
