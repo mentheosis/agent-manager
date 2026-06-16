@@ -244,6 +244,14 @@ class ContextMonitor:
         if self._cooldown_sec > 0:
             self._cooldown_until = self._clock() + self._cooldown_sec
 
+    def update_config(self, config: "SessionConfig") -> None:
+        """Apply new thresholds/window/cooldown without dropping the current latch
+        or cooldown (used when the user edits config on a live instance)."""
+        self._soft_pct = config.effective_soft_pct()
+        self._hard_pct = config.effective_hard_pct()
+        self._cooldown_sec = config.effective_split_cooldown_sec()
+        self._window = config.effective_context_window_size()
+
     # --- introspection (for the UI / status endpoint) -----------------------
 
     def pressure(self) -> dict[str, Any]:

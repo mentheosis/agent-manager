@@ -200,6 +200,45 @@ class Registry:
         await inst.reload_options()
         return inst
 
+    # --- session management -------------------------------------------------
+
+    def session_info(self, title: str) -> dict | None:
+        inst = self._instances.get(title)
+        return inst.session_info() if inst is not None else None
+
+    async def update_session_config(self, title: str, patch: dict) -> Instance | None:
+        """Merge a partial config (only keys present in `patch`) onto the instance's
+        current SessionConfig, apply it in-process, and persist."""
+        async with self._lock:
+            inst = self._instances.get(title)
+            if inst is None:
+                return None
+            c = inst.session_config
+
+            def pick(key: str, current):
+                v = patch.get(key, current)
+                return current if v is None else v
+
+            merged = SessionConfig(
+                enabled=pick("enabled", c.enabled),
+                soft_context_percentage=pick("soft_context_percentage", c.soft_context_percentage),
+                hard_context_percentage=pick("hard_context_percentage", c.hard_context_percentage),
+                checkpoint_timeout_sec=pick("checkpoint_timeout_sec", c.checkpoint_timeout_sec),
+                context_window_size=pick("context_window_size", c.context_window_size),
+                split_cooldown_sec=pick("split_cooldown_sec", c.split_cooldown_sec),
+            )
+            inst.set_session_config(merged)
+        await self._save_records()
+        return inst
+
+    def request_manual_split(self, title: str) -> bool | None:
+        """Arm a manual split. Returns None if the instance doesn't exist, False if
+        session management is not enabled, True if armed."""
+        inst = self._instances.get(title)
+        if inst is None:
+            return None
+        return inst.request_manual_split()
+
     def _unique_title_locked(self, base: str) -> str:
         """Return base or base_N for the first N>=2 that's free. Caller holds lock."""
         if base not in self._instances:

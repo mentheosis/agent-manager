@@ -154,6 +154,17 @@ def test_next_split_trigger_precedence():
     assert cm4.next_split_trigger() is None
 
 
+def test_update_config_changes_thresholds():
+    cm = ContextMonitor(SessionConfig(soft_context_percentage=70, hard_context_percentage=90))
+    cm.ingest_context_usage(_usage(75))
+    assert cm.should_soft_split_now() is True   # 75 >= 70
+    # Raise the soft threshold above the live reading; the latch is re-validated live.
+    cm.update_config(SessionConfig(soft_context_percentage=80, hard_context_percentage=95))
+    assert cm.should_soft_split_now() is False  # 75 < 80 now
+    p = cm.pressure()
+    assert p["soft_threshold"] == 80 and p["hard_threshold"] == 95
+
+
 def test_session_state_roundtrip():
     st = SessionState(current_session=3)
     st.checkpoints.append(__import__("agent_manager.session_manager", fromlist=["CheckpointMeta"]).CheckpointMeta(

@@ -280,6 +280,41 @@ class Instance:
         self._monitor.request_manual_split()
         return True
 
+    def session_info(self) -> dict[str, Any]:
+        """Snapshot of session-management config/state/pressure for the API."""
+        info: dict[str, Any] = {
+            "enabled": self.session_config.enabled,
+            "config": self.session_config.to_dict(),
+            "state": self.session_state.to_dict(),
+            "current_session": self.session_state.current_session,
+        }
+        if self._monitor is not None:
+            info["pressure"] = self._monitor.pressure()
+        if self._coordinator is not None:
+            info["handoff_in_progress"] = self._coordinator.handoff_in_progress()
+            st = self._coordinator.status()
+            if st is not None:
+                info["handoff"] = {"phase": int(st.phase), "trigger": st.trigger, "error": st.error}
+        return info
+
+    def set_session_config(self, config: SessionConfig) -> None:
+        """Apply a new session config to a (possibly running) instance. These settings
+        are in-process (not CLI flags), so no SDK restart is needed — unlike permission
+        or model changes."""
+        self.session_config = config
+        if not config.enabled:
+            # Stop triggering; an in-flight handoff (if any) finishes on its own.
+            self._monitor = None
+            self._coordinator = None
+            return
+        if self._monitor is None:
+            self._coordinator = None  # force a clean rebuild from the new config
+            self._ensure_session_mgmt()
+        else:
+            self._monitor.update_config(config)
+            if self._coordinator is not None:
+                self._coordinator.config = config
+
     def _resolve_window(self) -> int:
         """Best-effort context-window size for percentage math. Explicit config wins;
         otherwise infer from the model family, defaulting to 200K with a loud warning
