@@ -556,6 +556,30 @@ def test_codex_command_builder_fresh_and_resume() -> None:
     ]
 
 
+def test_codex_command_builder_separates_images_from_prompt() -> None:
+    image = Path("/tmp/screenshot.png")
+    fresh = CodexRuntime(AgentConfig(
+        title="new",
+        provider="codex",
+        cwd="/repo",
+        permission_mode="workspace-write",
+    ))
+
+    fresh_cmd = fresh._build_command("inspect this", [image])
+    assert fresh_cmd[-4:] == ["--image", str(image), "--", "inspect this"]
+
+    resumed = CodexRuntime(AgentConfig(
+        title="old",
+        provider="codex",
+        cwd="/repo",
+        permission_mode="workspace-write",
+        session_id="session-1",
+    ))
+
+    resumed_cmd = resumed._build_command("inspect this", [image])
+    assert resumed_cmd[-5:] == ["--image", str(image), "--", "session-1", "inspect this"]
+
+
 def test_codex_developer_instructions_includes_memory(tmp_path: Path) -> None:
     """When memory_file is set, the developer_instructions TOML value embeds it."""
     memory_file = tmp_path / "memory.md"

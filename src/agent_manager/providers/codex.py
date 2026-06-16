@@ -245,6 +245,8 @@ class CodexRuntime:
                 cmd.extend(["--model", self.config.model])
             for image in image_paths:
                 cmd.extend(["--image", str(image)])
+            if image_paths:
+                cmd.append("--")
             cmd.extend([self._session_id, prompt])
             return cmd
 
@@ -268,6 +270,8 @@ class CodexRuntime:
             cmd.extend(["--add-dir", add_dir])
         for image in image_paths:
             cmd.extend(["--image", str(image)])
+        if image_paths:
+            cmd.append("--")
         cmd.append(prompt)
         return cmd
 

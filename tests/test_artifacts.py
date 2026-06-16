@@ -45,5 +45,16 @@ def test_extract_artifact_directive_for_mp4_video() -> None:
     assert artifacts[0]["mime_type"] == "video/mp4"
 
 
+def test_extract_artifact_directive_for_svg_image() -> None:
+    cleaned, artifacts = extract_artifact_directives(
+        'SVG: [[agent-manager:artifact path="/tmp/diagram.svg" title="Diagnostic diagram"]]',
+        source="claude",
+    )
+
+    assert cleaned == "SVG:"
+    assert artifacts[0]["artifact_type"] == "image"
+    assert artifacts[0]["mime_type"] == "image/svg+xml"
+
+
 def test_placeholder_artifact_path_is_not_present() -> None:
     assert artifact_path_is_present("/real/absolute/path/to/file.png") is False

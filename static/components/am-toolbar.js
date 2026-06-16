@@ -3,6 +3,12 @@
  */
 
 import * as api from '../lib/api.js';
+import {
+    ensureNotificationPermission,
+    idleNotificationsEnabled,
+    notificationsSupported,
+    setIdleNotificationsEnabled,
+} from '../lib/notifications.js';
 
 class AmToolbar extends HTMLElement {
     constructor() {
@@ -54,6 +60,7 @@ class AmToolbar extends HTMLElement {
                     </label>
                 </div>
             </div>
+            <button class="toolbar-btn" id="btn-notify-idle" type="button" title="Notify when this agent becomes idle">Notify</button>
             <button class="toolbar-btn" id="btn-scroll-bottom" type="button" title="Jump to bottom">↓ Bottom</button>
             <button class="toolbar-btn loop-only" id="btn-restart-loop" type="button" title="Restart the orchestration loop">⟳ Restart Loop</button>
             <button class="toolbar-btn agent-only" id="btn-pause" type="button">Pause</button>
@@ -86,6 +93,7 @@ class AmToolbar extends HTMLElement {
         this.querySelector('#btn-scroll-bottom').addEventListener('click', () => {
             this.dispatchEvent(new CustomEvent('scroll-to-bottom', { bubbles: true }));
         });
+        this.querySelector('#btn-notify-idle').addEventListener('click', () => this.toggleIdleNotifications());
 
         // Action buttons
         this.querySelector('#btn-pause').addEventListener('click', () => {
@@ -132,6 +140,8 @@ class AmToolbar extends HTMLElement {
             typeBadge.hidden = true;
         }
 
+        this.updateNotifyButton();
+
         // Show/hide buttons based on instance type
         for (const btn of this.querySelectorAll('.loop-only')) {
             btn.hidden = !isLoop;
@@ -139,6 +149,46 @@ class AmToolbar extends HTMLElement {
         for (const btn of this.querySelectorAll('.agent-only')) {
             btn.hidden = isLoop;
         }
+    }
+
+    updateNotifyButton() {
+        const btn = this.querySelector('#btn-notify-idle');
+        const title = this._instance?.title;
+        const enabled = idleNotificationsEnabled(title);
+        btn.disabled = !this._instance || !notificationsSupported();
+        btn.classList.toggle('active', enabled);
+        btn.textContent = enabled ? 'Notify On' : 'Notify';
+        if (!notificationsSupported()) {
+            btn.title = 'Browser notifications are not supported here';
+        } else if (enabled) {
+            btn.title = 'Disable idle notification for this conversation';
+        } else {
+            btn.title = 'Notify when this agent becomes idle';
+        }
+    }
+
+    async toggleIdleNotifications() {
+        if (!this._instance) return;
+        const title = this._instance.title;
+        const enabled = idleNotificationsEnabled(title);
+
+        if (enabled) {
+            setIdleNotificationsEnabled(title, false);
+            this.updateNotifyButton();
+            return;
+        }
+
+        const permission = await ensureNotificationPermission();
+        if (permission !== 'granted') {
+            alert(permission === 'unsupported'
+                ? 'Browser notifications are not supported here.'
+                : 'Notification permission was not granted.');
+            this.updateNotifyButton();
+            return;
+        }
+
+        setIdleNotificationsEnabled(title, true);
+        this.updateNotifyButton();
     }
 
     async commitRename() {

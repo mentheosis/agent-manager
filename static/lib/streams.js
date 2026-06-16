@@ -161,7 +161,18 @@ class Stream {
 
         // Track status changes
         if (event.type === 'status') {
+            const previousStatus = this.status;
+            const isLiveStatus = this.historyComplete && !this._reconnecting;
             this.status = event.status;
+            if (isLiveStatus && previousStatus === 'running' && event.status === 'ready') {
+                document.dispatchEvent(new CustomEvent('am-agent-idle', {
+                    detail: {
+                        title: this.title,
+                        previousStatus,
+                        status: event.status,
+                    },
+                }));
+            }
         }
         // Track active model from system_init. Providers may report an exact
         // model id or only a display-safe label for their configured default.

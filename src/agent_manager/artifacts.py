@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
 VIDEO_SUFFIXES = {".mp4", ".webm", ".ogv", ".ogg", ".mov", ".m4v"}
 ARTIFACT_DIRECTIVE_RE = re.compile(r"\[\[agent-manager:artifact\s+(?P<attrs>[^\]]+)\]\]")
 

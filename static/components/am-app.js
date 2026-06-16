@@ -4,6 +4,7 @@
 
 import * as api from '../lib/api.js';
 import { streamManager } from '../lib/streams.js';
+import { idleNotificationsEnabled, showIdleNotification } from '../lib/notifications.js';
 
 // Import all components
 import './am-auth-banner.js';
@@ -192,6 +193,10 @@ class AmApp extends HTMLElement {
                 this.loadInstances();
             }
         });
+
+        document.addEventListener('am-agent-idle', (e) => {
+            this.notifyAgentIdle(e.detail?.title);
+        });
     }
 
     async init() {
@@ -244,6 +249,12 @@ class AmApp extends HTMLElement {
     _setDisconnected(value) {
         this._disconnected = value;
         this.querySelector('am-auth-banner').disconnected = value;
+    }
+
+    notifyAgentIdle(title) {
+        if (!title || !idleNotificationsEnabled(title)) return;
+        const inst = this.instances.find(i => i.title === title);
+        showIdleNotification(title, inst?.display_title || title);
     }
 
     async checkAuth() {
