@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+bin/
 .venv/
 venv/
 .pytest_cache/
@@ -13,6 +14,7 @@ venv/
 
 # Local state
 state.json
+.state/
 .agent-manager/
 
 # Per-developer docker-compose overrides (mount your own host paths)

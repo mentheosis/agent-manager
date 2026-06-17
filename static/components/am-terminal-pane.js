@@ -277,6 +277,12 @@ class AmTerminalPane extends HTMLElement {
     }
 
     handleEvent(event, stream) {
+        // assistant_usage is per-turn telemetry consumed server-side to drive the
+        // context-pressure bar (see instance.py ingest); it is not conversational
+        // content, so it is never rendered in the transcript.
+        if (event.type === 'assistant_usage') {
+            return;
+        }
         if (event.type === 'status') {
             this.updateStatusBar(stream);
             if (event.status === 'ready' && !this.hasMeaningfulOutput()) {

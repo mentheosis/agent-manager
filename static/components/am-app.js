@@ -17,6 +17,7 @@ import './am-file-editor.js';
 import './am-new-dialog.js';
 import './am-login-dialog.js';
 import './am-team-panel.js';
+import './am-session-panel.js';
 
 // Map internal tab names to URL-friendly names
 const TAB_TO_URL = {
@@ -25,6 +26,7 @@ const TAB_TO_URL = {
     settings: 'settings',
     plans: 'plans',
     memory: 'memory',
+    session: 'session',
 };
 const URL_TO_TAB = Object.fromEntries(
     Object.entries(TAB_TO_URL).map(([k, v]) => [v, k])
@@ -68,6 +70,7 @@ class AmApp extends HTMLElement {
                         <am-file-editor data-pane="settings" data-endpoint="rules" data-has-permissions="true" class="tab-pane"></am-file-editor>
                         <am-file-editor data-pane="plans" data-endpoint="plans" class="tab-pane"></am-file-editor>
                         <am-file-editor data-pane="memory" data-endpoint="memory" class="tab-pane"></am-file-editor>
+                        <am-session-panel data-pane="session" class="tab-pane"></am-session-panel>
                     </div>
                 </div>
             </div>
@@ -401,6 +404,9 @@ class AmApp extends HTMLElement {
             case 'memory':
                 const editor = this.querySelector(`am-file-editor[data-pane="${name}"]`);
                 editor.load(this.currentTitle);
+                break;
+            case 'session':
+                this.querySelector('am-session-panel').load(this.currentTitle);
                 break;
         }
     }

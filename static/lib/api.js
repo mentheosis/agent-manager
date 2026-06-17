@@ -86,6 +86,38 @@ export async function updatePermissions(title, { permission_mode, model, add_dir
     return r.json();
 }
 
+// --- Session management ----------------------------------------------------
+
+export async function getSession(title) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/session`);
+    if (!r.ok) throw new Error(`Failed to fetch session: ${r.status}`);
+    return r.json();
+}
+
+export async function putSessionConfig(title, config) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/session/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+    });
+    if (!r.ok) {
+        const text = await r.text();
+        throw new Error(`Failed to update session config: ${r.status} ${text}`);
+    }
+    return r.json();
+}
+
+export async function requestSplit(title) {
+    const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/session/split`, {
+        method: 'POST',
+    });
+    if (!r.ok) {
+        const text = await r.text();
+        throw new Error(`Failed to request split: ${r.status} ${text}`);
+    }
+    return r.json();
+}
+
 export async function sendPrompt(title, text, images = null) {
     const body = { text };
     if (images && images.length > 0) {

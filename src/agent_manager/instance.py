@@ -259,6 +259,13 @@ class Instance:
         if not self.session_config.enabled or self._coordinator is not None:
             return
         self._monitor = ContextMonitor(self.session_config)
+        # Restore the last persisted reading so the pressure bar shows the last known
+        # occupancy immediately on (re)start, instead of 0% until the agent's first turn.
+        self._monitor.seed_pressure(
+            self.session_state.last_used_pct,
+            self.session_state.last_total_tokens,
+            self.session_state.last_window,
+        )
         self._coordinator = HandoffCoordinator(
             self.title,
             self.session_config,
@@ -336,6 +343,30 @@ class Instance:
         if self._on_state_change is not None:
             await self._on_state_change()
 
+    async def _persist_pressure(self) -> None:
+        """Persist the latest pressure reading onto session_state so it survives a
+        restart (seeded back in _ensure_session_mgmt). Skips the disk write when the
+        reading is unchanged — saving instances.json rewrites the whole file, so there
+        is no point doing it for an identical consecutive reading."""
+        mon = self._monitor
+        if mon is None:
+            return
+        p = mon.pressure()
+        pct = round(float(p.get("used_percentage", 0.0)), 1)
+        total = int(p.get("total_context_tokens", 0))
+        window = int(p.get("context_window_size", 0))
+        if (
+            pct == self.session_state.last_used_pct
+            and total == self.session_state.last_total_tokens
+            and window == self.session_state.last_window
+        ):
+            return
+        self.session_state.last_used_pct = pct
+        self.session_state.last_total_tokens = total
+        self.session_state.last_window = window
+        if self._on_state_change is not None:
+            await self._on_state_change()
+
     async def _maybe_handle_session_boundary(self, status: str) -> None:
         """Event-driven analog of the Go pollMetadata idle gate. Resets the monitor
         once a handoff finishes (opening the cooldown), then — when idle and no handoff
@@ -347,6 +378,7 @@ class Instance:
         # Reset exactly once on the in-progress -> done edge (fresh session begun).
         if self._handoff_was_active and not in_progress:
             mon.reset()
+            await self._persist_pressure()
             log.info("instance %s: handoff finished, monitor reset (cooldown open)", self.title)
         self._handoff_was_active = in_progress
         if in_progress or status != "ready":
@@ -486,17 +518,22 @@ class Instance:
         self._history.append(event)
         if len(self._history) > HISTORY_CAP:
             del self._history[: len(self._history) - HISTORY_CAP]
-        # Feed real token usage to the context monitor. Skip while a handoff is in
-        # progress so the dying session's readings can't re-arm a split — the monitor
-        # is reset when the handoff completes (see _maybe_handle_session_boundary).
+        # Feed LIVE context occupancy to the monitor from the per-turn assistant usage
+        # (emitted by translate_claude_message in providers/claude.py). NOT the `result`
+        # event — its usage is cumulative for the whole run and would climb past any
+        # threshold on any window (the split-loop root cause;
+        # see ROOT-CAUSE-cumulative-usage.md). Skip while a handoff is in progress so the
+        # dying session's readings can't re-arm a split — the monitor is reset when the
+        # handoff completes (see _maybe_handle_session_boundary).
         if (
-            event.get("type") == "result"
+            event.get("type") == "assistant_usage"
             and self._monitor is not None
             and (self._coordinator is None or not self._coordinator.handoff_in_progress())
         ):
             usage = event.get("usage")
             if isinstance(usage, dict):
                 self._monitor.ingest_context_usage(usage, self._resolve_window())
+                await self._persist_pressure()
         if self._on_event is not None:
             try:
                 await self._on_event(event)

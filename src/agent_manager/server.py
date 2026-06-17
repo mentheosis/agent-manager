@@ -1150,8 +1150,8 @@ def build_app() -> FastAPI:
         log.info("serving static files from %s", static_dir)
         index_html = static_dir / "index.html"
 
-        # SPA tabs for client-side routing
-        _SPA_TABS = {"conversation", "diff", "settings", "plans", "memory"}
+        # SPA tabs for client-side routing (must match TAB_TO_URL in am-app.js)
+        _SPA_TABS = {"conversation", "diff", "settings", "plans", "memory", "session"}
 
         def _is_spa_route(path: str) -> bool:
             """Check if path is a client-side SPA route."""

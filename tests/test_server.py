@@ -366,6 +366,7 @@ def test_slugify_basic_cases() -> None:
     assert slugify("---hello---") == "hello"
     assert slugify("") == "instance"
     assert slugify("   ") == "instance"
-    assert slugify("ñoño") == "oo"  # non-ascii chars are dropped
+    assert slugify("ñoño") == "oo"  # non-ascii dropped, ascii letters kept
+    assert slugify("ñ") == "instance"  # all-non-ascii -> empty result -> fallback
     assert slugify("Has___underscores") == "has_underscores"
     assert slugify("a" * 200) == "a" * 64

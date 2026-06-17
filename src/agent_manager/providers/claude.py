@@ -205,6 +205,14 @@ def translate_claude_message(msg: Any) -> list[AgentEvent]:
                         "input": block.input,
                     }
                 )
+        # Surface the per-turn usage so the context monitor measures LIVE context
+        # occupancy. AssistantMessage.usage is THIS call's prompt size (input +
+        # cache_read + cache_creation), which plateaus at the true context size — unlike
+        # the CUMULATIVE ResultMessage.usage, which grows unbounded and trips any split
+        # threshold on any window. See ROOT-CAUSE-cumulative-usage.md.
+        usage = getattr(msg, "usage", None)
+        if isinstance(usage, dict):
+            events.append({"type": "assistant_usage", "usage": usage})
     elif isinstance(msg, UserMessage):
         content = msg.content
         if isinstance(content, list):

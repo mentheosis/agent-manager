@@ -20,16 +20,34 @@ is the only trigger source.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# Defaults (mirror sessionmgr/config.go).
-DEFAULT_SOFT_CONTEXT_PERCENTAGE = 70
-DEFAULT_HARD_CONTEXT_PERCENTAGE = 90
+log = logging.getLogger(__name__)
+
+# Defaults (mirror sessionmgr/config.go). Soft/hard sit high on purpose: a split
+# is disruptive (checkpoint + respawn), so we only do it when context is genuinely
+# near exhaustion. Low defaults were the root cause of the checkpoint/respawn loop —
+# they fire a split on a session that has barely started working.
+DEFAULT_SOFT_CONTEXT_PERCENTAGE = 85
+DEFAULT_HARD_CONTEXT_PERCENTAGE = 95
 DEFAULT_CHECKPOINT_TIMEOUT_SEC = 180
 DEFAULT_CONTEXT_WINDOW_SIZE = 200_000
 DEFAULT_SPLIT_COOLDOWN_SEC = 60
+
+# Anti-loop floor: the smallest absolute token budget at which an auto-split may
+# fire. A configured threshold below this is *unsatisfiable* — e.g. hard=2% on a
+# 200K window = 4,000 tokens, but a fresh session's system prompt + tool schemas
+# alone already exceed that. The split would re-fire on the very first `result`
+# of every fresh session, checkpoint + respawn, and instantly be over the line
+# again: an infinite checkpoint/respawn loop that wipes the agent's memory each
+# pass. Below the floor we refuse to AUTO-split (manual splits are still honored),
+# so a misconfiguration degrades to "session management does nothing" instead of
+# a memory-wiping loop. This guards the persisted config on restart no matter how
+# it was set, so it cannot be bypassed the way client-side validation can.
+MIN_SPLIT_THRESHOLD_TOKENS = 30_000
 
 
 @dataclass
@@ -104,15 +122,26 @@ class CheckpointMeta:
 
 @dataclass
 class SessionState:
-    """Per-instance handoff state (current segment number + checkpoint history)."""
+    """Per-instance handoff state (current segment number + checkpoint history).
+
+    Also carries the last context-pressure reading so the UI bar can show the last
+    known occupancy immediately after a restart, instead of sitting at 0% until the
+    agent emits its first new turn. These are display-only and updated on every ingest.
+    """
 
     current_session: int = 1
     checkpoints: list[CheckpointMeta] = field(default_factory=list)
+    last_used_pct: float = 0.0
+    last_total_tokens: int = 0
+    last_window: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "current_session": self.current_session,
             "checkpoints": [c.to_dict() for c in self.checkpoints],
+            "last_used_pct": self.last_used_pct,
+            "last_total_tokens": self.last_total_tokens,
+            "last_window": self.last_window,
         }
 
     @classmethod
@@ -121,6 +150,9 @@ class SessionState:
         return cls(
             current_session=int(d.get("current_session", 1) or 1),
             checkpoints=[CheckpointMeta.from_dict(c) for c in d.get("checkpoints", []) or []],
+            last_used_pct=float(d.get("last_used_pct", 0.0) or 0.0),
+            last_total_tokens=int(d.get("last_total_tokens", 0) or 0),
+            last_window=int(d.get("last_window", 0) or 0),
         )
 
 
@@ -164,6 +196,7 @@ class ContextMonitor:
         self._hard_triggered = False
         self._manual_requested = False
         self._cooldown_until: float = 0.0  # monotonic deadline; 0.0 means no cooldown active
+        self._floor_warned = False  # one-shot log guard for an unsatisfiable threshold
 
     # --- ingest -------------------------------------------------------------
 
@@ -175,6 +208,13 @@ class ContextMonitor:
         window = window_size or self._window
         if window <= 0:
             window = DEFAULT_CONTEXT_WINDOW_SIZE
+        # Adopt the resolved window as the monitor's window of record. The caller
+        # passes a model-aware size (e.g. 1,000,000 for a [1m]/opus-4 model) that
+        # supersedes the SessionConfig default; without this the percentage math
+        # would use 1M while the floor guard, _threshold_tokens, and pressure()
+        # still reported the stale 200K config default — an inconsistency that
+        # under-counted the real headroom on 1M-context models.
+        self._window = window
         total = usage_total_tokens(usage)
         pct = min(total / window * 100.0, 100.0)
 
@@ -187,10 +227,30 @@ class ContextMonitor:
 
     # --- live-revalidated split decisions -----------------------------------
 
+    def _threshold_tokens(self, threshold_pct: int) -> float:
+        """Absolute token budget the given threshold percentage corresponds to."""
+        window = self._window if self._window > 0 else DEFAULT_CONTEXT_WINDOW_SIZE
+        return threshold_pct / 100.0 * window
+
     def _should_split_now(self, latched: bool, threshold_pct: int) -> bool:
         if not latched:
             return False
         if self.in_cooldown():
+            return False
+        # Anti-loop floor: never auto-fire at a threshold a fresh session can't get
+        # under (see MIN_SPLIT_THRESHOLD_TOKENS) — that guarantees an infinite
+        # checkpoint/respawn loop. Refuse instead, warning once.
+        if self._threshold_tokens(threshold_pct) < MIN_SPLIT_THRESHOLD_TOKENS:
+            if not self._floor_warned:
+                log.warning(
+                    "session-mgmt: auto-split disabled — threshold %d%% of a %d-token "
+                    "window is %d tokens, below the %d-token anti-loop floor (a fresh "
+                    "session would re-trigger immediately). Raise the threshold or the "
+                    "context window. Manual splits are still honored.",
+                    threshold_pct, self._window, int(self._threshold_tokens(threshold_pct)),
+                    MIN_SPLIT_THRESHOLD_TOKENS,
+                )
+                self._floor_warned = True
             return False
         # Re-validate against the live reading: a flag armed by an earlier high
         # reading must not fire once usage has dropped below the threshold.
@@ -244,13 +304,51 @@ class ContextMonitor:
         if self._cooldown_sec > 0:
             self._cooldown_until = self._clock() + self._cooldown_sec
 
+    def seed_pressure(self, used_pct: float, total_tokens: int, window: int) -> None:
+        """Restore the last persisted reading so ``pressure()`` reflects the last known
+        occupancy immediately after a (re)start, BEFORE the agent emits its first new
+        turn (which is the only thing that produces a fresh live reading).
+
+        Display-only: this deliberately does NOT arm the split latches. A restart must
+        never fire a split from a stale reading — the latches re-arm naturally on the
+        next live ``ingest_context_usage`` if still over threshold. The synthetic
+        ``_usage`` makes ``usage_total_tokens`` report the restored token count so the
+        pressure dict is internally consistent until the first live ingest overwrites it.
+        """
+        if total_tokens <= 0:
+            return
+        if window > 0:
+            self._window = window
+        self._used_pct = max(0.0, min(used_pct, 100.0))
+        self._usage = {"input_tokens": int(total_tokens)}
+
     def update_config(self, config: "SessionConfig") -> None:
-        """Apply new thresholds/window/cooldown without dropping the current latch
-        or cooldown (used when the user edits config on a live instance)."""
+        """Apply new thresholds/window/cooldown on a live instance, then RE-EVALUATE
+        the split latches against the new thresholds using the latest reading.
+
+        The cooldown deadline is preserved (a config edit must not reopen a closed
+        cooldown). The latches are NOT carried over verbatim: a previous version left
+        ``_soft_triggered``/``_hard_triggered`` and the stale ``_used_pct`` untouched, so
+        a latch armed under the OLD (low) thresholds — with ``_used_pct`` clamped at 100%
+        against the OLD (small) window — would survive a threshold/window *raise* and
+        fire one more split on the next idle gate. That defeats the exact action a user
+        takes to STOP a runaway split loop (raise the threshold or the context window).
+        The live-revalidation in ``_should_split_now`` does not catch it, because it
+        compares the *stale* ``_used_pct`` (computed against the old window) to the new
+        threshold. So here we recompute ``_used_pct`` from the stored usage against the
+        new window and re-derive the latches from that live reading vs the new
+        thresholds: raising the bar immediately disarms a now-unjustified latch, and
+        lowering it arms one, as intended. Cooldown / floor / live-revalidation still
+        gate any resulting split."""
         self._soft_pct = config.effective_soft_pct()
         self._hard_pct = config.effective_hard_pct()
         self._cooldown_sec = config.effective_split_cooldown_sec()
         self._window = config.effective_context_window_size()
+        if self._usage is not None:
+            window = self._window if self._window > 0 else DEFAULT_CONTEXT_WINDOW_SIZE
+            self._used_pct = min(usage_total_tokens(self._usage) / window * 100.0, 100.0)
+        self._soft_triggered = self._used_pct >= self._soft_pct
+        self._hard_triggered = self._used_pct >= self._hard_pct
 
     # --- introspection (for the UI / status endpoint) -----------------------
 
