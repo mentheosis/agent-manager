@@ -16,8 +16,8 @@ state.json
 .agent-manager/
 
 # Per-developer docker-compose overrides (mount your own host paths)
-xdocker-compose.local.yml
-xDockerfile.local
+docker-compose.local.yml
+Dockerfile.local
 requirements.local.txt
 constraints.local.txt
 
