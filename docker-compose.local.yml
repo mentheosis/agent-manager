@@ -1,0 +1,22 @@
+services:
+  agent-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      args:
+        BASE_IMAGE: agent-manager:base
+    image: agent-manager:local
+
+    # Linux: make host.docker.internal resolve to the host gateway IP.
+    # (Docker Desktop on macOS/Windows provides this automatically.)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Pass the docker-mcp bearer token and URL into the container so
+      # Claude Code (and the Agent SDK) can reach the host-side MCP server.
+      DOCKER_MCP_URL: "http://host.docker.internal:9090"
+      DOCKER_MCP_TOKEN: "${DOCKER_MCP_TOKEN}"
+    volumes:
+      - ${HOME}/codes/agent-manager:/app/agent-manager
+      - ${HOME}/codes/agents-v1:/app/agents-v1
+      - ${HOME}/codes/space-game:/app/space-game

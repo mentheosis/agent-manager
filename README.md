@@ -46,26 +46,44 @@ services:
 
 `docker-compose.local.yml` is git-ignored so each developer keeps their own.
 
-## Local build dependencies
+## Local image customization
 
-For dependencies that should be installed in your own Agent Manager image but not
-committed to this repo, create a git-ignored `docker-build.local.sh` at the
-repository root. The Dockerfile runs it as `root` during image build if it
-exists.
-
-Example:
+For dependencies that should exist in your own Agent Manager image but not be
+committed to this repo, edit the git-ignored local Dockerfile overlay:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-pip install --no-cache-dir some-private-or-local-package
-
-# System packages are also possible:
-# apt-get update
-# apt-get install -y --no-install-recommends graphviz
-# rm -rf /var/lib/apt/lists/*
+vim Dockerfile.local
+./scripts/build-local-image.sh
 ```
+
+The local Dockerfile builds `FROM agent-manager:base`, so the standard image
+remains reproducible and local changes stay isolated. A typical
+`Dockerfile.local` can install system packages, Python packages from a
+git-ignored `requirements.local.txt`, project CLIs, or other runtimes.
+
+`./scripts/build-and-start.sh` and `./scripts/restart-agent-manager.sh`
+initialize `Dockerfile.local` and `docker-compose.local.yml` from their example
+files when they do not exist, then run Compose with the local overlay enabled.
+The scripts build `agent-manager:base` first when the local overlay is enabled;
+the generated `docker-compose.local.yml` then uses `Dockerfile.local` for the
+running container image.
+
+The default local Compose build block is:
+
+```yaml
+services:
+  agent-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      args:
+        BASE_IMAGE: agent-manager:base
+    image: agent-manager:local
+```
+
+`Dockerfile.local`, `requirements.local.txt`, and
+`docker-compose.local.yml` are git-ignored so each user can keep local runtime
+customizations out of the shared Agent Manager image.
 
 ## How it works
 

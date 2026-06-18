@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+
+ARG BASE_IMAGE=agent-manager:base
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Add local-only runtime dependencies here. Examples:
+#
+# RUN apt-get update \
+#     && apt-get install -y --no-install-recommends graphviz \
+#     && rm -rf /var/lib/apt/lists/*
+#
+# COPY requirements.local.txt /tmp/requirements.local.txt
+# RUN pip install --no-cache-dir -r /tmp/requirements.local.txt \
+#     && rm /tmp/requirements.local.txt
+
+USER agent
+WORKDIR /app
