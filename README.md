@@ -46,6 +46,27 @@ services:
 
 `docker-compose.local.yml` is git-ignored so each developer keeps their own.
 
+## Local build dependencies
+
+For dependencies that should be installed in your own Agent Manager image but not
+committed to this repo, create a git-ignored `docker-build.local.sh` at the
+repository root. The Dockerfile runs it as `root` during image build if it
+exists.
+
+Example:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+pip install --no-cache-dir some-private-or-local-package
+
+# System packages are also possible:
+# apt-get update
+# apt-get install -y --no-install-recommends graphviz
+# rm -rf /var/lib/apt/lists/*
+```
+
 ## How it works
 
 The Python server wraps provider runtimes behind a common instance/event layer. Claude uses the official `claude-agent-sdk` Python package, which spawns the `claude` CLI from `@anthropic-ai/claude-code`. Codex uses `codex exec --json` from `@openai/codex`. Both CLIs are installed in the container.

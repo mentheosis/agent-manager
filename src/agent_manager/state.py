@@ -121,6 +121,7 @@ class Registry:
         add_dirs: list[str] | None = None,
         provider: str = "claude",
         kind: str = "agent",
+        memory_file: str | None = None,
     ) -> Instance:
         """Create an instance from a free-form display name.
 
@@ -158,6 +159,7 @@ class Registry:
                 display_title=display_title,
                 created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                 add_dirs=resolved_dirs,
+                memory_file=memory_file.strip() if memory_file else None,
             )
             self._wire_hooks(inst)
             self._instances[title] = inst

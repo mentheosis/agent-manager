@@ -205,6 +205,7 @@ class CreateInstanceBody(BaseModel):
     permission_mode: str = "acceptEdits"
     model: str | None = None
     add_dirs: list[str] = Field(default_factory=list)
+    memory_file: str | None = None
     settings_json: dict[str, Any] | None = None  # Settings to merge into .claude/settings.json
 
 
@@ -567,6 +568,7 @@ def build_app() -> FastAPI:
                 body.add_dirs,
                 provider=body.provider,
                 kind=body.kind,
+                memory_file=body.memory_file,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))

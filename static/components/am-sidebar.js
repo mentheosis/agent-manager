@@ -15,6 +15,9 @@ class AmSidebar extends HTMLElement {
         this._expandedTeams = new Set();  // Track which teams are expanded
         this._expandedFolders = new Set();  // Track which folders are expanded
         this._unsubscribers = [];  // Track stream subscriptions for cleanup
+        this._longPressTimer = null;
+        this._longPressStart = null;
+        this._suppressNextClick = false;
     }
 
     connectedCallback() {
@@ -39,10 +42,12 @@ class AmSidebar extends HTMLElement {
                 <div id="sidebar-mini-list"></div>
             </div>
             <div id="folder-context-menu" class="context-menu" hidden>
-                <div class="context-menu-header">Move to folder</div>
+                <button type="button" class="context-menu-item" data-action="duplicate">Duplicate</button>
+                <div class="context-menu-divider folder-actions"></div>
+                <div class="context-menu-header folder-actions">Move to folder</div>
                 <button type="button" class="context-menu-item" data-action="new-folder">+ New Folder</button>
                 <button type="button" class="context-menu-item" data-action="no-folder">Remove from folder</button>
-                <div class="context-menu-divider"></div>
+                <div class="context-menu-divider folder-actions"></div>
                 <div class="context-menu-folders"></div>
             </div>
         `;
@@ -84,9 +89,13 @@ class AmSidebar extends HTMLElement {
         if (!item) return;
 
         const inst = this._instances.find(i => i.title === item.dataset.title);
-        if (!inst || inst.instance_type === 'loop') return;  // Can't folder teams
+        if (!inst) return;
 
         e.preventDefault();
+        this.showContextMenu(inst, e.clientX, e.clientY);
+    }
+
+    showContextMenu(inst, x, y) {
         this._contextTarget = inst;
 
         const menu = this.querySelector('#folder-context-menu');
@@ -112,13 +121,20 @@ class AmSidebar extends HTMLElement {
             foldersDiv.appendChild(btn);
         }
 
+        const canUseFolders = inst.instance_type !== 'loop';
+        menu.querySelectorAll('.folder-actions').forEach((el) => {
+            el.hidden = !canUseFolders;
+        });
+        menu.querySelector('[data-action="new-folder"]').hidden = !canUseFolders;
+        foldersDiv.hidden = !canUseFolders;
+
         // Show/hide "Remove from folder" based on whether instance has folder
         const removeBtn = menu.querySelector('[data-action="no-folder"]');
-        removeBtn.hidden = !inst.folder;
+        removeBtn.hidden = !canUseFolders || !inst.folder;
 
         // Position and show menu
-        menu.style.left = `${e.clientX}px`;
-        menu.style.top = `${e.clientY}px`;
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
         menu.hidden = false;
 
         // Ensure menu stays in viewport
@@ -148,7 +164,12 @@ class AmSidebar extends HTMLElement {
 
         this.hideContextMenu();
 
-        if (action === 'new-folder') {
+        if (action === 'duplicate') {
+            this.dispatchEvent(new CustomEvent('duplicate-instance', {
+                bubbles: true,
+                detail: { instance: inst },
+            }));
+        } else if (action === 'new-folder') {
             const name = prompt('Enter folder name:');
             if (!name || !name.trim()) return;
             try {
@@ -178,6 +199,7 @@ class AmSidebar extends HTMLElement {
     }
 
     disconnectedCallback() {
+        this.clearLongPressTimer();
         // Clean up all subscriptions
         for (const unsub of this._unsubscribers) {
             unsub();
@@ -681,6 +703,12 @@ class AmSidebar extends HTMLElement {
 
         // Click to select
         item.addEventListener('click', (e) => {
+            if (this._suppressNextClick) {
+                e.preventDefault();
+                e.stopPropagation();
+                this._suppressNextClick = false;
+                return;
+            }
             // Don't select if clicking the expand button
             if (e.target.closest('.team-expand-btn')) return;
 
@@ -702,8 +730,66 @@ class AmSidebar extends HTMLElement {
         // Drag events
         item.addEventListener('dragstart', (e) => this.onDragStart(e, inst));
         item.addEventListener('dragend', () => this.onDragEnd());
+        this.setupLongPressContextMenu(item, inst);
 
         return item;
+    }
+
+    setupLongPressContextMenu(item, inst) {
+        item.addEventListener('touchstart', (e) => {
+            if (!this.isMobilePointer() || e.touches.length !== 1) return;
+            if (e.target.closest('.team-expand-btn')) return;
+            const touch = e.touches[0];
+            this.clearLongPressTimer();
+            this._longPressStart = {
+                x: touch.clientX,
+                y: touch.clientY,
+                inst,
+            };
+            this._longPressTimer = window.setTimeout(() => {
+                const start = this._longPressStart;
+                if (!start) return;
+                this._longPressTimer = null;
+                this._suppressNextClick = true;
+                this.showContextMenu(start.inst, start.x, start.y);
+            }, 550);
+        }, { passive: true });
+
+        item.addEventListener('touchmove', (e) => {
+            if (!this._longPressStart || e.touches.length !== 1) return;
+            const touch = e.touches[0];
+            const dx = touch.clientX - this._longPressStart.x;
+            const dy = touch.clientY - this._longPressStart.y;
+            if (Math.hypot(dx, dy) > 10) {
+                this.clearLongPressTimer();
+            }
+        }, { passive: true });
+
+        item.addEventListener('touchend', (e) => {
+            const fired = !this._longPressTimer && this._suppressNextClick;
+            this.clearLongPressTimer();
+            if (fired) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }, { passive: false });
+
+        item.addEventListener('touchcancel', () => this.clearLongPressTimer(), { passive: true });
+    }
+
+    clearLongPressTimer() {
+        if (this._longPressTimer) {
+            window.clearTimeout(this._longPressTimer);
+            this._longPressTimer = null;
+        }
+        this._longPressStart = null;
+    }
+
+    isMobilePointer() {
+        const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches;
+        const narrowViewport = window.matchMedia?.('(max-width: 900px)').matches;
+        const mobileUserAgent = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+        return mobileUserAgent || (coarsePointer && narrowViewport);
     }
 
     /**
@@ -788,6 +874,10 @@ class AmSidebar extends HTMLElement {
 
     // Drag-to-reorder handlers
     onDragStart(e, inst) {
+        if (this.isMobilePointer()) {
+            e.preventDefault();
+            return;
+        }
         // Prevent dragging loop instances
         if (inst.instance_type === 'loop') {
             e.preventDefault();

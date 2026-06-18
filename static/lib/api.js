@@ -33,11 +33,11 @@ export async function fetchInstance(title) {
     return r.json();
 }
 
-export async function createInstance({ name, path, provider = 'claude', kind = 'agent', permission_mode, model, add_dirs, settings_json }) {
+export async function createInstance({ name, path, provider = 'claude', kind = 'agent', permission_mode, model, add_dirs, memory_file, settings_json }) {
     const r = await fetch(`${BASE}/instances`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, path, provider, kind, permission_mode, model, add_dirs, settings_json }),
+        body: JSON.stringify({ name, path, provider, kind, permission_mode, model, add_dirs, memory_file, settings_json }),
     });
     if (!r.ok) {
         const text = await r.text();

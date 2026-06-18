@@ -81,6 +81,7 @@ path: /path/to/workspace
 provider: claude
 permission_mode: acceptEdits
 model: claude-sonnet-4-20250514
+memory_file: /path/to/AGENTS.md
 add_dirs:
   - /path/to/other/repo
 permissions:
@@ -102,6 +103,7 @@ permissions:
 path: /path/to/workspace
 provider: claude
 model: claude-sonnet-4-20250514  # optional
+memory_file: /path/to/team-memory.md  # optional
 task: Build feature X with tests
 agents:
   - name: coder-1
@@ -109,6 +111,7 @@ agents:
     provider: claude
     preset: coder
     model: claude-opus-4-20250514  # optional
+    memory_file: /path/to/coder-memory.md  # optional
   - name: researcher
     path: /path/to/docs
     provider: claude
@@ -163,9 +166,11 @@ agents:
             this.createAgent();
         });
 
-        this.querySelector('select[name="provider"]').addEventListener('change', (e) => {
-            this.applyProvider(e.target.value);
+        this.querySelector('select[name="provider"]').addEventListener('change', async (e) => {
+            await this.applyProvider(e.target.value);
+            this.syncAgentYamlFromFields();
         });
+        this.setupAgentYamlSync();
 
         this.querySelector('.provider-login-btn').addEventListener('click', () => {
             const provider = this.querySelector('select[name="provider"]').value || 'claude';
@@ -227,6 +232,111 @@ agents:
         }
     }
 
+    setupAgentYamlSync() {
+        const form = this.querySelector('#agent-form');
+        const fields = [
+            'input[name="name"]',
+            'input[name="path"]',
+            'select[name="permission_mode"]',
+            'select[name="model"]',
+            'textarea[name="add_dirs"]',
+        ];
+        for (const selector of fields) {
+            const field = form.querySelector(selector);
+            if (!field) continue;
+            field.addEventListener('input', () => this.syncAgentYamlFromFields());
+            field.addEventListener('change', () => this.syncAgentYamlFromFields());
+        }
+    }
+
+    syncAgentYamlFromFields() {
+        const yamlInput = this.querySelector('textarea[name="agent_yaml"]');
+        if (!yamlInput) return;
+
+        let existing = {};
+        if (yamlInput.value.trim()) {
+            try {
+                existing = this.parseAgentYaml(yamlInput.value);
+            } catch {
+                existing = {};
+            }
+        }
+
+        const config = { ...existing };
+        const value = (selector) => this.querySelector(selector)?.value?.trim() || '';
+
+        const name = value('input[name="name"]');
+        const path = value('input[name="path"]');
+        const provider = value('select[name="provider"]') || 'claude';
+        const permissionMode = value('select[name="permission_mode"]');
+        const model = value('select[name="model"]');
+        const addDirs = (this.querySelector('textarea[name="add_dirs"]')?.value || '')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+
+        if (name) config.name = name;
+        else delete config.name;
+        if (path) config.path = path;
+        else delete config.path;
+        config.provider = provider;
+        if (permissionMode) config.permission_mode = permissionMode;
+        else delete config.permission_mode;
+        if (model) config.model = model;
+        else delete config.model;
+        if (addDirs.length > 0) config.add_dirs = addDirs;
+        else config.add_dirs = [];
+
+        yamlInput.value = this.serializeAgentYaml(config);
+    }
+
+    serializeAgentYaml(config) {
+        const lines = [];
+        const pushScalar = (key) => {
+            if (config[key] !== undefined && config[key] !== null && String(config[key]).trim() !== '') {
+                lines.push(`${key}: ${this.yamlScalar(config[key])}`);
+            }
+        };
+
+        for (const key of ['name', 'path', 'provider', 'permission_mode', 'model', 'memory_file']) {
+            pushScalar(key);
+        }
+
+        if (Array.isArray(config.add_dirs) && config.add_dirs.length > 0) {
+            lines.push('add_dirs:');
+            for (const dir of config.add_dirs) {
+                lines.push(`  - ${this.yamlScalar(dir)}`);
+            }
+        }
+
+        const known = new Set(['name', 'path', 'provider', 'permission_mode', 'model', 'memory_file', 'add_dirs', 'permissions']);
+        for (const [key, value] of Object.entries(config)) {
+            if (known.has(key) || value === undefined || value === null || value === '') continue;
+            if (Array.isArray(value) || typeof value === 'object') continue;
+            lines.push(`${key}: ${this.yamlScalar(value)}`);
+        }
+
+        const allow = config.permissions?.allow || [];
+        const deny = config.permissions?.deny || [];
+        if (allow.length > 0 || deny.length > 0) {
+            lines.push('permissions:');
+            if (allow.length > 0) {
+                lines.push('  allow:');
+                for (const permission of allow) {
+                    lines.push(`    - ${this.yamlScalar(permission)}`);
+                }
+            }
+            if (deny.length > 0) {
+                lines.push('  deny:');
+                for (const permission of deny) {
+                    lines.push(`    - ${this.yamlScalar(permission)}`);
+                }
+            }
+        }
+
+        return lines.length > 0 ? `${lines.join('\n')}\n` : '';
+    }
+
     async createAgent() {
         const form = this.querySelector('#agent-form');
         const data = Object.fromEntries(new FormData(form));
@@ -246,6 +356,7 @@ agents:
         let name = data.name;
         let path = data.path;
         let permission_mode = data.permission_mode;
+        let memory_file = null;
         delete data.name;
         delete data.path;
         delete data.permission_mode;
@@ -266,6 +377,7 @@ agents:
                 if (config.provider) provider = config.provider;
                 if (config.permission_mode) permission_mode = config.permission_mode;
                 if (config.model) model = config.model;
+                if (config.memory_file) memory_file = config.memory_file;
                 if (config.add_dirs && Array.isArray(config.add_dirs)) {
                     // Merge YAML add_dirs with form add_dirs
                     add_dirs = [...new Set([...add_dirs, ...config.add_dirs])];
@@ -299,7 +411,7 @@ agents:
         submitBtn.textContent = 'Creating...';
 
         try {
-            const inst = await api.createInstance({ name, path, provider, kind: 'agent', permission_mode, model, add_dirs, settings_json });
+            const inst = await api.createInstance({ name, path, provider, kind: 'agent', permission_mode, model, add_dirs, memory_file, settings_json });
             this.close();
             form.reset();
 
@@ -358,6 +470,7 @@ agents:
                     path: config.path,
                     permission_mode: 'plan',
                     model: config.model || null,
+                    memory_file: config.memory_file || null,
                 })
             });
             if (!loopResp.ok) {
@@ -396,6 +509,7 @@ agents:
                             path: agent.path,
                             permission_mode: 'acceptEdits',
                             model: agent.model || null,
+                            memory_file: agent.memory_file || null,
                         })
                     });
                     if (!agentResp.ok) {
@@ -532,6 +646,7 @@ agents:
                         permission_mode: config.permission_mode || 'acceptEdits',
                         model: config.model || null,
                         add_dirs: config.add_dirs || [],
+                        memory_file: config.memory_file || null,
                         settings_json: config.permissions ? { permissions: config.permissions } : null,
                     });
                     created.push(inst.title);
@@ -703,11 +818,85 @@ agents:
         return result;
     }
 
-    async open(mode = 'agent') {
+    async open(mode = 'agent', options = {}) {
         this.setMode(mode);
         await this.loadProviders();
-        await this.applyProvider(this.querySelector('select[name="provider"]').value || 'claude');
+        const duplicateFrom = options.duplicateFrom || null;
+        const providerName = duplicateFrom?.provider || this.querySelector('select[name="provider"]').value || 'claude';
+        await this.applyProvider(providerName);
+        if (duplicateFrom) {
+            this.prefillDuplicateAgent(duplicateFrom);
+        } else if (mode === 'agent') {
+            this.syncAgentYamlFromFields();
+        }
         this.querySelector('#new-dialog').showModal();
+    }
+
+    prefillDuplicateAgent(inst) {
+        const providerSelect = this.querySelector('select[name="provider"]');
+        const yamlDetails = this.querySelector('.yaml-config-section');
+        const yamlInput = this.querySelector('textarea[name="agent_yaml"]');
+        const nameInput = this.querySelector('input[name="name"]');
+        const pathInput = this.querySelector('input[name="path"]');
+        const modeSelect = this.querySelector('select[name="permission_mode"]');
+        const modelSelect = this.querySelector('select[name="model"]');
+        const addDirsInput = this.querySelector('textarea[name="add_dirs"]');
+
+        this.setSelectValue(providerSelect, inst.provider || 'claude');
+        if (nameInput) nameInput.value = `${this.displayName(inst)} copy`;
+        if (pathInput) pathInput.value = inst.path || '~';
+        if (inst.permission_mode) this.setSelectValue(modeSelect, inst.permission_mode);
+        if (inst.model) this.setSelectValue(modelSelect, inst.model);
+        if (addDirsInput) addDirsInput.value = Array.isArray(inst.add_dirs) ? inst.add_dirs.join('\n') : '';
+
+        if (yamlInput) {
+            yamlInput.value = this.buildDuplicateYaml(inst);
+        }
+        if (yamlDetails) {
+            yamlDetails.open = true;
+        }
+    }
+
+    buildDuplicateYaml(inst) {
+        const config = {
+            name: `${this.displayName(inst)} copy`,
+            path: inst.path || '~',
+            provider: inst.provider || 'claude',
+            add_dirs: Array.isArray(inst.add_dirs) ? inst.add_dirs : [],
+        };
+        if (inst.permission_mode) {
+            config.permission_mode = inst.permission_mode;
+        }
+        if (inst.model) {
+            config.model = inst.model;
+        }
+        if (inst.memory_file) {
+            config.memory_file = inst.memory_file;
+        }
+        return this.serializeAgentYaml(config);
+    }
+
+    displayName(inst) {
+        return inst.display_title || inst.title || 'Agent';
+    }
+
+    setSelectValue(select, value) {
+        if (!select || !value) return;
+        if (![...select.options].some((option) => option.value === value)) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = value;
+            select.appendChild(option);
+        }
+        select.value = value;
+    }
+
+    yamlScalar(value) {
+        const text = String(value ?? '');
+        if (/^[A-Za-z0-9_./~:@-]+$/.test(text) && text !== '') {
+            return text;
+        }
+        return JSON.stringify(text);
     }
 
     async loadProviders() {

@@ -63,8 +63,6 @@ class AmToolbar extends HTMLElement {
             <button class="toolbar-btn" id="btn-notify-idle" type="button" title="Notify when this agent becomes idle">Notify</button>
             <button class="toolbar-btn" id="btn-scroll-bottom" type="button" title="Jump to bottom">↓ Bottom</button>
             <button class="toolbar-btn loop-only" id="btn-restart-loop" type="button" title="Restart the orchestration loop">⟳ Restart Loop</button>
-            <button class="toolbar-btn agent-only" id="btn-pause" type="button">Pause</button>
-            <button class="toolbar-btn agent-only" id="btn-resume" type="button">Resume</button>
             <button class="toolbar-btn danger" id="btn-kill" type="button">Kill</button>
         `;
 
@@ -95,13 +93,6 @@ class AmToolbar extends HTMLElement {
         });
         this.querySelector('#btn-notify-idle').addEventListener('click', () => this.toggleIdleNotifications());
 
-        // Action buttons
-        this.querySelector('#btn-pause').addEventListener('click', () => {
-            alert('Pause not implemented yet.');
-        });
-        this.querySelector('#btn-resume').addEventListener('click', () => {
-            alert('Resume not implemented yet.');
-        });
         this.querySelector('#btn-restart-loop').addEventListener('click', () => this.restartOrchestrator());
         this.querySelector('#btn-kill').addEventListener('click', () => this.killInstance());
     }

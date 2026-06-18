@@ -42,6 +42,32 @@ def test_create_validation() -> None:
         assert r.status_code == 422
 
 
+def test_create_instance_accepts_memory_file(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    memory = tmp_path / "memory.md"
+    memory.write_text("project memory", encoding="utf-8")
+
+    app = build_app()
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/instances",
+            json={
+                "name": "Memory Agent",
+                "path": str(repo),
+                "provider": "codex",
+                "memory_file": str(memory),
+            },
+        )
+
+        assert r.status_code == 201
+        body = r.json()
+        assert body["memory_file"] == str(memory)
+
+        listed = c.get("/api/instances")
+        assert listed.status_code == 200
+        assert listed.json()[0]["memory_file"] == str(memory)
+
+
 def test_rename_missing_returns_404() -> None:
     app = build_app()
     with TestClient(app) as c:

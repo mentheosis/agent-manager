@@ -21,6 +21,7 @@ class AmTerminalPane extends HTMLElement {
             system_init: true,
             error: true,
         };
+        this._onResize = () => this.updatePromptPlaceholder();
     }
 
     connectedCallback() {
@@ -46,7 +47,7 @@ class AmTerminalPane extends HTMLElement {
                 <div id="image-preview-area" hidden></div>
                 <textarea
                     id="prompt-input"
-                    placeholder="Send a prompt (Enter to send, Shift+Enter for newline, paste images)…"
+                    placeholder="Send a prompt (Enter to send, Shift+Enter for newline, paste images)..."
                     rows="3"
                     disabled></textarea>
                 <button type="submit" id="send-btn" disabled>Send</button>
@@ -55,6 +56,7 @@ class AmTerminalPane extends HTMLElement {
         `;
 
         this.setupPromptForm();
+        this.updatePromptPlaceholder();
     }
 
     disconnectedCallback() {
@@ -62,6 +64,7 @@ class AmTerminalPane extends HTMLElement {
             this._unsubscribe();
             this._unsubscribe = null;
         }
+        window.removeEventListener('resize', this._onResize);
     }
 
     setupPromptForm() {
@@ -77,7 +80,7 @@ class AmTerminalPane extends HTMLElement {
         });
 
         input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (this.shouldSubmitOnEnter(e)) {
                 e.preventDefault();
                 this.submitPrompt();
             }
@@ -149,6 +152,31 @@ class AmTerminalPane extends HTMLElement {
             this._filters = { ...e.detail.filters };
             this.applyFilters();
         });
+
+        window.addEventListener('resize', this._onResize);
+    }
+
+    shouldSubmitOnEnter(event) {
+        if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return false;
+        if (this.isMobileInputMode()) {
+            return event.ctrlKey || event.metaKey;
+        }
+        return true;
+    }
+
+    isMobileInputMode() {
+        const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches;
+        const narrowViewport = window.matchMedia?.('(max-width: 900px)').matches;
+        const mobileUserAgent = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+        return mobileUserAgent || (coarsePointer && narrowViewport);
+    }
+
+    updatePromptPlaceholder() {
+        const input = this.querySelector('#prompt-input');
+        if (!input) return;
+        input.placeholder = this.isMobileInputMode()
+            ? 'Send a prompt (Return for newline, tap Send to submit, paste images)...'
+            : 'Send a prompt (Enter to send, Shift+Enter for newline, paste images)...';
     }
 
     applyFilters() {

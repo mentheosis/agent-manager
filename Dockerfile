@@ -29,6 +29,7 @@ RUN apt-get update \
         curl \
         gnupg \
         git \
+        jq \
         ripgrep \
         ca-certificates \
         build-essential \
@@ -59,6 +60,18 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 # --- Provider CLIs (changes rarely) ----------------------------------------
 USER root
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
+
+# --- Optional per-developer build hook --------------------------------------
+# Create docker-build.local.sh in the repository root to install local-only
+# dependencies during image build. The file is git-ignored but intentionally not
+# docker-ignored, so Docker can see it when present.
+RUN --mount=type=bind,source=.,target=/tmp/agent-manager-build-context,ro \
+    if [ -f /tmp/agent-manager-build-context/docker-build.local.sh ]; then \
+        cp /tmp/agent-manager-build-context/docker-build.local.sh /tmp/docker-build.local.sh \
+        && chmod +x /tmp/docker-build.local.sh \
+        && /bin/bash /tmp/docker-build.local.sh \
+        && rm /tmp/docker-build.local.sh; \
+    fi
 
 # --- Python deps (rebuilds only when pyproject.toml changes) --------------
 # Install only the dependency list — not the project itself — so that

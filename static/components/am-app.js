@@ -145,8 +145,14 @@ class AmApp extends HTMLElement {
         });
 
         // Open new dialog
-        this.addEventListener('open-new-dialog', () => {
-            this.querySelector('am-new-dialog').open();
+        this.addEventListener('open-new-dialog', (e) => {
+            this.querySelector('am-new-dialog').open('agent', e.detail || {});
+        });
+
+        this.addEventListener('duplicate-instance', (e) => {
+            this.querySelector('am-new-dialog').open('agent', {
+                duplicateFrom: e.detail.instance,
+            });
         });
 
         // Open login dialog
