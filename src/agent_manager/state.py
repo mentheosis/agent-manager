@@ -5,6 +5,7 @@ import datetime as dt
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from .instance import Event, Instance
 from .persistence import InstanceRecord, Persistence
@@ -50,6 +51,10 @@ class Registry:
         self._instances: dict[str, Instance] = {}
         self._lock = asyncio.Lock()
         self.persistence = persistence
+        # Per-provider AuthRegistry instances, injected by the server so we can
+        # flag/clear the re-auth state based on runtime turn outcomes. Optional
+        # so tests that build a bare Registry don't need to wire auth.
+        self.auth_registries: dict[str, Any] | None = None
 
     async def load_from_disk(self) -> None:
         """Read persisted state, rebuild Instance objects, start their tasks."""
@@ -104,6 +109,7 @@ class Registry:
         title = inst.title
 
         async def on_event(event: Event) -> None:
+            self._handle_auth_signal(inst, event)
             await self.persistence.append_event(title, event)
 
         async def on_state_change() -> None:
@@ -111,6 +117,27 @@ class Registry:
 
         inst._on_event = on_event
         inst._on_state_change = on_state_change
+
+    def _handle_auth_signal(self, inst: Instance, event: Event) -> None:
+        """Update the provider's AuthRegistry based on a turn's outcome.
+
+        An ``auth_error`` event flags the provider for re-authentication; a
+        successful ``result`` clears the flag (auth is demonstrably working
+        again), so the UI self-heals without requiring a manual re-login.
+        """
+        if not self.auth_registries:
+            return
+        etype = event.get("type")
+        registry = self.auth_registries.get(inst.provider)
+        if registry is None:
+            return
+        if etype == "auth_error":
+            registry.mark_needs_reauth(
+                event.get("reason") or "expired",
+                event.get("message"),
+            )
+        elif etype == "result" and not event.get("is_error") and registry.needs_reauth:
+            registry.clear_needs_reauth()
 
     async def create(
         self,

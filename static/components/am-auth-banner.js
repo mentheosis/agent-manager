@@ -1,10 +1,17 @@
 /**
- * Auth status banner - shows when disconnected or when the default provider is not authenticated.
+ * Auth status banner - shows when disconnected, when the session has expired,
+ * or when no provider is authenticated.
  *
- * Modes (mutually exclusive, disconnected takes priority):
+ * Modes (mutually exclusive, evaluated in priority order):
  *   disconnected — orange banner, "Reconnect" button
- *   unauthed     — red banner, "Log in" button
+ *   expired      — red banner, "Re-authenticate" button (credentials were
+ *                  rejected at runtime even though the CLI still reports authed)
+ *   unauthed     — red banner, "Log in" button (never authenticated)
  *   (hidden)     — connected and authed
+ *
+ * Each mode can be dismissed via the × button; dismissal persists in
+ * localStorage keyed to the mode so re-entering that mode later stays hidden
+ * until the user re-triggers it explicitly.
  */
 
 class AmAuthBanner extends HTMLElement {
@@ -12,6 +19,8 @@ class AmAuthBanner extends HTMLElement {
         super();
         this._authed = true;
         this._disconnected = false;
+        this._needsReauth = false;
+        this._reauthReason = null;
         this._storageKey = 'agent-manager.auth-banner.dismissed-mode';
         this._dismissedMode = null;
     }
@@ -27,7 +36,10 @@ class AmAuthBanner extends HTMLElement {
         `;
 
         this.querySelector('#login-btn').addEventListener('click', () => {
-            this.dispatchEvent(new CustomEvent('open-login-dialog', { bubbles: true }));
+            this.dispatchEvent(new CustomEvent('open-login-dialog', {
+                bubbles: true,
+                detail: { provider: 'claude' },
+            }));
         });
 
         this.querySelector('#reconnect-btn').addEventListener('click', () => {
@@ -61,8 +73,24 @@ class AmAuthBanner extends HTMLElement {
         this._update();
     }
 
+    get needsReauth() {
+        return this._needsReauth;
+    }
+
+    set needsReauth(value) {
+        this._needsReauth = Boolean(value);
+        this._update();
+    }
+
+    // Optional machine reason ("expired" | "gateway") used to tailor the copy.
+    set reauthReason(value) {
+        this._reauthReason = value || null;
+        this._update();
+    }
+
     currentMode() {
         if (this._disconnected) return 'disconnected';
+        if (this._needsReauth) return 'expired';
         if (!this._authed) return 'unauthed';
         return null;
     }
@@ -115,19 +143,29 @@ class AmAuthBanner extends HTMLElement {
         }
 
         this.querySelector('#dismiss-btn').hidden = false;
+        const text = this.querySelector('#auth-banner-text');
+        const loginBtn = this.querySelector('#login-btn');
+        const reconnectBtn = this.querySelector('#reconnect-btn');
+
+        this.hidden = false;
+        this.dataset.mode = mode;
 
         if (mode === 'disconnected') {
-            this.hidden = false;
-            this.dataset.mode = 'disconnected';
-            this.querySelector('#auth-banner-text').textContent = 'Disconnected — reconnecting…';
-            this.querySelector('#login-btn').hidden = true;
-            this.querySelector('#reconnect-btn').hidden = false;
+            text.textContent = 'Disconnected — reconnecting…';
+            loginBtn.hidden = true;
+            reconnectBtn.hidden = false;
+        } else if (mode === 'expired') {
+            text.textContent = this._reauthReason === 'gateway'
+                ? 'Claude requests are failing (gateway error) — your session may have expired. Re-authenticate to recover.'
+                : 'Your Claude session has expired — re-authenticate to keep working.';
+            loginBtn.hidden = false;
+            loginBtn.textContent = 'Re-authenticate';
+            reconnectBtn.hidden = true;
         } else if (mode === 'unauthed') {
-            this.hidden = false;
-            this.dataset.mode = 'unauthed';
-            this.querySelector('#auth-banner-text').textContent = 'No configured provider appears authenticated in the container.';
-            this.querySelector('#login-btn').hidden = false;
-            this.querySelector('#reconnect-btn').hidden = true;
+            text.textContent = 'No configured provider appears authenticated in the container.';
+            loginBtn.hidden = false;
+            loginBtn.textContent = 'Log in';
+            reconnectBtn.hidden = true;
         }
     }
 }

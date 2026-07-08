@@ -40,6 +40,43 @@
     max-width: 280px;
 }
 
+.permissions-panel .perm-model-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.permissions-panel .perm-model-refresh-btn {
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--fs-base);
+    line-height: 1;
+}
+
+.permissions-panel .perm-model-refresh-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.permissions-panel .perm-model-refresh-btn:disabled {
+    opacity: 0.4;
+    cursor: wait;
+}
+
+.permissions-panel .perm-model-refresh-btn.spinning {
+    animation: perm-model-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes perm-model-refresh-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
 .permissions-panel .perm-model-info {
     display: flex;
     flex-direction: column;
@@ -205,6 +242,47 @@
 .permissions-panel .memory-file-clear-btn:hover {
     border-color: var(--red);
     color: var(--red);
+}
+
+.permissions-panel .perm-auth-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.permissions-panel .perm-auth-status {
+    font-size: var(--fs-base);
+    color: var(--text-dim);
+}
+
+.permissions-panel .perm-auth-status.auth-ok {
+    color: var(--green, #5ac46a);
+}
+
+.permissions-panel .perm-auth-status.auth-bad {
+    color: var(--red);
+}
+
+.permissions-panel .perm-reauth-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--fs-base);
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.permissions-panel .perm-reauth-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+.permissions-panel .perm-reauth-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 .permissions-panel .perm-actions {

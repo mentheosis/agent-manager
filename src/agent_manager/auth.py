@@ -23,6 +23,63 @@ LOGIN_COMMAND = ("claude", "auth", "login")
 CODEX_LOGIN_COMMAND = ("codex", "login")
 
 
+# Substrings (matched case-insensitively) in a runtime/turn error that indicate
+# the provider's stored credentials are no longer usable and the user must
+# re-authenticate. `claude auth status` keeps reporting loggedIn=true as long as
+# a credentials file exists, so the only authoritative signal that auth is dead
+# is the API itself rejecting a real request.
+_AUTH_FAILURE_MARKERS = (
+    "401",
+    "403",
+    "unauthorized",
+    "authentication_error",
+    "authentication error",
+    "invalid api key",
+    "invalid_api_key",
+    "invalid bearer token",
+    "oauth token has expired",
+    "oauth token expired",
+    "token has expired",
+    "token expired",
+    "invalid_token",
+    "invalid token",
+    "please run `claude /login`",
+    "please run /login",
+    "please log in",
+    "not authenticated",
+)
+
+# Gateway/proxy failures. These are not proof that auth is dead, but in this
+# deployment they routinely accompany an expired-credential state (the upstream
+# rejects the silent token refresh with a 5xx), so we surface them as a re-auth
+# hint rather than a bare crash.
+_GATEWAY_FAILURE_MARKERS = (
+    "502",
+    "bad gateway",
+    "503",
+    "service unavailable",
+    "504",
+    "gateway timeout",
+)
+
+
+def classify_runtime_auth_failure(message: str | None) -> str | None:
+    """Inspect a runtime/turn error string and decide if it signals dead auth.
+
+    Returns a short machine reason — ``"expired"`` for an outright auth rejection
+    or ``"gateway"`` for an upstream 5xx that re-authentication commonly fixes —
+    or ``None`` when the error is unrelated to authentication.
+    """
+    if not message:
+        return None
+    text = message.lower()
+    if any(marker in text for marker in _AUTH_FAILURE_MARKERS):
+        return "expired"
+    if any(marker in text for marker in _GATEWAY_FAILURE_MARKERS):
+        return "gateway"
+    return None
+
+
 def _parse_auth_status(raw: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
@@ -203,6 +260,36 @@ class AuthRegistry:
         self.status_func = status_func or _claude_auth_status
         self.login_supported = login_supported
         self._sessions: dict[str, LoginSession] = {}
+        # Set when a real API call rejected our credentials. The CLI's own auth
+        # status can't see this (it only checks that a credentials file exists),
+        # so we track it out-of-band and clear it once auth works again.
+        self._needs_reauth = False
+        self._reauth_reason: str | None = None
+        self._reauth_message: str | None = None
+
+    @property
+    def needs_reauth(self) -> bool:
+        return self._needs_reauth
+
+    def mark_needs_reauth(self, reason: str, message: str | None = None) -> None:
+        """Flag that stored credentials were rejected at runtime."""
+        if not self._needs_reauth:
+            log.warning(
+                "%s: credentials rejected at runtime (reason=%s); flagging for re-authentication",
+                self.provider,
+                reason,
+            )
+        self._needs_reauth = True
+        self._reauth_reason = reason
+        self._reauth_message = message
+
+    def clear_needs_reauth(self) -> None:
+        """Clear the re-auth flag (auth succeeded or a new login started)."""
+        if self._needs_reauth:
+            log.info("%s: re-authentication flag cleared", self.provider)
+        self._needs_reauth = False
+        self._reauth_reason = None
+        self._reauth_message = None
 
     @staticmethod
     def is_authed() -> bool:
@@ -222,6 +309,9 @@ class AuthRegistry:
     async def start(self) -> LoginSession:
         if not self.login_supported:
             raise RuntimeError(f"{self.provider} login is not supported yet")
+        # The user is actively re-authenticating; drop any stale rejection flag
+        # so a failed login re-sets it cleanly and a successful one starts clear.
+        self.clear_needs_reauth()
         if shutil.which(self.login_command[0]) is None:
             raise RuntimeError(f"{self.login_command[0]} CLI is not installed")
         session = LoginSession(id=str(uuid.uuid4()), command=self.login_command)
@@ -244,12 +334,15 @@ class AuthRegistry:
             await session.stop()
 
     def provider_status(self) -> dict[str, Any]:
-        return _status_payload(
+        payload = _status_payload(
             provider=self.provider,
             status=self.status_func(),
             credentials_path=self.credentials_path,
             login_supported=self.login_supported,
         )
+        payload["needs_reauth"] = self._needs_reauth
+        payload["reauth_reason"] = self._reauth_reason
+        return payload
 
 
 def _status_payload(

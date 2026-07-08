@@ -26,9 +26,12 @@ class AmPermissionsPanel extends HTMLElement {
         this.innerHTML = `
             <div class="perm-section">
                 <label class="perm-label">Model</label>
-                <select class="perm-model">
-                    <option value="">Provider default</option>
-                </select>
+                <div class="perm-model-row">
+                    <select class="perm-model">
+                        <option value="">Provider default</option>
+                    </select>
+                    <button type="button" class="perm-model-refresh-btn" title="Refresh model list from provider">↻</button>
+                </div>
                 <div class="perm-model-info">
                     <span class="model-current" hidden>Current session: <code class="model-current-value"></code></span>
                     <span class="model-pending" hidden>Pending restart</span>
@@ -64,6 +67,15 @@ class AmPermissionsPanel extends HTMLElement {
                 <small class="hint">Contents are injected as persistent context: appended to Claude's system prompt, or passed as Codex's <code>developer_instructions</code>. Cacheable, so edits are picked up between turns without re-billing the tokens.</small>
             </div>
 
+            <div class="perm-section perm-auth-section">
+                <label class="perm-label">Authentication</label>
+                <div class="perm-auth-row">
+                    <span class="perm-auth-status">checking…</span>
+                    <button type="button" class="perm-reauth-btn" disabled>Re-authenticate</button>
+                </div>
+                <small class="hint">Re-runs the provider login inside the container. Use this if requests start failing with 401/502 even though the agent looks authenticated — the CLI keeps reporting "logged in" after the token has actually expired.</small>
+            </div>
+
             <div class="perm-actions">
                 <button type="button" class="perm-apply-btn">Restart and apply</button>
                 <span class="perm-apply-status"></span>
@@ -77,6 +89,7 @@ class AmPermissionsPanel extends HTMLElement {
 
     setupEventListeners() {
         const modelEl = this.querySelector('.perm-model');
+        const modelRefreshBtn = this.querySelector('.perm-model-refresh-btn');
         const modeEl = this.querySelector('.perm-mode');
         const addBtn = this.querySelector('.dir-add-btn');
         const addInput = this.querySelector('.dir-add-input');
@@ -89,6 +102,8 @@ class AmPermissionsPanel extends HTMLElement {
             this.refreshDirty();
             this.updateModelInfo();
         });
+
+        modelRefreshBtn.addEventListener('click', () => this.refreshModels());
 
         modeEl.addEventListener('change', () => {
             this.permission_mode = modeEl.value;
@@ -112,6 +127,13 @@ class AmPermissionsPanel extends HTMLElement {
             this.memoryFile = '';
             memoryFileInput.value = '';
             this.refreshDirty();
+        });
+
+        this.querySelector('.perm-reauth-btn').addEventListener('click', () => {
+            this.dispatchEvent(new CustomEvent('open-login-dialog', {
+                bubbles: true,
+                detail: { provider: this.provider },
+            }));
         });
 
         applyBtn.addEventListener('click', () => this.apply());
@@ -153,11 +175,43 @@ class AmPermissionsPanel extends HTMLElement {
             this.renderDirs();
             this.querySelector('.memory-file-input').value = this.memoryFile;
             this.updateModelInfo();
+            this.refreshAuthStatus();
 
             statusEl.textContent = '';
             this.refreshDirty();  // Update button state (always enabled)
         } catch (e) {
             statusEl.textContent = `error: ${e.message}`;
+        }
+    }
+
+    async refreshAuthStatus() {
+        const statusEl = this.querySelector('.perm-auth-status');
+        const btn = this.querySelector('.perm-reauth-btn');
+        const provider = this.provider;
+        statusEl.textContent = 'checking…';
+        statusEl.className = 'perm-auth-status';
+        btn.disabled = true;
+        try {
+            const status = await api.checkAuth(provider);
+            // Provider may have changed while the request was in flight.
+            if (provider !== this.provider) return;
+            btn.disabled = false;
+            if (status.needs_reauth) {
+                statusEl.textContent = status.reauth_reason === 'gateway'
+                    ? 'requests failing — re-authentication recommended'
+                    : 'session expired — re-authentication required';
+                statusEl.classList.add('auth-bad');
+            } else if (status.authed) {
+                statusEl.textContent = 'authenticated';
+                statusEl.classList.add('auth-ok');
+            } else {
+                statusEl.textContent = 'not authenticated';
+                statusEl.classList.add('auth-bad');
+            }
+        } catch {
+            if (provider !== this.provider) return;
+            statusEl.textContent = 'status unavailable';
+            btn.disabled = false;
         }
     }
 
@@ -222,6 +276,33 @@ class AmPermissionsPanel extends HTMLElement {
         }
 
         el.value = currentModel;
+    }
+
+    async refreshModels() {
+        const btn = this.querySelector('.perm-model-refresh-btn');
+        const statusEl = this.querySelector('.perm-apply-status');
+        if (!btn) return;
+        btn.disabled = true;
+        btn.classList.add('spinning');
+        const priorStatus = statusEl.textContent;
+        statusEl.textContent = 'refreshing model list…';
+        try {
+            const models = await api.fetchModels(this.provider, { refresh: true });
+            this.populateModelDropdown(models, this.model);
+            statusEl.textContent = `refreshed · ${models.length} model(s)`;
+        } catch (e) {
+            statusEl.textContent = `refresh failed: ${e.message}`;
+        } finally {
+            btn.disabled = false;
+            btn.classList.remove('spinning');
+            // Restore prior status after a moment so success/failure is visible briefly.
+            setTimeout(() => {
+                if (statusEl.textContent.startsWith('refreshed')
+                    || statusEl.textContent.startsWith('refresh failed')) {
+                    statusEl.textContent = priorStatus || '';
+                }
+            }, 2500);
+        }
     }
 
     renderDirs() {

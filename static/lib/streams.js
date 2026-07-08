@@ -174,6 +174,20 @@ class Stream {
                 }));
             }
         }
+        // A turn reported an auth/gateway failure. Only surface live ones (not
+        // history replayed on reconnect) so a stale error doesn't pop the
+        // re-auth banner every time a socket reconnects.
+        if (event.type === 'auth_error' && this.historyComplete && !this._reconnecting) {
+            document.dispatchEvent(new CustomEvent('am-auth-error', {
+                detail: {
+                    title: this.title,
+                    provider: event.provider,
+                    reason: event.reason,
+                    message: event.message,
+                },
+            }));
+        }
+
         // Track active model from system_init. Providers may report an exact
         // model id or only a display-safe label for their configured default.
         if (event.type === 'system_init') {

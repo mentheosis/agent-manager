@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import mimetypes
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -361,47 +363,174 @@ def _tail_text_lines(path: Path, count: int, max_chars: int = 80_000) -> list[st
 
 
 _models_cache: list[str] | None = None
+_models_cache_ts: float = 0.0
+_MODEL_CACHE_TTL_SEC = 900  # 15 minutes
 _MODEL_PROVIDERS = ("claude", "codex")
+
+# Fallback list used only when both binary extraction and the Anthropic API
+# are unavailable. Kept minimal — the primary discovery path is the CLI binary
+# itself, which ships an up-to-date list with every CLI upgrade.
 _FALLBACK_MODELS = [
+    "claude-fable-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
-    "claude-sonnet-4-7",
+    "claude-opus-4-6",
     "claude-opus-4-5",
+    "claude-sonnet-4-6",
     "claude-sonnet-4-5",
+    "claude-haiku-4-5",
     "claude-haiku-3-5",
 ]
 
+# Match model IDs baked into the Claude CLI binary. We look for the "clean"
+# form: `claude-<family>-<major>[-<minor>][ [1m] ]` with no dated variant or
+# `@` alias.
+#
+# Version parts are constrained to 1-2 digits so we don't accidentally slurp
+# an 8-digit date like `claude-opus-4-20250514`. The trailing negative lookahead
+# `(?![\d\-\[@])` rejects matches that would continue into another number, dash,
+# bracket, or `@` alias — protecting `claude-opus-4` from matching inside
+# `claude-opus-4-8` or `claude-opus-4-6[1m]`, and rejecting `claude-opus-4-1@20250805`.
+#
+# The optional `\[1m\]` group captures Anthropic's 1M-context variants as
+# distinct model IDs (they behave differently and users select them explicitly).
+_CLI_MODEL_RE = re.compile(
+    rb"claude-(?:opus|sonnet|haiku|fable|mythos)-\d{1,2}(?:-\d{1,2})?(?:\[1m\])?(?![\d\-\[@])"
+)
 
-async def _fetch_models() -> list[str]:
-    """Fetch available models from the Anthropic API, caching after the first call."""
-    global _models_cache
-    if _models_cache is not None:
-        return _models_cache
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        log.info("ANTHROPIC_API_KEY not set; using fallback Claude model list")
-        return _FALLBACK_MODELS
+# Preferred family order for display in the dropdown.
+_FAMILY_ORDER = {"opus": 0, "sonnet": 1, "haiku": 2, "fable": 3, "mythos": 4}
+
+
+def _find_claude_binary() -> Path | None:
+    """Locate the platform-native Claude CLI binary shipped with @anthropic-ai/claude-code.
+
+    The Node package installs a wrapper script at `bin/claude` that dispatches
+    to one of these arch-specific binaries; we go straight to the binary because
+    that's where the model IDs are baked in as ASCII strings.
+    """
+    patterns = [
+        "/usr/lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-*/claude",
+        "/usr/local/lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-*/claude",
+    ]
+    for pattern in patterns:
+        for match in glob.glob(pattern):
+            p = Path(match)
+            if p.is_file():
+                return p
+    return None
+
+
+def _extract_models_from_cli() -> list[str]:
+    """Extract known Claude model IDs from the CLI binary via strings scanning.
+
+    Returns models in a stable order: family (opus/sonnet/haiku/fable/mythos),
+    then version numbers descending. Returns an empty list if the binary can't
+    be found or scanned.
+    """
+    binary = _find_claude_binary()
+    if binary is None:
+        log.info("claude CLI binary not found; skipping model extraction")
+        return []
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                "https://api.anthropic.com/v1/models",
-                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        data = binary.read_bytes()
+    except OSError as e:
+        log.warning("failed to read claude binary at %s: %s", binary, e)
+        return []
+    matches = {m.decode("ascii") for m in _CLI_MODEL_RE.findall(data)}
+    if not matches:
+        log.warning("no model IDs found in claude binary at %s", binary)
+        return []
+    return sorted(matches, key=_model_sort_key)
+
+
+def _model_sort_key(model_id: str) -> tuple[int, tuple[int, ...], int]:
+    """Sort by family priority, then by version numbers descending, then base-before-1m.
+
+    Handles `[1m]` context-variant suffixes so `claude-opus-4-6` sorts alongside
+    `claude-opus-4-6[1m]` (with the base coming first), rather than getting
+    grouped with all `[1m]` variants due to the digit parser choking on `6[1m]`.
+    """
+    is_1m = model_id.endswith("[1m]")
+    base = model_id.removesuffix("[1m]")
+    parts = base.split("-")
+    family = parts[1] if len(parts) > 1 else ""
+    family_order = _FAMILY_ORDER.get(family, 99)
+    versions = [-int(x) for x in parts[2:] if x.isdigit()]
+    # Pad so a bare major version (`claude-opus-4` = 4.0) sorts after explicit
+    # minors (`claude-opus-4-8`), instead of first via tuple-prefix comparison.
+    while len(versions) < 2:
+        versions.append(0)
+    return (family_order, tuple(versions), 1 if is_1m else 0)
+
+
+async def _fetch_models(force_refresh: bool = False) -> list[str]:
+    """Return the list of available Claude model IDs.
+
+    Discovery order:
+      1. Extract from the shipped Claude CLI binary (`strings`-style scan). This
+         is the source of truth the CLI itself uses — no API key needed and
+         it's always in sync with whatever CLI version is installed.
+      2. Fall back to the Anthropic `/v1/models` API if ANTHROPIC_API_KEY is set.
+      3. Fall back to a hardcoded list.
+
+    Results are cached for `_MODEL_CACHE_TTL_SEC` seconds. Pass `force_refresh=True`
+    to bypass the cache.
+    """
+    global _models_cache, _models_cache_ts
+    now = time.monotonic()
+    if (
+        not force_refresh
+        and _models_cache is not None
+        and (now - _models_cache_ts) < _MODEL_CACHE_TTL_SEC
+    ):
+        return _models_cache
+
+    # 1. Try CLI binary extraction first — this is what the CLI itself uses.
+    extracted = _extract_models_from_cli()
+    if extracted:
+        _models_cache = extracted
+        _models_cache_ts = now
+        log.info("extracted %d model(s) from claude CLI binary", len(extracted))
+        return extracted
+
+    # 2. Try the Anthropic API if we have credentials.
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if api_key:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                )
+                r.raise_for_status()
+                data = r.json()
+                ids = [m["id"] for m in data.get("data", []) if m.get("type") == "model"]
+                if ids:
+                    _models_cache = ids
+                    _models_cache_ts = now
+                    log.info("fetched %d model(s) from Anthropic API", len(ids))
+                    return ids
+        except Exception:
+            log.warning(
+                "failed to fetch models from Anthropic API; using hardcoded fallback",
+                exc_info=True,
             )
-            r.raise_for_status()
-            data = r.json()
-            ids = [m["id"] for m in data.get("data", []) if m.get("type") == "model"]
-            if ids:
-                _models_cache = ids
-                log.info("fetched %d model(s) from Anthropic API", len(ids))
-                return ids
-    except Exception:
-        log.warning("failed to fetch models from Anthropic API; using fallback Claude model list", exc_info=True)
+    else:
+        log.info(
+            "no ANTHROPIC_API_KEY set and CLI extraction returned nothing; "
+            "using hardcoded fallback Claude model list"
+        )
+
+    # 3. Hardcoded fallback.
+    _models_cache = _FALLBACK_MODELS
+    _models_cache_ts = now
     return _FALLBACK_MODELS
 
 
-async def _fetch_provider_models(provider: str) -> list[str]:
+async def _fetch_provider_models(provider: str, force_refresh: bool = False) -> list[str]:
     if provider == "claude":
-        return await _fetch_models()
+        return await _fetch_models(force_refresh=force_refresh)
     if provider == "codex":
         return await fetch_codex_models()
     raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
@@ -430,6 +559,8 @@ def build_app() -> FastAPI:
             login_supported=True,
         ),
     }
+    # Let the registry flag/clear re-auth state from runtime turn outcomes.
+    registry.auth_registries = provider_auth
 
     # Initialize orchestrator manager
     orchestrator_manager = get_orchestrator_manager(base_url="http://localhost:8765")
@@ -493,12 +624,12 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
 
     @app.get("/api/providers/{provider}/models")
-    async def list_provider_models(provider: str) -> list[str]:
-        return await _fetch_provider_models(provider)
+    async def list_provider_models(provider: str, refresh: bool = False) -> list[str]:
+        return await _fetch_provider_models(provider, force_refresh=refresh)
 
     @app.get("/api/models")
-    async def list_models(provider: str = "claude") -> list[str]:
-        return await _fetch_provider_models(provider)
+    async def list_models(provider: str = "claude", refresh: bool = False) -> list[str]:
+        return await _fetch_provider_models(provider, force_refresh=refresh)
 
     @app.get("/api/instances")
     async def list_instances() -> list[dict[str, Any]]:

@@ -263,7 +263,7 @@ def test_update_permissions_can_clear_model_to_provider_default(tmp_path) -> Non
 def test_provider_models_and_compat_models(monkeypatch) -> None:
     import agent_manager.server as server_mod
 
-    async def fake_models() -> list[str]:
+    async def fake_models(force_refresh: bool = False) -> list[str]:
         return ["claude-test-model"]
 
     async def fake_codex_models() -> list[str]:
@@ -286,10 +286,13 @@ def test_claude_models_return_fallback_without_api_key(monkeypatch) -> None:
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(server_mod, "_models_cache", None)
+    # CLI binary extraction is environment-dependent (present in the docker
+    # image, absent on dev machines) — stub it out to exercise the fallback.
+    monkeypatch.setattr(server_mod, "_extract_models_from_cli", lambda: [])
 
     app = build_app()
     with TestClient(app) as c:
-        assert c.get("/api/providers/claude/models").json()[0] == "claude-opus-4-8"
+        assert c.get("/api/providers/claude/models").json() == server_mod._FALLBACK_MODELS
 
 
 def test_provider_auth_status_and_compat_alias() -> None:
@@ -354,6 +357,44 @@ def test_auth_status_treats_existing_credentials_as_authenticated(tmp_path) -> N
     assert payload["credentials_present"] is True
 
 
+def test_classify_runtime_auth_failure() -> None:
+    from agent_manager.auth import classify_runtime_auth_failure
+
+    assert classify_runtime_auth_failure("Error: 401 Unauthorized") == "expired"
+    assert classify_runtime_auth_failure("CLIConnectionError: OAuth token has expired") == "expired"
+    assert classify_runtime_auth_failure("ProcessError: exit 1: 403 Forbidden") == "expired"
+    assert classify_runtime_auth_failure("HTTPStatusError: 502 Bad Gateway") == "gateway"
+    assert classify_runtime_auth_failure("ProcessError: 503 Service Unavailable") == "gateway"
+    assert classify_runtime_auth_failure("ValueError: unrelated") is None
+    assert classify_runtime_auth_failure("") is None
+    assert classify_runtime_auth_failure(None) is None
+
+
+def test_auth_registry_needs_reauth_flag_in_status() -> None:
+    from agent_manager.auth import AuthRegistry
+
+    r = AuthRegistry()
+    assert r.provider_status()["needs_reauth"] is False
+    assert r.provider_status()["reauth_reason"] is None
+
+    r.mark_needs_reauth("expired", "CLIConnectionError: 401")
+    status = r.provider_status()
+    assert status["needs_reauth"] is True
+    assert status["reauth_reason"] == "expired"
+
+    r.clear_needs_reauth()
+    assert r.provider_status()["needs_reauth"] is False
+    assert r.provider_status()["reauth_reason"] is None
+
+
+def test_provider_auth_status_exposes_reauth_fields() -> None:
+    app = build_app()
+    with TestClient(app) as c:
+        body = c.get("/api/providers/claude/auth/status").json()
+        assert "needs_reauth" in body
+        assert "reauth_reason" in body
+
+
 def test_instance_record_migrates_legacy_claude_agent() -> None:
     from agent_manager.persistence import InstanceRecord
 
@@ -412,3 +453,51 @@ def test_slugify_basic_cases() -> None:
     assert slugify("ñoño") == "oo"  # non-ascii chars are dropped
     assert slugify("Has___underscores") == "has_underscores"
     assert slugify("a" * 200) == "a" * 64
+
+
+def test_model_regex_extracts_clean_ids_and_rejects_dated_variants() -> None:
+    """Simulates strings-scanning a binary that contains a mix of ID forms."""
+    from agent_manager.server import _CLI_MODEL_RE
+
+    binary_blob = (
+        b"noise\x00claude-opus-4\x01claude-opus-4-8\x00"
+        b"claude-opus-4-6[1m]\x00claude-opus-4-20250514\x00"
+        b"claude-opus-4-1@20250805\x00claude-sonnet-4-5-20250929[1m]\x00"
+        b"claude-haiku-3-5\x00claude-fable-5\x00random-string-here"
+    )
+    matches = sorted({m.decode() for m in _CLI_MODEL_RE.findall(binary_blob)})
+    # Dated variants (`-20250514`) and `@` aliases (`@20250805`) are rejected.
+    # `claude-sonnet-4-5-20250929[1m]` is also dated → rejected.
+    assert matches == sorted([
+        "claude-opus-4",
+        "claude-opus-4-8",
+        "claude-opus-4-6[1m]",
+        "claude-haiku-3-5",
+        "claude-fable-5",
+    ])
+
+
+def test_model_sort_key_groups_families_and_orders_versions() -> None:
+    from agent_manager.server import _model_sort_key
+
+    unsorted = [
+        "claude-sonnet-4-5",
+        "claude-opus-4-8",
+        "claude-fable-5",
+        "claude-opus-4-6[1m]",
+        "claude-opus-4-6",
+        "claude-haiku-3-5",
+    ]
+    ordered = sorted(unsorted, key=_model_sort_key)
+    assert ordered == [
+        # opus family first, newer versions before older, base before [1m]
+        "claude-opus-4-8",
+        "claude-opus-4-6",
+        "claude-opus-4-6[1m]",
+        # then sonnet
+        "claude-sonnet-4-5",
+        # then haiku
+        "claude-haiku-3-5",
+        # then fable
+        "claude-fable-5",
+    ]

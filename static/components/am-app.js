@@ -160,9 +160,13 @@ class AmApp extends HTMLElement {
             this.querySelector('am-login-dialog').open(e.detail?.provider || 'claude');
         });
 
-        // Auth changed
+        // Auth changed (e.g. a login/re-auth completed)
         this.addEventListener('auth-changed', () => {
             this.checkAuth();
+            const panel = this.querySelector('am-permissions-panel');
+            if (panel && typeof panel.refreshAuthStatus === 'function') {
+                panel.refreshAuthStatus();
+            }
         });
 
         // Scroll terminal to bottom
@@ -202,6 +206,16 @@ class AmApp extends HTMLElement {
 
         document.addEventListener('am-agent-idle', (e) => {
             this.notifyAgentIdle(e.detail?.title);
+        });
+
+        // A turn failed with an auth/gateway error — flip the banner to the
+        // expired state immediately rather than waiting for the 30s poll, then
+        // re-check to pick up the authoritative server-side flag.
+        document.addEventListener('am-auth-error', (e) => {
+            const banner = this.querySelector('am-auth-banner');
+            banner.reauthReason = e.detail?.reason || 'expired';
+            banner.needsReauth = true;
+            this.checkAuth();
         });
     }
 
@@ -265,17 +279,25 @@ class AmApp extends HTMLElement {
 
     async checkAuth() {
         try {
+            // Collect every provider referenced by current instances plus the
+            // built-ins, so we can show "authed" if ANY of them succeeded.
             const providers = new Set(['claude', 'codex']);
             for (const inst of this.instances) {
                 providers.add(inst.provider || inst.instance_type);
             }
             const statuses = await api.checkAuthStatuses([...providers]);
             const authed = Object.values(statuses).some((status) => status?.authed);
+            // For the reauth banner (single-provider concept), prefer Claude
+            // if it's in the mix, otherwise take the first entry.
+            const primary = statuses.claude || Object.values(statuses)[0] || {};
             // Got a real HTTP response — network is reachable
             if (this._disconnected) {
                 this._setDisconnected(false);
             }
-            this.querySelector('am-auth-banner').authed = authed;
+            const banner = this.querySelector('am-auth-banner');
+            banner.authed = authed;
+            banner.reauthReason = primary.reauth_reason;
+            banner.needsReauth = Boolean(primary.needs_reauth);
         } catch (e) {
             if (e instanceof TypeError) {
                 // fetch() throws TypeError on network failure (no response at all).

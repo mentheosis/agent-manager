@@ -109,6 +109,47 @@ async def test_instance_lifecycle_uses_provider_runtime_without_provider_specifi
     assert runtime.closed is True
 
 
+class AuthFailingRuntime:
+    provider = "claude"
+
+    def __init__(self, config: AgentConfig) -> None:
+        self.config = config
+
+    async def start(self) -> None:
+        pass
+
+    async def run_turn(self, message: AgentInput) -> AsyncIterator[AgentEvent]:
+        raise RuntimeError("401 Unauthorized: OAuth token has expired")
+        yield {}  # pragma: no cover
+
+    async def close(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_turn_failure_publishes_auth_error_event() -> None:
+    inst = Instance(
+        title="expired",
+        path="/tmp/expired",
+        provider="claude",
+        _runtime_factory=lambda config: AuthFailingRuntime(config),
+    )
+
+    await inst.start()
+    await _wait_for(lambda: inst.status == "ready")
+    await inst.send("hi")
+    await _wait_for(lambda: any(e.get("type") == "auth_error" for e in inst.history()))
+
+    auth_events = [e for e in inst.history() if e.get("type") == "auth_error"]
+    assert len(auth_events) == 1
+    assert auth_events[0]["provider"] == "claude"
+    assert auth_events[0]["reason"] == "expired"
+    # The generic error event is still emitted for the transcript.
+    assert any(e.get("type") == "error" for e in inst.history())
+
+    await inst.stop()
+
+
 @pytest.mark.asyncio
 async def test_instance_slash_command_does_not_call_provider_runtime() -> None:
     runtimes: list[FakeRuntime] = []

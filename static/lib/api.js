@@ -16,8 +16,10 @@ export async function fetchProvider(provider = 'claude') {
     return r.json();
 }
 
-export async function fetchModels(provider = 'claude') {
-    const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/models`);
+export async function fetchModels(provider = 'claude', { refresh = false } = {}) {
+    const url = `${BASE}/providers/${encodeURIComponent(provider)}/models`
+        + (refresh ? '?refresh=true' : '');
+    const r = await fetch(url);
     return r.ok ? r.json() : [];
 }
 

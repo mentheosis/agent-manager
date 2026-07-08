@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 from .artifacts import artifact_path_is_present, extract_artifact_directives
+from .auth import classify_runtime_auth_failure
 from .commands import handle_agent_command, parse_agent_command
 from .providers.base import AgentConfig, AgentEvent, AgentInput, AgentRuntime, MemoryFileTracker
 from .providers.registry import RuntimeFactory, default_registry
@@ -134,8 +135,21 @@ class Instance:
             raise
         except Exception as e:
             log.exception("instance %s crashed", self.title)
+            message = f"{type(e).__name__}: {e}"
             await self._set_status("error")
-            await self._publish({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            await self._publish({"type": "error", "message": message})
+            # If the failure looks like rejected credentials (401/expired token)
+            # or an upstream gateway error, surface a dedicated auth_error so the
+            # registry can flag the provider and the UI can prompt re-auth — the
+            # CLI's own auth status cannot detect this.
+            reason = classify_runtime_auth_failure(message)
+            if reason is not None:
+                await self._publish({
+                    "type": "auth_error",
+                    "provider": self.provider,
+                    "reason": reason,
+                    "message": message,
+                })
         finally:
             try:
                 await runtime.close()
