@@ -16,7 +16,3 @@ services:
       # Claude Code (and the Agent SDK) can reach the host-side MCP server.
       DOCKER_MCP_URL: "http://host.docker.internal:9090"
       DOCKER_MCP_TOKEN: "${DOCKER_MCP_TOKEN}"
-    volumes:
-      - ${HOME}/codes/agent-manager:/app/agent-manager
-      - ${HOME}/codes/agents-v1:/app/agents-v1
-      - ${HOME}/codes/space-game:/app/space-game
