@@ -50,6 +50,7 @@ class CodexRuntime:
 
             cmd = self._build_command(self._prompt_with_context(message.text), image_paths)
             system_context = await self._system_init_context()
+            diagnostics: dict[str, Any] = self._latest_transcript_diagnostics() or {}
             log.info("instance %s: starting Codex command: %s", self.config.title, cmd[:4])
 
             try:
@@ -71,7 +72,7 @@ class CodexRuntime:
 
             stderr_task = asyncio.create_task(self._read_stderr(stderr_chunks))
             transcript_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
-            transcript_task = self._start_transcript_tail(transcript_queue, system_context)
+            transcript_task = self._start_transcript_tail(transcript_queue, system_context, diagnostics)
             seen_assistant_texts: set[str] = set()
             seen_result = {"emitted": False}
             saw_result = False
@@ -88,6 +89,7 @@ class CodexRuntime:
 
                     if transcript_get is not None and transcript_get in done:
                         event = transcript_get.result()
+                        self._record_event_diagnostics(event, diagnostics)
                         if event.get("type") == "result":
                             saw_result = True
                         if _should_emit_event(event, seen_assistant_texts, seen_result):
@@ -126,6 +128,15 @@ class CodexRuntime:
                         continue
                     for event in translate_codex_event(raw, system_context=system_context):
                         self._capture_session_id(event)
+                        if transcript_task is None:
+                            transcript_task = self._start_transcript_tail(
+                                transcript_queue,
+                                system_context,
+                                diagnostics,
+                            )
+                        self._record_event_diagnostics(event, diagnostics)
+                        if event.get("type") == "result":
+                            event = _merge_result_diagnostics(event, diagnostics)
                         if event.get("type") == "artifact":
                             self._track_artifact_path(event, reported_generated_images)
                         if event.get("type") == "result":
@@ -143,6 +154,9 @@ class CodexRuntime:
 
                 while not transcript_queue.empty():
                     event = transcript_queue.get_nowait()
+                    self._record_event_diagnostics(event, diagnostics)
+                    if event.get("type") == "result":
+                        event = _merge_result_diagnostics(event, diagnostics)
                     if event.get("type") == "artifact":
                         self._track_artifact_path(event, reported_generated_images)
                     if event.get("type") == "result":
@@ -161,6 +175,9 @@ class CodexRuntime:
                         pass
                 while not transcript_queue.empty():
                     event = transcript_queue.get_nowait()
+                    self._record_event_diagnostics(event, diagnostics)
+                    if event.get("type") == "result":
+                        event = _merge_result_diagnostics(event, diagnostics)
                     if event.get("type") == "artifact":
                         self._track_artifact_path(event, reported_generated_images)
                     if event.get("type") == "result":
@@ -185,6 +202,7 @@ class CodexRuntime:
                         "subtype": "error",
                         "is_error": True,
                         "session_id": self._session_id,
+                        **_result_diagnostics(diagnostics, returncode=returncode, stderr=stderr),
                     }
                 elif not saw_result:
                     for image_event in self._new_generated_image_events(
@@ -197,6 +215,7 @@ class CodexRuntime:
                         "subtype": "success",
                         "is_error": False,
                         "session_id": self._session_id,
+                        **_result_diagnostics(diagnostics),
                     }
             except asyncio.CancelledError:
                 await self._terminate()
@@ -211,6 +230,7 @@ class CodexRuntime:
                     "subtype": "error",
                     "is_error": True,
                     "session_id": self._session_id,
+                    **_result_diagnostics(diagnostics, error_message=_stream_limit_message("stdout", e)),
                 }
             finally:
                 if transcript_task is not None:
@@ -360,6 +380,23 @@ class CodexRuntime:
             if isinstance(sid, str) and sid:
                 self._session_id = sid
 
+    @staticmethod
+    def _record_event_diagnostics(event: AgentEvent, diagnostics: dict[str, Any]) -> None:
+        if event.get("type") == "result":
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                diagnostics["usage"] = usage
+            context = event.get("context")
+            if isinstance(context, dict):
+                diagnostics["context"] = context
+        elif event.get("type") == "error":
+            message = event.get("message")
+            if isinstance(message, str) and message:
+                diagnostics["error_message"] = message
+            data = event.get("data")
+            if isinstance(data, dict):
+                diagnostics["error_data"] = data
+
     def _write_images(self, images: list[dict[str, Any]], tmpdir: Path) -> list[Path]:
         paths: list[Path] = []
         for idx, image in enumerate(images):
@@ -430,6 +467,7 @@ class CodexRuntime:
         self,
         queue: asyncio.Queue[AgentEvent],
         system_context: dict[str, Any],
+        diagnostics: dict[str, Any],
     ) -> asyncio.Task[None] | None:
         path = self._codex_session_path()
         if path is None:
@@ -439,7 +477,7 @@ class CodexRuntime:
         except OSError:
             return None
         return asyncio.create_task(
-            self._tail_codex_session_transcript(path, offset, queue, system_context),
+            self._tail_codex_session_transcript(path, offset, queue, system_context, diagnostics),
             name=f"codex-transcript-tail:{self.config.title}",
         )
 
@@ -454,6 +492,11 @@ class CodexRuntime:
         return matches[-1] if matches else None
 
     def _latest_rate_limits(self) -> dict[str, Any] | None:
+        diagnostics = self._latest_transcript_diagnostics()
+        rate_limits = diagnostics.get("rate_limits") if diagnostics else None
+        return rate_limits if isinstance(rate_limits, dict) else None
+
+    def _latest_transcript_diagnostics(self) -> dict[str, Any] | None:
         path = self._codex_session_path()
         if path is None:
             return None
@@ -461,28 +504,21 @@ class CodexRuntime:
             with path.open("rb") as f:
                 f.seek(0, 2)
                 size = f.tell()
-                f.seek(max(size - 1024 * 1024, 0))
+                f.seek(max(size - 4 * 1024 * 1024, 0))
                 chunk = f.read().decode("utf-8", errors="replace")
         except OSError:
             return None
 
+        diagnostics: dict[str, Any] = {}
         for line in reversed(chunk.splitlines()):
             try:
                 raw = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            payload = raw.get("payload")
-            if not isinstance(payload, dict) or payload.get("type") != "token_count":
-                continue
-            rate_limits = payload.get("rate_limits")
-            if not isinstance(rate_limits, dict):
-                continue
-            normalized = _normalize_rate_limits(rate_limits)
-            timestamp = raw.get("timestamp")
-            if isinstance(timestamp, str):
-                normalized["observed_at"] = timestamp
-            return normalized
-        return None
+            _update_diagnostics_from_transcript_raw(raw, diagnostics)
+            if ("usage" in diagnostics and "context" in diagnostics) or "rate_limits" in diagnostics:
+                return diagnostics
+        return diagnostics or None
 
     async def _tail_codex_session_transcript(
         self,
@@ -490,6 +526,7 @@ class CodexRuntime:
         offset: int,
         queue: asyncio.Queue[AgentEvent],
         system_context: dict[str, Any],
+        diagnostics: dict[str, Any],
     ) -> None:
         while True:
             try:
@@ -506,6 +543,7 @@ class CodexRuntime:
                             raw = json.loads(line)
                         except json.JSONDecodeError:
                             continue
+                        _update_diagnostics_from_transcript_raw(raw, diagnostics)
                         for event in translate_codex_transcript_event(raw, system_context=system_context):
                             queue.put_nowait(event)
                 elif size < offset:
@@ -543,6 +581,114 @@ def _suffix_for_media_type(media_type: str) -> str:
 
 def _is_stream_limit_error(e: BaseException) -> bool:
     return isinstance(e, asyncio.LimitOverrunError) or _STREAM_LIMIT_ERROR in str(e)
+
+
+def _update_diagnostics_from_transcript_raw(raw: dict[str, Any], diagnostics: dict[str, Any]) -> None:
+    payload = raw.get("payload")
+    if not isinstance(payload, dict):
+        return
+
+    payload_type = payload.get("type")
+    if payload_type == "task_started":
+        context_window = payload.get("model_context_window")
+        if isinstance(context_window, int):
+            context = dict(diagnostics.get("context") or {})
+            context["context_window"] = context_window
+            diagnostics["context"] = _with_context_percent(context)
+        return
+
+    if payload_type != "token_count":
+        return
+
+    timestamp = raw.get("timestamp")
+    rate_limits = payload.get("rate_limits")
+    if isinstance(rate_limits, dict):
+        normalized = _normalize_rate_limits(rate_limits)
+        if isinstance(timestamp, str):
+            normalized["observed_at"] = timestamp
+        diagnostics["rate_limits"] = normalized
+
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return
+
+    total_usage = info.get("total_token_usage")
+    if isinstance(total_usage, dict):
+        diagnostics["usage"] = dict(total_usage)
+    last_usage = info.get("last_token_usage")
+
+    context: dict[str, Any] = dict(diagnostics.get("context") or {})
+    context_window = info.get("model_context_window") or payload.get("model_context_window")
+    if isinstance(context_window, int):
+        context["context_window"] = context_window
+    context_usage = last_usage if isinstance(last_usage, dict) else total_usage
+    if isinstance(context_usage, dict):
+        total_tokens = context_usage.get("total_tokens")
+        if isinstance(total_tokens, int):
+            context["total_tokens"] = total_tokens
+        elif isinstance(context_usage.get("input_tokens"), int) or isinstance(context_usage.get("output_tokens"), int):
+            context["total_tokens"] = int(context_usage.get("input_tokens") or 0) + int(context_usage.get("output_tokens") or 0)
+        context["source"] = "last_token_usage" if isinstance(last_usage, dict) else "total_token_usage"
+
+    if isinstance(timestamp, str):
+        context["observed_at"] = timestamp
+
+    if context:
+        diagnostics["context"] = _with_context_percent(context)
+
+
+def _with_context_percent(context: dict[str, Any]) -> dict[str, Any]:
+    total_tokens = context.get("total_tokens")
+    context_window = context.get("context_window")
+    if isinstance(total_tokens, int) and isinstance(context_window, int) and context_window > 0:
+        context["used_percent"] = round((total_tokens / context_window) * 100, 1)
+        context["remaining_tokens"] = max(context_window - total_tokens, 0)
+    return context
+
+
+def _result_diagnostics(
+    diagnostics: dict[str, Any],
+    *,
+    returncode: int | None = None,
+    stderr: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    usage = diagnostics.get("usage")
+    if isinstance(usage, dict):
+        result["usage"] = usage
+    context = diagnostics.get("context")
+    if isinstance(context, dict):
+        result["context"] = context
+    rate_limits = diagnostics.get("rate_limits")
+    if isinstance(rate_limits, dict):
+        result["rate_limits"] = rate_limits
+
+    error_details: dict[str, Any] = {}
+    error_data = diagnostics.get("error_data")
+    if isinstance(error_data, dict):
+        error_details.update(error_data)
+    message = error_message or diagnostics.get("error_message")
+    if isinstance(message, str) and message:
+        error_details["message"] = message
+    if returncode is not None:
+        error_details["returncode"] = returncode
+    if stderr:
+        error_details["stderr_tail"] = stderr[-4000:]
+    if error_details:
+        result["error_details"] = error_details
+    return result
+
+
+def _merge_result_diagnostics(event: AgentEvent, diagnostics: dict[str, Any]) -> AgentEvent:
+    additions = _result_diagnostics(diagnostics)
+    if not additions:
+        return event
+    merged = dict(event)
+    for key, value in additions.items():
+        if key not in merged or merged[key] in (None, {}, []):
+            merged[key] = value
+    return merged
 
 
 def _should_emit_event(

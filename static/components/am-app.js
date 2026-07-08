@@ -265,7 +265,12 @@ class AmApp extends HTMLElement {
 
     async checkAuth() {
         try {
-            const { authed } = await api.checkAuth();
+            const providers = new Set(['claude', 'codex']);
+            for (const inst of this.instances) {
+                providers.add(inst.provider || inst.instance_type);
+            }
+            const statuses = await api.checkAuthStatuses([...providers]);
+            const authed = Object.values(statuses).some((status) => status?.authed);
             // Got a real HTTP response — network is reachable
             if (this._disconnected) {
                 this._setDisconnected(false);

@@ -88,7 +88,15 @@ func (h *HTTPServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 	resp := h.mcp.HandleRequestStreaming(&req, sw)
 
-	// If resp is nil, the handler already wrote the response (streaming mode)
+	// JSON-RPC notifications do not have response payloads. For streamable HTTP,
+	// return an explicit accepted status instead of the default empty 200, which
+	// some clients reject as an invalid/missing-content-type response.
+	if resp == nil && req.ID == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	// If resp is nil, the handler already wrote the response (streaming mode).
 	if resp == nil {
 		return
 	}

@@ -337,6 +337,23 @@ def test_parse_claude_auth_status() -> None:
     assert _parse_auth_status("not json") == {}
 
 
+def test_auth_status_treats_existing_credentials_as_authenticated(tmp_path) -> None:
+    from agent_manager.auth import _status_payload
+
+    credentials = tmp_path / ".credentials.json"
+    credentials.write_text("{}", encoding="utf-8")
+
+    payload = _status_payload(
+        provider="claude",
+        status={"loggedIn": False},
+        credentials_path=credentials,
+        login_supported=True,
+    )
+
+    assert payload["authed"] is True
+    assert payload["credentials_present"] is True
+
+
 def test_instance_record_migrates_legacy_claude_agent() -> None:
     from agent_manager.persistence import InstanceRecord
 

@@ -780,24 +780,80 @@ async def test_codex_runtime_stops_on_terminal_provider_error(tmp_path: Path, mo
     await runtime.start()
     events = [event async for event in runtime.run_turn(AgentInput("hello"))]
 
-    assert events == [
-        {
-            "type": "error",
-            "message": "The model 'gpt-image-2' does not exist.",
-            "data": {
-                "error_type": "image_generation_user_error",
-                "code": "invalid_value",
-                "param": "tools",
-                "status": 400,
-            },
+    assert events[0] == {
+        "type": "error",
+        "message": "The model 'gpt-image-2' does not exist.",
+        "data": {
+            "error_type": "image_generation_user_error",
+            "code": "invalid_value",
+            "param": "tools",
+            "status": 400,
         },
-        {
-            "type": "result",
-            "subtype": "error",
-            "is_error": True,
-            "terminal": True,
-        },
-    ]
+    }
+    assert events[1]["type"] == "result"
+    assert events[1]["subtype"] == "error"
+    assert events[1]["is_error"] is True
+    assert events[1]["terminal"] is True
+    assert events[1]["error_details"] == {
+        "error_type": "image_generation_user_error",
+        "code": "invalid_value",
+        "param": "tools",
+        "status": 400,
+        "message": "The model 'gpt-image-2' does not exist.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_enriches_terminal_provider_error_with_prior_context(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    session_id = "019f0b92-c3bf-7372-880c-a6fabb173c41"
+    session_file = home / ".codex" / "sessions" / "2026" / "06" / "28" / f"rollout-test-{session_id}.jsonl"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(
+        '{"timestamp":"2026-06-29T21:34:57.531Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":33235441,"cached_input_tokens":31001472,"output_tokens":85376,"reasoning_output_tokens":22986,"total_tokens":33320817},"last_token_usage":{"input_tokens":174982,"cached_input_tokens":172416,"output_tokens":87,"reasoning_output_tokens":0,"total_tokens":175069},"model_context_window":258400},"rate_limits":{"limit_id":"codex","primary":{"used_percent":5.0,"window_minutes":300,"resets_at":1782773913},"secondary":{"used_percent":1.0,"window_minutes":10080,"resets_at":1783360713},"plan_type":"pro"}}}\n',
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "print(json.dumps({\n"
+        "    'type': 'error',\n"
+        "    'message': 'Reconnecting... 2/5 (stream disconnected before completion: websocket closed by server before response.completed)',\n"
+        "}), flush=True)\n",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+    runtime = CodexRuntime(AgentConfig(
+        title="codex",
+        provider="codex",
+        cwd=str(tmp_path),
+        permission_mode="workspace-write",
+        model="gpt-5.5",
+        session_id=session_id,
+    ))
+
+    await runtime.start()
+    events = [event async for event in runtime.run_turn(AgentInput("hello"))]
+    result = events[-1]
+
+    assert result["type"] == "result"
+    assert result["subtype"] == "error"
+    assert result["terminal"] is True
+    assert result["usage"]["total_tokens"] == 33320817
+    assert result["context"]["total_tokens"] == 175069
+    assert result["context"]["context_window"] == 258400
+    assert result["context"]["used_percent"] == 67.8
+    assert result["context"]["remaining_tokens"] == 83331
+    assert result["context"]["source"] == "last_token_usage"
+    assert result["rate_limits"]["primary"]["used_percent"] == 5.0
+    assert "response.completed" in result["error_details"]["message"]
 
 
 @pytest.mark.asyncio
@@ -872,7 +928,72 @@ async def test_codex_runtime_reports_stream_records_that_exceed_limit(tmp_path: 
         "codex stdout emitted a single line larger than the 128 bytes stream limit"
     )
     assert "one tool result, diff, or assistant event was too large" in events[0]["message"]
-    assert events[1] == {"type": "result", "subtype": "error", "is_error": True, "session_id": None}
+    assert events[1]["type"] == "result"
+    assert events[1]["subtype"] == "error"
+    assert events[1]["is_error"] is True
+    assert events[1]["session_id"] is None
+    assert events[1]["error_details"]["message"].startswith(
+        "codex stdout emitted a single line larger than the 128 bytes stream limit"
+    )
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_adds_context_diagnostics_to_error_result(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    session_id = "019efbc4-3e97-72d1-b330-cc192be6c5cb"
+    session_file = home / ".codex" / "sessions" / "2026" / "06" / "24" / f"rollout-test-{session_id}.jsonl"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(
+        '{"timestamp":"2026-06-24T22:33:22.946Z","type":"event_msg","payload":{"type":"task_started","model_context_window":258400}}\n',
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, time\n"
+        "path = os.environ['CODEX_SESSION_FILE']\n"
+        "with open(path, 'a', encoding='utf-8') as f:\n"
+        "    f.write('{\"timestamp\":\"2026-06-24T22:33:30.316Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":240000,\"cached_input_tokens\":120000,\"output_tokens\":1000,\"reasoning_output_tokens\":500,\"total_tokens\":241000},\"model_context_window\":258400},\"rate_limits\":{\"limit_id\":\"codex\",\"primary\":{\"used_percent\":7.0,\"window_minutes\":300,\"resets_at\":1782356024},\"secondary\":{\"used_percent\":11.0,\"window_minutes\":10080,\"resets_at\":1782942824},\"plan_type\":\"pro\"}}}\\n')\n"
+        "    f.flush()\n"
+        "time.sleep(0.5)\n"
+        "print('stream disconnected before completion: websocket closed by server before response.completed', file=__import__('sys').stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("CODEX_SESSION_FILE", str(session_file))
+
+    runtime = CodexRuntime(AgentConfig(
+        title="codex",
+        provider="codex",
+        cwd=str(tmp_path),
+        permission_mode="workspace-write",
+        session_id=session_id,
+    ))
+
+    await runtime.start()
+    events = [event async for event in runtime.run_turn(AgentInput("hello"))]
+    result = events[-1]
+
+    assert result["type"] == "result"
+    assert result["subtype"] == "error"
+    assert result["usage"]["total_tokens"] == 241000
+    assert result["context"] == {
+        "context_window": 258400,
+        "total_tokens": 241000,
+        "observed_at": "2026-06-24T22:33:30.316Z",
+        "used_percent": 93.3,
+        "remaining_tokens": 17400,
+        "source": "total_token_usage",
+    }
+    assert result["rate_limits"]["primary"]["used_percent"] == 7.0
+    assert result["error_details"]["returncode"] == 1
+    assert "response.completed" in result["error_details"]["stderr_tail"]
 
 
 @pytest.mark.asyncio

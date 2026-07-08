@@ -34,6 +34,21 @@
     flex-shrink: 0;
 }
 
+#auth-banner #dismiss-btn {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    line-height: 1;
+}
+
+#auth-banner #dismiss-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
 /* Disconnected mode — orange/amber colour scheme */
 #auth-banner[data-mode="disconnected"] {
     background: #2a1e0a;

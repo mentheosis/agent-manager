@@ -12,6 +12,7 @@ class AmTerminalPane extends HTMLElement {
         this._unsubscribe = null;
         this._wasNearBottom = true;  // Track scroll position for auto-scroll
         this._replaying = false;     // True while bulk-rendering history; suppresses mid-render scrolls
+        this._historyLoadToken = 0;   // Invalidates async history rendering after instance switches
         this._pendingImages = [];    // Images to send with next prompt [{media_type, data}]
         this._filters = {
             assistant_text: true,
@@ -233,6 +234,7 @@ class AmTerminalPane extends HTMLElement {
     }
 
     set instance(inst) {
+        const loadToken = ++this._historyLoadToken;
         // Unsubscribe from old stream
         if (this._unsubscribe) {
             this._unsubscribe();
@@ -244,34 +246,109 @@ class AmTerminalPane extends HTMLElement {
 
         if (inst) {
             const stream = streamManager.get(inst.title);
+            this.showHistoryLoading(inst);
+            this.updateStatusBar(stream);
 
-            // Render whatever history has already arrived (suppress auto-scroll
-            // so partial content doesn't cause a visible incremental scroll).
-            this._replaying = true;
-            for (const event of stream.eventHistory) {
-                this.handleEvent(event, stream);
+            this.renderInitialHistory(stream, loadToken);
+        }
+    }
+
+    async renderInitialHistory(stream, loadToken) {
+        await this.nextFrame();
+        if (loadToken !== this._historyLoadToken || !this._instance) return;
+
+        const initialHistory = stream.eventHistory.slice();
+        this.clearOutput();
+        this._replaying = true;
+
+        let sliceStartedAt = performance.now();
+        const batchSize = 75;
+        for (let i = 0; i < initialHistory.length; i++) {
+            if (loadToken !== this._historyLoadToken || stream.title !== this._instance?.title) {
+                this._replaying = false;
+                return;
             }
-            this._replaying = false;
 
-            if (stream.historyComplete) {
-                // All history received — subscribe for live events only and scroll.
-                this._unsubscribe = stream.subscribe(
-                    (event) => this.handleEvent(event, stream),
-                    { replay: false }
-                );
-                this.updateStatusBar(stream);
-                this.scrollToBottom();
-            } else {
-                // History still in-flight from the server.  Use a loading handler
-                // that suppresses auto-scroll until the history_end sentinel arrives,
-                // then scrolls once and switches to the normal live handler.
-                this._unsubscribe = stream.subscribe(
-                    (event) => this._handleOnLoad(event, stream),
-                    { replay: false }
-                );
-                this.updateStatusBar(stream);
+            this.handleEvent(initialHistory[i], stream);
+
+            const batchBoundary = (i + 1) % batchSize === 0;
+            const timeSliceExpired = performance.now() - sliceStartedAt > 16;
+            if (batchBoundary || timeSliceExpired) {
+                await this.nextFrame();
+                sliceStartedAt = performance.now();
             }
         }
+
+        // Events that arrived while the snapshot was rendering are buffered by
+        // the stream. Render them before subscribing so there is no display gap.
+        const missedEvents = stream.eventHistory.slice(initialHistory.length);
+        for (const event of missedEvents) {
+            if (loadToken !== this._historyLoadToken || stream.title !== this._instance?.title) {
+                this._replaying = false;
+                return;
+            }
+            this.handleEvent(event, stream);
+        }
+
+        this._replaying = false;
+        if (loadToken !== this._historyLoadToken || stream.title !== this._instance?.title) return;
+
+        this.updateStatusBar(stream);
+        if (stream.historyComplete) {
+            this.subscribeLive(stream);
+            this.scrollToBottom();
+        } else {
+            this._unsubscribe = stream.subscribe(
+                (event) => this._handleOnLoad(event, stream),
+                { replay: false }
+            );
+            if (!this.hasMeaningfulOutput()) {
+                this.showHistoryLoading(this._instance);
+            }
+        }
+    }
+
+    nextFrame() {
+        return new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+
+    showHistoryLoading(inst) {
+        const output = this.querySelector('#output-area');
+        if (!output) return;
+        output.innerHTML = '';
+        const loading = document.createElement('div');
+        loading.className = 'history-loading';
+        loading.setAttribute('role', 'status');
+        loading.setAttribute('aria-live', 'polite');
+
+        const spinner = document.createElement('div');
+        spinner.className = 'history-loading-spinner';
+        spinner.setAttribute('aria-hidden', 'true');
+        loading.appendChild(spinner);
+
+        const text = document.createElement('span');
+        const label = inst?.display_title || inst?.title || 'conversation';
+        text.textContent = `Loading ${label}...`;
+        loading.appendChild(text);
+
+        output.appendChild(loading);
+    }
+
+    switchToLiveHandler(stream) {
+        const capturedUnsub = this._unsubscribe;
+        setTimeout(() => {
+            if (this._unsubscribe === capturedUnsub && this._instance?.title === stream.title) {
+                if (this._unsubscribe) this._unsubscribe();
+                this.subscribeLive(stream);
+            }
+        }, 0);
+    }
+
+    subscribeLive(stream) {
+        this._unsubscribe = stream.subscribe(
+            (ev) => this.handleEvent(ev, stream),
+            { replay: false }
+        );
     }
 
     // Used during initial load when history events are still arriving from the
@@ -280,22 +357,7 @@ class AmTerminalPane extends HTMLElement {
     _handleOnLoad(event, stream) {
         if (event.type === 'history_end') {
             this.scrollToBottom();
-            // Capture which subscription we're replacing so a reconnect that
-            // fires between now and the setTimeout can't tear down the wrong one.
-            const capturedUnsub = this._unsubscribe;
-            // Defer the subscription swap so we're not modifying the listener
-            // set from inside the emit() loop that called this function.
-            setTimeout(() => {
-                // Only swap if the subscription hasn't changed (e.g. instance switch
-                // or a reconnect that already re-subscribed via handleEvent).
-                if (this._unsubscribe === capturedUnsub) {
-                    if (this._unsubscribe) this._unsubscribe();
-                    this._unsubscribe = stream.subscribe(
-                        (ev) => this.handleEvent(ev, stream),
-                        { replay: false }
-                    );
-                }
-            }, 0);
+            this.switchToLiveHandler(stream);
             return;
         }
         // Render without auto-scroll — history is still arriving.
@@ -971,15 +1033,29 @@ class AmTerminalPane extends HTMLElement {
                 return [event.title, event.path].filter(Boolean).join('\n');
             case 'result': {
                 const usage = event.usage || event.data?.usage;
+                const context = event.context || event.data?.context;
+                const rateLimits = event.rate_limits || event.data?.rate_limits;
+                const errorDetails = event.error_details || event.data?.error_details;
                 return [
                     event.subtype && `subtype: ${event.subtype}`,
                     event.duration_ms != null && `duration: ${event.duration_ms}ms`,
                     event.num_turns != null && `turns: ${event.num_turns}`,
+                    context?.total_tokens != null && context?.context_window != null && `context: ${context.total_tokens.toLocaleString()} / ${context.context_window.toLocaleString()} tokens${context.used_percent != null ? ` (${context.used_percent}%)` : ''}`,
+                    context?.remaining_tokens != null && `context remaining: ${context.remaining_tokens.toLocaleString()} tokens`,
                     usage?.input_tokens != null && `input tokens: ${usage.input_tokens.toLocaleString()}`,
                     usage?.output_tokens != null && `output tokens: ${usage.output_tokens.toLocaleString()}`,
+                    usage?.total_tokens != null && `total tokens: ${usage.total_tokens.toLocaleString()}`,
                     usage?.reasoning_output_tokens != null && `reasoning output tokens: ${usage.reasoning_output_tokens.toLocaleString()}`,
                     (usage?.cached_input_tokens || usage?.cache_read_input_tokens || usage?.cache_read) && `cache read: ${(usage.cached_input_tokens || usage.cache_read_input_tokens || usage.cache_read).toLocaleString()}`,
                     (usage?.cache_creation_input_tokens || usage?.cache_creation) && `cache creation: ${(usage.cache_creation_input_tokens || usage.cache_creation).toLocaleString()}`,
+                    rateLimits?.primary?.used_percent != null && `primary limit: ${rateLimits.primary.used_percent}%${rateLimits.primary.resets_at_iso ? `, resets ${rateLimits.primary.resets_at_iso}` : ''}`,
+                    rateLimits?.secondary?.used_percent != null && `secondary limit: ${rateLimits.secondary.used_percent}%${rateLimits.secondary.resets_at_iso ? `, resets ${rateLimits.secondary.resets_at_iso}` : ''}`,
+                    errorDetails?.message && `error: ${errorDetails.message}`,
+                    errorDetails?.code && `error code: ${errorDetails.code}`,
+                    errorDetails?.error_type && `error type: ${errorDetails.error_type}`,
+                    errorDetails?.param && `error param: ${errorDetails.param}`,
+                    errorDetails?.returncode != null && `exit code: ${errorDetails.returncode}`,
+                    errorDetails?.stderr_tail && `stderr:\n${errorDetails.stderr_tail}`,
                     event.total_cost_usd != null && `cost: $${event.total_cost_usd.toFixed(4)}`,
                     event.total_cost_usd == null && event.estimated_cost_usd != null && !this.isCodexCumulativeUsage(usage) && `estimated cost: ~$${event.estimated_cost_usd.toFixed(4)}${event.estimated_cost_model ? ` (${event.estimated_cost_model})` : ''}`,
                     event.session_id && `session: ${event.session_id}`,

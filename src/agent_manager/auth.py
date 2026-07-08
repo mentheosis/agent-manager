@@ -259,11 +259,17 @@ def _status_payload(
     credentials_path: Path,
     login_supported: bool,
 ) -> dict[str, Any]:
-    authed = bool(status.get("loggedIn")) if "loggedIn" in status else credentials_path.exists()
+    credentials_exist = credentials_path.exists()
+    # Some provider CLIs can briefly report loggedIn=false after a container
+    # rebuild even though their persisted credentials are present and usable.
+    # Treat either positive CLI status or existing credentials as authenticated;
+    # provider turns remain the final authority for expired/invalid credentials.
+    authed = bool(status.get("loggedIn")) or credentials_exist
     return {
         "provider": provider,
         "authed": authed,
         "credentials_path": str(credentials_path),
+        "credentials_present": credentials_exist,
         "auth_method": status.get("authMethod") or status.get("auth_method"),
         "api_provider": status.get("apiProvider") or status.get("api_provider"),
         "login_supported": login_supported,

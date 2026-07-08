@@ -144,6 +144,18 @@ export async function checkAuth(provider = 'claude') {
     return r.json();
 }
 
+export async function checkAuthStatuses(providers = ['claude']) {
+    const uniqueProviders = [...new Set(providers.filter(Boolean))];
+    const entries = await Promise.all(uniqueProviders.map(async (provider) => {
+        try {
+            return [provider, await checkAuth(provider)];
+        } catch {
+            return [provider, { provider, authed: false }];
+        }
+    }));
+    return Object.fromEntries(entries);
+}
+
 export async function startLogin(provider = 'claude') {
     const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/auth/login`, { method: 'POST' });
     if (!r.ok) throw new Error(`Failed to start login: ${r.status}`);
