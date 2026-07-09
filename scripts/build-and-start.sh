@@ -5,6 +5,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.local.yml)
 
+# Test stages are not ancestors of the runtime target, so BuildKit skips
+# them on a plain build — run them explicitly to keep tests gating the image.
+docker build --target go-test -t agent-manager:go-test .
+docker build --target python-test -t agent-manager:test .
+
 if [[ -f Dockerfile.local ]] \
     && grep -q 'Dockerfile.local' docker-compose.local.yml; then
     docker build -t agent-manager:base .

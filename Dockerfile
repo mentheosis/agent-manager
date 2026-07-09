@@ -81,6 +81,16 @@ COPY --chown=agent:agent static/ ./static/
 RUN pip install --no-cache-dir -e ".[dev]"
 RUN pytest
 
+# =============================================================================
+# Stage 3: Runtime image
+# =============================================================================
+# Built from python-app, not python-test, so test artifacts (tests/, dev deps,
+# and any files written to $HOME by processes spawned during pytest — e.g.
+# ~/.claude.json) never ship in the final image. Note BuildKit skips the test
+# stages when building this default target; build scripts run the go-test and
+# python-test targets explicitly to keep tests gating the image.
+FROM python-app AS runtime
+
 # --- Static assets last (rebuilds only on static/ changes) ----------------
 COPY --chown=agent:agent static/ ./static/
 
