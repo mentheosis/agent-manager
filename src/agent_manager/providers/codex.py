@@ -14,7 +14,14 @@ from typing import Any
 
 from agent_manager.artifacts import artifact_instruction, image_artifact_event, is_image_path
 
-from .base import AgentConfig, AgentEvent, AgentInput, build_prompt_with_context, format_memory_block
+from .base import (
+    AgentConfig,
+    AgentEvent,
+    AgentInput,
+    BaseRuntime,
+    build_prompt_with_context,
+    format_memory_block,
+)
 from .codex_events import translate_codex_event, translate_codex_transcript_event
 from .codex_metadata import fetch_codex_runtime_metadata
 
@@ -24,19 +31,79 @@ CODEX_STREAM_LIMIT = 10 * 1024 * 1024
 _STREAM_LIMIT_ERROR = "Separator is found, but chunk is longer than limit"
 
 
-class CodexRuntime:
+class CodexRuntime(BaseRuntime):
     provider = "codex"
 
     def __init__(self, config: AgentConfig) -> None:
+        super().__init__()
         self.config = config
         self._session_id = config.session_id
         self._proc: asyncio.subprocess.Process | None = None
+        # Per-turn background task that runs the subprocess and pushes events
+        # to the shared queue. Codex spawns a fresh subprocess per turn, so this
+        # is not "persistent" like Claude's pump — it's the current turn's driver.
+        self._query_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         if shutil.which("codex") is None:
             raise RuntimeError("codex CLI is not installed")
 
-    async def run_turn(self, message: AgentInput) -> AsyncIterator[AgentEvent]:
+    async def query(self, message: AgentInput) -> None:
+        """Spawn a background task that runs one codex subprocess turn.
+
+        The task pushes each event to the shared queue via `_emit_event`. Returns
+        immediately once the task is scheduled — consumers read from event_stream().
+
+        If a previous query task is still running (shouldn't happen when the
+        Instance loop waits for "result" between turns, but can happen in tests
+        or during aborts), it's awaited briefly then cancelled if it hangs.
+        """
+        if self._query_task and not self._query_task.done():
+            log.debug(
+                "codex %s: previous query task still running, awaiting before new query",
+                self.config.title,
+            )
+            try:
+                await asyncio.wait_for(self._query_task, timeout=1.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._query_task.cancel()
+                try:
+                    await self._query_task
+                except asyncio.CancelledError:
+                    pass
+
+        self._query_task = asyncio.create_task(
+            self._run_query(message),
+            name=f"codex-query:{self.config.title}",
+        )
+
+    async def _run_query(self, message: AgentInput) -> None:
+        """Drive one turn's event generator, pushing each event to the shared queue."""
+        try:
+            async for event in self._produce_events(message):
+                await self._emit_event(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.exception("codex %s: query task crashed", self.config.title)
+            await self._emit_event({
+                "type": "error",
+                "message": f"codex turn failed: {type(e).__name__}: {e}",
+            })
+            await self._emit_event({
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "session_id": self._session_id,
+            })
+
+    async def _produce_events(self, message: AgentInput) -> AsyncIterator[AgentEvent]:
+        """The subprocess-driven event generator for one turn.
+
+        Same body as the previous `run_turn` — kept as an internal generator so
+        the `query() + _run_query()` shim can pump its yields into the shared
+        event queue that BaseRuntime.event_stream() consumes.
+        """
         stderr_chunks: list[str] = []
         with tempfile.TemporaryDirectory(prefix="agent-manager-codex-") as tmpdir:
             existing_generated_images = self._generated_image_paths()
@@ -248,6 +315,19 @@ class CodexRuntime:
                 self._proc = None
 
     async def close(self) -> None:
+        # Cancel any in-flight query task so its subprocess/tail tasks tear down
+        # cleanly before we terminate the process ourselves.
+        if self._query_task and not self._query_task.done():
+            self._query_task.cancel()
+            try:
+                await self._query_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception(
+                    "codex %s: query task raised during close", self.config.title,
+                )
+        self._query_task = None
         await self._terminate()
 
     def _build_command(self, prompt: str, image_paths: list[Path]) -> list[str]:

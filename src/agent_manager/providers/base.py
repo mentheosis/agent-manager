@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import AsyncIterator
@@ -33,18 +34,99 @@ class AgentConfig:
 
 
 class AgentRuntime(Protocol):
+    """The provider-facing contract used by the Instance loop.
+
+    The runtime is event-stream oriented — Instance sends messages via
+    `query()` (non-blocking) and consumes events from `event_stream()` in a
+    background pump. Turn boundaries are logical (driven by "result" events),
+    not iteration boundaries. This lets providers like Claude, whose SDK can
+    emit async events AFTER a turn's ResultMessage (from background tasks that
+    completed later), stream those events immediately instead of queuing them
+    until the next user prompt.
+
+    `run_turn()` is provided as a convenience wrapper (`query()` + drain events
+    until the first "result") mainly so tests can use request/response semantics
+    against provider-specific runtimes without spinning up an Instance loop.
+    Only one consumer of `event_stream()` may be active at a time — the Instance
+    uses a background pump; tests use `run_turn()`; the two are not mixed.
+    """
+
     provider: str
 
     async def start(self) -> None:
-        """Prepare the provider runtime for turns."""
+        """Prepare the runtime — open connections, spawn any background pumps."""
+
+    async def query(self, message: AgentInput) -> None:
+        """Send one message. Non-blocking — events arrive via event_stream().
+
+        For Claude this dispatches a query to the persistent SDK client.
+        For Codex this spawns a subprocess whose JSONL output is pumped into
+        the event queue by a background task.
+        """
+
+    def event_stream(self) -> AsyncIterator[AgentEvent]:
+        """Continuous async iterator of events for this runtime's lifetime.
+
+        Yields events as they arrive, including any that come AFTER a "result"
+        event (from async task completions on the provider side). The Instance
+        drives one background pump on this stream and treats each "result"
+        event as a logical turn boundary.
+        """
 
     async def run_turn(self, message: AgentInput) -> AsyncIterator[AgentEvent]:
-        """Send one user input and yield normalized agent-manager events."""
+        """Convenience: send + drain events until the first "result".
+
+        Provided for tests. The Instance loop does NOT use this — it drives
+        query() and event_stream() directly.
+        """
         if False:
             yield {}
 
     async def close(self) -> None:
-        """Release provider resources."""
+        """Release provider resources — close connections, cancel pumps."""
+
+
+class BaseRuntime:
+    """Common runtime plumbing: shared event queue + `run_turn()` compatibility.
+
+    Concrete providers subclass this and implement `start()`, `query()`, and
+    `close()`. They push events into `self._event_queue` (via `_emit_event()`)
+    from whatever background task reads their provider's stream. `event_stream()`
+    and `run_turn()` are implemented once here so providers don't repeat them.
+    """
+
+    provider: str = ""
+
+    def __init__(self) -> None:
+        self._event_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
+
+    async def _emit_event(self, event: AgentEvent) -> None:
+        """Push an event onto the shared queue. Called by provider pumps."""
+        await self._event_queue.put(event)
+
+    async def event_stream(self) -> AsyncIterator[AgentEvent]:
+        """Drain events from the shared queue forever (until cancelled)."""
+        while True:
+            event = await self._event_queue.get()
+            yield event
+
+    async def run_turn(self, message: AgentInput) -> AsyncIterator[AgentEvent]:
+        """Compatibility helper — send and drain until the first "result" event."""
+        await self.query(message)  # type: ignore[attr-defined]
+        while True:
+            event = await self._event_queue.get()
+            yield event
+            if event.get("type") == "result":
+                return
+
+    async def query(self, message: AgentInput) -> None:
+        raise NotImplementedError
+
+    async def start(self) -> None:
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        raise NotImplementedError
 
 
 def read_memory_file(memory_file: str | None) -> str | None:

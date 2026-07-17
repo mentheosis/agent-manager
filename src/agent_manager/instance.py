@@ -73,6 +73,22 @@ class Instance:
         self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
     async def _run(self) -> None:
+        # Continuous event pump architecture:
+        #
+        #   Inbox loop (this method)         Event pump (background task)
+        #   ┌─────────────────────────┐      ┌────────────────────────────┐
+        #   │ 1. wait turn_complete   │      │ async for e in runtime     │
+        #   │ 2. read inbox           │      │        .event_stream():    │
+        #   │ 3. runtime.query(...)   │────▶ │   publish(e)               │
+        #   │ 4. loop                 │      │   if e.type == "result":   │
+        #   │                         │      │       set turn_complete    │
+        #   └─────────────────────────┘      └────────────────────────────┘
+        #
+        # The pump runs continuously — any events emitted by the provider (even
+        # AFTER a turn's ResultMessage, from async task completions) get published
+        # to the UI in real time. Turn boundaries are driven by "result" events,
+        # not by iterator termination, so those out-of-band events no longer
+        # queue until the next user prompt.
         runtime = self._create_runtime()
         self._runtime = runtime
         # Track the memory file's hash so we can detect edits between turns.
@@ -81,10 +97,102 @@ class Instance:
         # file on every turn anyway (fresh subprocess), but the restart is
         # cheap and keeps both providers on the same code path.
         memory_tracker = MemoryFileTracker(self.memory_file)
+
+        # turn_complete is set() when no turn is active — initially yes.
+        # Cleared before each query(), set again when the pump sees the first
+        # "result" event for the turn (which releases the inbox loop to accept
+        # the next user message — status can still be "running" if async work
+        # is pending; see below).
+        turn_complete = asyncio.Event()
+        turn_complete.set()
+
+        # Tool-call bookkeeping for the "stay running through async work" rule.
+        # A "result" event with entries still open means we KNOW more events
+        # (a tool_result, then more assistant_text, then another result) are
+        # coming — hold status as "running" until those resolve.
+        open_tool_ids: set[str] = set()
+
+        # Event types that are informational only — receiving one of these
+        # while status is "ready" does NOT mean the agent has resumed working.
+        # (Everything else does — Rule 1: any content-shaped event during
+        # ready implies async continuation → flip status back to "running".)
+        INFORMATIONAL_TYPES = {
+            "status",
+            "user_prompt",
+            "error",
+            "auth_error",
+            "aborted",
+        }
+
+        pump_task: asyncio.Task | None = None
+
+        async def event_pump(rt: AgentRuntime) -> None:
+            """Continuously publish events from the runtime's stream.
+
+            Two status-transition rules layered on top of publishing:
+
+            - Rule 1 (async continuations): if a content-shaped event arrives
+              while we're in "ready", flip status back to "running" BEFORE
+              publishing so the UI shows activity before the content lands.
+            - Rule 2 (open tool calls): on a "result" event, only transition
+              to "ready" if no tool_use is still awaiting its tool_result —
+              otherwise stay "running" until every open tool closes and the
+              next "result" arrives.
+            """
+            try:
+                async for event in rt.event_stream():
+                    etype = event.get("type")
+
+                    # Rule 1: promote status BEFORE publishing so the status
+                    # change appears in the event stream just ahead of the
+                    # content event that triggered it.
+                    if (
+                        etype != "result"
+                        and etype not in INFORMATIONAL_TYPES
+                        and self.status == "ready"
+                    ):
+                        await self._set_status("running")
+
+                    # Track tool-call lifecycle for Rule 2.
+                    if etype == "tool_use":
+                        tid = event.get("id")
+                        if isinstance(tid, str):
+                            open_tool_ids.add(tid)
+                    elif etype == "tool_result":
+                        tid = event.get("tool_id")
+                        if isinstance(tid, str):
+                            open_tool_ids.discard(tid)
+
+                    await self._publish(event)
+
+                    if etype == "result":
+                        # Always release the inbox loop on the first result of a
+                        # turn — the user can send the next prompt whenever
+                        # they want, even if background tool work is still
+                        # pending from this turn.
+                        turn_complete.set()
+                        # Only flip to "ready" if nothing is still expected.
+                        # If tool calls (esp. async sub-agents) are open, we
+                        # know more events are coming; keep "running".
+                        if not open_tool_ids:
+                            await self._set_status("ready")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("instance %s: event pump crashed", self.title)
+
         try:
             await runtime.start()
+            pump_task = asyncio.create_task(
+                event_pump(runtime), name=f"pump:{self.title}",
+            )
             await self._set_status("ready")
+
             while True:
+                # Wait for prior turn to finish before dispatching the next one.
+                # (Prevents concurrent queries against the provider.)
+                await turn_complete.wait()
+
                 message = await self._inbox.get()
                 log.info(
                     "instance %s: received message from inbox (type=%s)",
@@ -117,6 +225,14 @@ class Instance:
                         "type": "status",
                         "status": "reloading_memory",
                     })
+                    # Cancel pump before closing runtime — the pump's async-for
+                    # against event_stream() would otherwise dangle on the queue.
+                    if pump_task and not pump_task.done():
+                        pump_task.cancel()
+                        try:
+                            await pump_task
+                        except asyncio.CancelledError:
+                            pass
                     try:
                         await runtime.close()
                     except Exception:
@@ -124,13 +240,19 @@ class Instance:
                             "instance %s: error closing runtime for memory reload",
                             self.title,
                         )
+                    # Reset tool-call bookkeeping — the old runtime's tool IDs
+                    # will never be closed by the new one.
+                    open_tool_ids.clear()
                     runtime = self._create_runtime()
                     self._runtime = runtime
                     await runtime.start()
+                    pump_task = asyncio.create_task(
+                        event_pump(runtime), name=f"pump:{self.title}",
+                    )
+                turn_complete.clear()
                 await self._set_status("running")
-                async for event in runtime.run_turn(agent_input):
-                    await self._publish(event)
-                await self._set_status("ready")
+                await runtime.query(agent_input)
+                # Loop back; pump will set turn_complete when it sees "result".
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -151,6 +273,12 @@ class Instance:
                     "message": message,
                 })
         finally:
+            if pump_task and not pump_task.done():
+                pump_task.cancel()
+                try:
+                    await pump_task
+                except asyncio.CancelledError:
+                    pass
             try:
                 await runtime.close()
             except Exception:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -20,18 +21,29 @@ from claude_agent_sdk import (
 
 from agent_manager.artifacts import artifact_instruction
 
-from .base import AgentConfig, AgentEvent, AgentInput, build_prompt_with_context, format_memory_block
+from .base import (
+    AgentConfig,
+    AgentEvent,
+    AgentInput,
+    BaseRuntime,
+    build_prompt_with_context,
+    format_memory_block,
+)
 
 log = logging.getLogger(__name__)
 
 
-class ClaudeRuntime:
+class ClaudeRuntime(BaseRuntime):
     provider = "claude"
 
     def __init__(self, config: AgentConfig) -> None:
+        super().__init__()
         self.config = config
         self._client_cm: ClaudeSDKClient | None = None
         self._client: ClaudeSDKClient | None = None
+        # Persistent pump task that reads receive_messages() and pushes translated
+        # events onto the shared queue. One pump per runtime lifetime.
+        self._pump_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         opts: dict[str, Any] = {
@@ -97,7 +109,33 @@ class ClaudeRuntime:
         self._client_cm = client_cm
         self._client = client
 
-    async def run_turn(self, message: AgentInput) -> AsyncIterator[AgentEvent]:
+        # Spawn the persistent message pump. It reads receive_messages() (the
+        # SDK's continuous stream, distinct from receive_response() which stops
+        # at ResultMessage) and pushes translated events onto our shared queue.
+        # This is what lets async events emitted AFTER a turn's result reach
+        # the UI in real time instead of queuing until the next user prompt.
+        self._pump_task = asyncio.create_task(
+            self._pump_messages(client),
+            name=f"claude-pump:{self.config.title}",
+        )
+
+    async def _pump_messages(self, client: ClaudeSDKClient) -> None:
+        """Continuously translate SDK messages into events on the shared queue."""
+        try:
+            async for msg in client.receive_messages():
+                for event in translate_claude_message(msg):
+                    await self._emit_event(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.exception("instance %s: Claude pump crashed", self.config.title)
+            await self._emit_event({
+                "type": "error",
+                "message": f"Claude event pump failed: {type(e).__name__}: {e}",
+            })
+
+    async def query(self, message: AgentInput) -> None:
+        """Send one message to Claude. Events arrive via event_stream()."""
         if self._client is None:
             raise RuntimeError("Claude runtime not started")
 
@@ -108,7 +146,9 @@ class ClaudeRuntime:
                 len(message.images),
                 len(message.text),
             )
-            prompt = self._build_multimodal_content(self._prompt_with_context(message.text), message.images)
+            prompt = self._build_multimodal_content(
+                self._prompt_with_context(message.text), message.images,
+            )
         else:
             prompt = self._prompt_with_context(message.text)
 
@@ -120,27 +160,22 @@ class ClaudeRuntime:
         await self._client.query(prompt)
         log.info("instance %s: Claude client.query() returned", self.config.title)
 
-        msg_count = 0
-        async for msg in self._client.receive_response():
-            msg_count += 1
-            log.info(
-                "instance %s: received Claude msg #%d type=%s",
-                self.config.title,
-                msg_count,
-                type(msg).__name__,
-            )
-            for event in translate_claude_message(msg):
-                yield event
-
-        log.info(
-            "instance %s: Claude response complete after %d messages",
-            self.config.title,
-            msg_count,
-        )
-
     async def close(self) -> None:
+        if self._pump_task and not self._pump_task.done():
+            self._pump_task.cancel()
+            try:
+                await self._pump_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("instance %s: pump task raised during close", self.config.title)
+        self._pump_task = None
+
         if self._client_cm is not None:
-            await self._client_cm.__aexit__(None, None, None)
+            try:
+                await self._client_cm.__aexit__(None, None, None)
+            except Exception:
+                log.exception("instance %s: SDK client close raised", self.config.title)
         self._client_cm = None
         self._client = None
 
