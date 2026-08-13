@@ -1,0 +1,254 @@
+/**
+ * Session-management panel styles.
+ */
+
+.sess-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    background: var(--bg);
+}
+
+.sess-msg {
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    background: var(--bg-highlight);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+}
+
+.sess-msg-error {
+    color: var(--red);
+    border-color: var(--red);
+}
+
+.sess-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+}
+
+.sess-card h3 {
+    margin: 0 0 12px;
+    font-size: var(--fs-md);
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* Enable toggle */
+.sess-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    font-size: var(--fs-md);
+    color: var(--text);
+}
+
+.sess-toggle input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.sess-hint {
+    margin: 8px 0 0;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    line-height: 1.5;
+}
+
+/* Config grid */
+.sess-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+}
+
+.sess-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+}
+
+.sess-grid input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: var(--fs-md);
+}
+
+.sess-grid input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* Greyed-out config when session management is disabled */
+.sess-disabled {
+    opacity: 0.5;
+}
+
+/* Action buttons */
+.sess-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.sess-btn {
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+}
+
+.sess-btn:hover { border-color: var(--accent); }
+
+.sess-btn-accent {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+}
+
+.sess-btn-accent:hover { opacity: 0.9; }
+
+/* Status chips */
+.sess-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.sess-chip {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: var(--fs-sm);
+    background: var(--bg-highlight);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.sess-chip-active {
+    background: var(--green);
+    color: var(--bg);
+    border-color: var(--green);
+    animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.sess-chip-warn {
+    background: transparent;
+    color: var(--yellow);
+    border-color: var(--yellow);
+}
+
+/* Pressure bar */
+.sess-pressure { margin-top: 4px; }
+
+.sess-bar {
+    position: relative;
+    height: 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    overflow: hidden;
+}
+
+.sess-bar-fill {
+    height: 100%;
+    width: 0;
+    background: var(--green);
+    border-radius: 7px 0 0 7px;
+    transition: width 0.3s ease;
+}
+
+.sess-bar-fill.over-soft { background: var(--yellow); }
+.sess-bar-fill.over-hard { background: var(--red); }
+
+/* Threshold tick marks overlaid on the bar */
+.sess-bar-mark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--text-dim);
+    opacity: 0.8;
+}
+
+.sess-bar-mark-hard { background: var(--red); }
+
+.sess-pressure-text {
+    margin-top: 8px;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Checkpoints */
+.sess-checkpoints {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.sess-empty {
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    font-style: italic;
+}
+
+.sess-ckpt {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    background: var(--bg);
+}
+
+.sess-ckpt-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: var(--fs-sm);
+}
+
+.sess-ckpt-num {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.sess-ckpt-trigger {
+    color: var(--yellow);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.sess-ckpt-ts {
+    margin-left: auto;
+    color: var(--text-dim);
+}
+
+.sess-ckpt-path {
+    margin-top: 4px;
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    word-break: break-all;
+}

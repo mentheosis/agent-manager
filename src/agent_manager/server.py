@@ -275,6 +275,17 @@ class MemoryFileBody(BaseModel):
     memory_file: str | None = None  # Path to memory file, or None to clear
 
 
+class SessionConfigBody(BaseModel):
+    # All optional — only the fields present in the request are merged. A 0 on a
+    # numeric field means "use the default" (see SessionConfig.effective_*).
+    enabled: bool | None = None
+    soft_context_percentage: int | None = None
+    hard_context_percentage: int | None = None
+    checkpoint_timeout_sec: int | None = None
+    context_window_size: int | None = None
+    split_cooldown_sec: int | None = None
+
+
 def _summary(inst: Instance) -> dict[str, Any]:
     return {
         "title": inst.title,
@@ -755,6 +766,32 @@ def build_app() -> FastAPI:
         if inst is None:
             raise HTTPException(status_code=404)
         return _summary(inst)
+
+    # --- Session management endpoints ----------------------------------------
+
+    @app.get("/api/instances/{title}/session")
+    async def get_session(title: str) -> dict[str, Any]:
+        info = registry.session_info(title)
+        if info is None:
+            raise HTTPException(status_code=404)
+        return info
+
+    @app.put("/api/instances/{title}/session/config")
+    async def put_session_config(title: str, body: SessionConfigBody) -> dict[str, Any]:
+        inst = await registry.update_session_config(title, body.model_dump(exclude_unset=True))
+        if inst is None:
+            raise HTTPException(status_code=404)
+        return registry.session_info(title)
+
+    @app.post("/api/instances/{title}/session/split")
+    async def split_session(title: str) -> dict[str, str]:
+        """Arm a manual split; it fires when the agent is next idle."""
+        res = registry.request_manual_split(title)
+        if res is None:
+            raise HTTPException(status_code=404)
+        if not res:
+            raise HTTPException(status_code=400, detail="session management is not enabled for this instance")
+        return {"status": "manual_split_armed"}
 
     # --- Orchestration endpoints ---------------------------------------------
 
@@ -1246,8 +1283,8 @@ def build_app() -> FastAPI:
         log.info("serving static files from %s", static_dir)
         index_html = static_dir / "index.html"
 
-        # SPA tabs for client-side routing
-        _SPA_TABS = {"conversation", "diff", "settings", "plans", "memory"}
+        # SPA tabs for client-side routing (must match TAB_TO_URL in am-app.js)
+        _SPA_TABS = {"conversation", "diff", "settings", "plans", "memory", "session"}
 
         def _is_spa_route(path: str) -> bool:
             """Check if path is a client-side SPA route."""

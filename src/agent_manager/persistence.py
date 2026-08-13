@@ -43,6 +43,10 @@ class InstanceRecord:
     folder: str | None = None
     # Memory file - contents prepended to every prompt
     memory_file: str | None = None
+    # Session management (stored as plain dicts so persistence stays dependency-free;
+    # serialized via SessionConfig/SessionState at the Registry layer). None when unset.
+    session_config: dict[str, Any] | None = None
+    session_state: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.add_dirs is None:
@@ -69,6 +73,8 @@ class InstanceRecord:
             "task": self.task,
             "folder": self.folder,
             "memory_file": self.memory_file,
+            "session_config": self.session_config,
+            "session_state": self.session_state,
         }
 
     @classmethod
@@ -109,6 +115,8 @@ class InstanceRecord:
             task=d.get("task"),
             folder=d.get("folder"),
             memory_file=d.get("memory_file"),
+            session_config=d.get("session_config"),
+            session_state=d.get("session_state"),
         )
 
 
