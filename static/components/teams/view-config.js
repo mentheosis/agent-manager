@@ -1,0 +1,1 @@
+export const teamFilters = {user_prompt: 'Tasks received', assistant_text: 'Messages', tool_use: 'Coordination', result: 'Turn results', status: 'Agent status', controller: 'Controller events', error: 'Errors'};

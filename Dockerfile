@@ -12,9 +12,10 @@ RUN go mod download
 FROM go-deps AS go-build
 # Copy source and build
 COPY orchestrator/ ./
-RUN CGO_ENABLED=0 go build -o am-orchestrator .
+RUN CGO_ENABLED=0 go build -o am-orchestrator ./cmd/am-orchestrator
 
 FROM go-deps AS go-test
+RUN apk add --no-cache git
 COPY orchestrator/ ./
 RUN go test ./...
 

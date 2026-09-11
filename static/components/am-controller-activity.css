@@ -1,0 +1,107 @@
+.controller-activity {
+  min-height: 0;
+  flex-direction: column;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+.controller-activity .loop-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.controller-activity .loop-header h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.controller-activity .loop-status,
+.controller-activity .loop-empty {
+  color: var(--text-dim);
+}
+.controller-activity .loop-events {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+.controller-activity .loop-event {
+  --event-color: var(--text-dim);
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--event-color);
+  border-radius: 6px;
+}
+.controller-activity .loop-user_prompt {
+  --event-color: var(--accent);
+}
+.controller-activity .loop-assistant_text,
+.controller-activity .loop-result {
+  --event-color: var(--green);
+}
+.controller-activity .loop-tool_use {
+  --event-color: var(--purple);
+}
+.controller-activity .loop-status {
+  --event-color: var(--yellow);
+}
+.controller-activity .loop-error {
+  --event-color: var(--red);
+}
+.controller-activity .loop-event summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: var(--fs-sm);
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.controller-activity .loop-event summary::-webkit-details-marker {
+  display: none;
+}
+.controller-activity .loop-event summary::before {
+  content: "▸";
+  color: var(--event-color);
+}
+.controller-activity .loop-event[open] summary::before {
+  content: "▾";
+}
+.controller-activity .loop-event summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.controller-activity .loop-actor {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.controller-activity .loop-event-type {
+  color: var(--event-color);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.controller-activity .loop-time {
+  color: #8a92b3;
+  font-size: var(--fs-sm);
+  font-weight: normal;
+  font-variant-numeric: tabular-nums;
+}
+.controller-activity .loop-preview {
+  flex-basis: 100%;
+  margin-left: 18px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--fs-sm);
+}
+.controller-activity .loop-event[open] .loop-preview {
+  display: none;
+}
+.controller-activity .loop-event pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: 0 12px 12px 30px;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text);
+}

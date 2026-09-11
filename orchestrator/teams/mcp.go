@@ -1,10 +1,11 @@
-package main
+package teams
 
 import (
 	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	orchestration "github.com/anthropics/agent-manager/orchestrator"
 	"io"
 	"net/http"
 	"net/url"
@@ -16,7 +17,7 @@ import (
 // tools to the leader Claude session.
 type MCPServer struct {
 	managed    bool // stdio tools forward completion to the supervised controller
-	client     *Client
+	client     *orchestration.Client
 	groupTitle string
 	logFunc    func(string)
 	stateFunc  func() string // returns current loop state
@@ -29,7 +30,7 @@ type MCPServer struct {
 // NewMCPServer creates a new MCP server backed by the agent-manager API.
 func NewMCPServer(baseURL, groupTitle string) *MCPServer {
 	return &MCPServer{
-		client:     NewClient(baseURL),
+		client:     orchestration.NewClient(baseURL),
 		groupTitle: groupTitle,
 		logFunc:    func(s string) { fmt.Fprintln(os.Stderr, s) },
 		stateFunc:  func() string { return "idle" },
@@ -37,6 +38,8 @@ func NewMCPServer(baseURL, groupTitle string) *MCPServer {
 		taskCh:     make(chan string, 1),
 	}
 }
+
+func (s *MCPServer) SetManaged(managed bool) { s.managed = managed }
 
 // DoneCh returns the channel that receives the summary when the leader signals task completion.
 func (s *MCPServer) DoneCh() <-chan string {
@@ -233,10 +236,19 @@ func (s *MCPServer) handleTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task is required", http.StatusBadRequest)
 		return
 	}
+	if s.stateFunc != nil {
+		state := s.stateFunc()
+		if state != "idle" && state != "done" {
+			http.Error(w, "team is busy; stop/restart to replace its task", 409)
+			return
+		}
+	}
 	s.log("Task received via HTTP: %d chars", len(body.Task))
 	select {
 	case s.taskCh <- body.Task:
 	default:
+		http.Error(w, "a task is already pending", 409)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -546,6 +558,10 @@ func (s *MCPServer) toolReadAgentOutput(args json.RawMessage) (string, error) {
 			output.WriteString("\n")
 		case "tool_use":
 			output.WriteString(fmt.Sprintf("Tool: %s\n", event.Name))
+			if len(event.Input) > 0 {
+				output.Write(event.Input)
+				output.WriteString("\n")
+			}
 		case "tool_result":
 			if event.IsError {
 				output.WriteString(fmt.Sprintf("ERROR: %s\n", event.Output))
@@ -557,6 +573,7 @@ func (s *MCPServer) toolReadAgentOutput(args json.RawMessage) (string, error) {
 			output.WriteString(event.Text)
 			output.WriteString("\n")
 		case "error":
+			output.WriteString(event.Message)
 			output.WriteString(event.Text)
 			output.WriteString("\n")
 		}
@@ -593,7 +610,7 @@ func (s *MCPServer) toolMarkTaskDone(args json.RawMessage) (string, error) {
 	}
 
 	if s.managed {
-		resp, err := s.client.httpClient.Post(s.client.baseURL+"/api/instances/"+url.PathEscape(s.groupTitle)+"/orchestrator/complete", "application/json", bytes.NewReader(args))
+		resp, err := s.client.HTTPClient.Post(s.client.BaseURL+"/api/instances/"+url.PathEscape(s.groupTitle)+"/orchestrator/complete", "application/json", bytes.NewReader(args))
 		if err != nil {
 			return "", err
 		}
@@ -603,11 +620,18 @@ func (s *MCPServer) toolMarkTaskDone(args json.RawMessage) (string, error) {
 		}
 		return "Task marked as done.", nil
 	}
+	if s.stateFunc != nil {
+		state := s.stateFunc()
+		if state != "running" && state != "paused" {
+			return "", fmt.Errorf("team has no active task")
+		}
+	}
 	s.log("mark_task_done: %s", params.Summary)
 
 	select {
 	case s.doneCh <- params.Summary:
 	default:
+		return "", fmt.Errorf("completion already pending")
 	}
 
 	return "Task marked as done. The orchestration loop will now pause.", nil

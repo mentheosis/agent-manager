@@ -1,8 +1,9 @@
-package main
+package teams
 
 import (
 	"context"
 	"fmt"
+	orchestration "github.com/anthropics/agent-manager/orchestrator"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,7 @@ func (s LoopState) String() string {
 // It monitors agent status changes and feeds batched results to the orchestrator session.
 type Loop struct {
 	config Config
-	client *Client
+	client *orchestration.Client
 
 	// groupTitle is the title of the loop instance itself (the parent of all children).
 	groupTitle string
@@ -67,7 +68,7 @@ type Loop struct {
 // NewLoop creates a new control loop. groupTitle is the title of the loop instance.
 func NewLoop(cfg Config, groupTitle string) *Loop {
 	logFunc := func(s string) { fmt.Println(s) }
-	client := NewClient(cfg.BaseURL)
+	client := orchestration.NewClient(cfg.BaseURL)
 	return &Loop{
 		config:     cfg,
 		client:     client,

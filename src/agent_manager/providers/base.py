@@ -31,7 +31,10 @@ class AgentConfig:
     session_id: str | None = None
     add_dirs: list[str] = field(default_factory=list)
     memory_file: str | None = None
-    team_mcp: dict[str, Any] | None = None
+    team_mcp: dict[str, Any] | None = None  # compatibility for existing callers
+    mcp_servers: dict[str, Any] = field(default_factory=dict)
+    exclude_env: list[str] = field(default_factory=list)
+    allow_host_mcp: bool = True
 
 
 class AgentRuntime(Protocol):

@@ -3,8 +3,8 @@
  * Displays team members, their status, and orchestration controls.
  */
 
-import * as api from '../lib/api.js';
-import { streamManager } from '../lib/streams.js';
+import * as api from '../../lib/api.js';
+import { streamManager } from '../../lib/streams.js';
 
 class AmTeamPanel extends HTMLElement {
     constructor() {

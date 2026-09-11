@@ -1,0 +1,15 @@
+{
+  "sample": {
+    "dsn_env": "AM_SAMPLE_QUEUE_DSN",
+    "table_prefix": "am_",
+    "repositories": {"sample": "/workspace/sample"},
+    "workspace_root": "/var/lib/agent-manager/queue-work/sample",
+    "provider": "codex",
+    "permission_mode": "workspace-write",
+    "max_workers_ceiling": 8,
+    "lease_seconds": 60,
+    "max_attempt_seconds": 3600,
+    "max_attempt_tokens": 200000,
+    "max_attempt_cost_usd": 20
+  }
+}

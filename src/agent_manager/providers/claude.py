@@ -49,6 +49,7 @@ class ClaudeRuntime(BaseRuntime):
         opts: dict[str, Any] = {
             "cwd": self.config.cwd,
             "permission_mode": self.config.permission_mode,
+            "env": {name: "" for name in self.config.exclude_env},
         }
         if self.config.session_id:
             # Continue the prior conversation. CLI loads its persisted session jsonl.
@@ -87,7 +88,7 @@ class ClaudeRuntime(BaseRuntime):
 
         docker_mcp_url = os.environ.get("DOCKER_MCP_URL")
         docker_mcp_token = os.environ.get("DOCKER_MCP_TOKEN")
-        if docker_mcp_url and docker_mcp_token:
+        if self.config.allow_host_mcp and docker_mcp_url and docker_mcp_token:
             opts["mcp_servers"] = {
                 "docker": {
                     "type": "http",
@@ -105,6 +106,12 @@ class ClaudeRuntime(BaseRuntime):
                 "get_agent_status", "mark_task_done",
             )]
 
+        if self.config.mcp_servers:
+            opts.setdefault("mcp_servers", {}).update(self.config.mcp_servers)
+            if "queue" in self.config.mcp_servers:
+                opts.setdefault("allowed_tools", []).extend([
+                    "mcp__queue__queue_progress", "mcp__queue__queue_submit_result",
+                ])
         options = ClaudeAgentOptions(**opts)
         log.info(
             "instance %s: starting Claude SDK client (session_id=%s)",

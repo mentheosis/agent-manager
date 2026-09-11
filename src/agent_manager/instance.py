@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -25,6 +26,12 @@ class Instance:
     title: str
     path: str
     provider: str = "claude"  # "claude" now; "codex" once the runtime adapter exists
+    instance_id: str = ""
+    controller_mode: str | None = None
+    queue_profile: str | None = None
+    queue_id: str | None = None
+    queue_initial_max_workers: int = 1
+    queue_attempt: dict | None = None
     kind: str = "agent"  # "agent" | "loop"
     permission_mode: str = "acceptEdits"
     model: str | None = None
@@ -64,15 +71,24 @@ class Instance:
         elif self.instance_type in ("claude", "codex"):
             self.provider = self.instance_type
             self.kind = "agent"
+        if not self.instance_id:
+            self.instance_id = uuid.uuid4().hex
         self.sync_instance_type()
 
     def sync_instance_type(self) -> None:
         self.instance_type = "loop" if self.kind == "loop" else self.provider
+        if self.kind == "loop":
+            self.controller_mode = self.controller_mode or "team"
+        else:
+            self.controller_mode = None
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
     async def _run(self) -> None:
+        if self.queue_attempt and self.queue_attempt.get("cancelled"):
+            await self._set_status("ready")
+            return
         if self.kind == "loop":
             # A controller owns an event stream, not a provider conversation.
             await self._set_status("ready")
@@ -296,18 +312,20 @@ class Instance:
                 self._runtime = None
 
     def _team_mcp_config(self) -> dict | None:
-        if not self.parent or self.agent_preset != "orchestrator":
-            return None
         from .orchestrator import get_manager
-        manager = get_manager()
-        binary = manager._find_binary()
-        if not binary:
-            return None
-        return {
-            "command": binary,
-            "args": ["--mode", "mcp", "--managed", "--group", self.parent,
-                     "--base-url", manager._base_url],
-        }
+        from .orchestration.teams import leader_mcp
+        return leader_mcp(self, get_manager())
+
+    def _queue_environment_exclusions(self) -> list[str]:
+        if not self.queue_attempt:
+            return []
+        from .orchestration.controllers import worker_environment_exclusions
+        return worker_environment_exclusions()
+
+    def _worker_mcp_config(self) -> dict:
+        from .orchestrator import get_manager
+        from .orchestration.controllers import worker_mcp
+        return worker_mcp(self, get_manager())
 
     def _create_runtime(self) -> AgentRuntime:
         config = AgentConfig(
@@ -320,6 +338,9 @@ class Instance:
             add_dirs=list(self.add_dirs or []),
             memory_file=self.memory_file,
             team_mcp=self._team_mcp_config(),
+            mcp_servers=self._worker_mcp_config(),
+            exclude_env=self._queue_environment_exclusions(),
+            allow_host_mcp=not bool(self.queue_attempt),
         )
         if self._runtime_factory is not None:
             return self._runtime_factory(config)

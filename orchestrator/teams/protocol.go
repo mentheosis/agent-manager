@@ -1,4 +1,4 @@
-package main
+package teams
 
 import (
 	"fmt"
@@ -43,22 +43,4 @@ func (u *StatusUpdate) FormatForPrompt() string {
 
 	b.WriteString("\nUse your MCP tools: read_agent_output to check results, send_to_agent to dispatch work, or mark_task_done if complete.\n")
 	return b.String()
-}
-
-// Event represents a single event from an agent's history.
-type Event struct {
-	Type    string `json:"type"`
-	Text    string `json:"text,omitempty"`
-	Output  string `json:"output,omitempty"`
-	IsError bool   `json:"is_error,omitempty"`
-	Name    string `json:"name,omitempty"`
-	TS      string `json:"ts,omitempty"`
-}
-
-// HistoryResponse is the response from the /history endpoint.
-type HistoryResponse struct {
-	Events        []Event `json:"events"`
-	TotalCount    int     `json:"total_count"`
-	FilteredCount int     `json:"filtered_count"`
-	HasMore       bool    `json:"has_more"`
 }

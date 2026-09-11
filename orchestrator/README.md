@@ -85,7 +85,7 @@ Automated checks (from the respective directories):
 ```sh
 # orchestrator/
 go test -race ./...
-go build -o /tmp/am-orchestrator-teams .
+go build -o /tmp/am-orchestrator-teams ./cmd/am-orchestrator
 
 # repository root, with Python development dependencies installed
 AM_TEST_ORCHESTRATOR_BINARY=/tmp/am-orchestrator-teams pytest -q tests/test_orchestrator.py tests/test_team_api.py tests/test_claude_provider.py tests/test_codex_provider.py tests/test_instance_runtime.py tests/test_server.py
@@ -100,3 +100,9 @@ the manual check.
 
 Generic SQL task queues remain future work, described in
 [task_queues/PLAN.md](task_queues/PLAN.md).
+
+## Task queues
+
+Teams now live in `teams/`; shared transport and runtime live in this directory.
+The executable is `cmd/am-orchestrator`. Generic SQL task queues live in
+`task_queues/`; see the [protocol and setup guide](task_queues/protocol.md).

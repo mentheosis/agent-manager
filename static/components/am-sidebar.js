@@ -641,12 +641,15 @@ class AmSidebar extends HTMLElement {
         if ((inst.kind === 'loop' || inst.instance_type === 'loop')) {
             item.classList.add('loop-instance');
         }
+        if (inst.queue_attempt) item.draggable = false;
         // Indent children under their parent
         if (inst.parent) {
             item.classList.add('child-instance');
         }
 
-        const presetBadge = inst.agent_preset
+        const presetBadge = inst.controller_mode === 'task_queue'
+            ? '<span class="preset-badge preset-loop">queue</span>'
+            : inst.agent_preset
             ? `<span class="preset-badge preset-${inst.agent_preset}">${inst.agent_preset}</span>`
             : ((inst.kind === 'loop' || inst.instance_type === 'loop') ? '<span class="preset-badge preset-loop">team</span>' : '');
 
@@ -655,7 +658,7 @@ class AmSidebar extends HTMLElement {
         const childCount = children?.length || 0;
         const isExpanded = this._expandedTeams.has(inst.title);
         const expandArrow = isLoop && childCount > 0
-            ? `<button class="team-expand-btn ${isExpanded ? 'expanded' : ''}" type="button" title="${isExpanded ? 'Collapse' : 'Expand'} team">
+            ? `<button class="team-expand-btn ${isExpanded ? 'expanded' : ''}" type="button" title="${isExpanded ? 'Collapse' : 'Expand'} ${inst.controller_mode === 'task_queue' ? 'queue' : 'team'}">
                  <svg width="12" height="12" viewBox="0 0 12 12"><path d="M4 3L8 6L4 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                </button>`
             : (isLoop ? '<span class="team-expand-placeholder"></span>' : '');
@@ -673,7 +676,7 @@ class AmSidebar extends HTMLElement {
             </div>
             <div class="instance-path" title="${this.escapeHtml(inst.path)}">${this.escapeHtml(inst.path)}</div>
             <div class="instance-meta">
-                <span class="status-label ${status}">${status}</span>
+                <span class="status-label ${status}">${inst.controller_mode === 'task_queue' ? 'SQL controller' : status}</span>
                 ${inst.permission_mode && inst.permission_mode !== 'acceptEdits' ? `<span>· ${inst.permission_mode}</span>` : ''}
             </div>
         `;
@@ -688,7 +691,7 @@ class AmSidebar extends HTMLElement {
                 const label = item.querySelector('.status-label');
                 dot.className = `status-dot ${event.status}`;
                 label.className = `status-label ${event.status}`;
-                label.textContent = event.status;
+                label.textContent = inst.controller_mode === 'task_queue' ? 'SQL controller' : event.status;
 
                 // Sync mini-strip dot
                 const miniItem = this.querySelector(`.mini-item[data-title="${CSS.escape(inst.title)}"]`);
@@ -903,6 +906,7 @@ class AmSidebar extends HTMLElement {
      * Check if dragged item can be dropped into target as reparent.
      */
     canReparentTo(targetInst) {
+        if (targetInst.controller_mode === 'task_queue' || this._draggedItem?.queue_attempt) return false;
         if (!this._draggedItem) return false;
         const dragged = this._draggedItem;
 

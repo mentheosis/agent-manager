@@ -22,4 +22,7 @@
 @import url('components/am-file-editor.css');
 @import url('components/am-permissions-panel.css');
 @import url('components/am-terminal-pane.css');
-@import url('components/am-team-panel.css');
+@import url('components/teams/am-team-panel.css');
+
+@import url('components/am-controller-activity.css');
+@import url('components/task_queues/am-task-queue-panel.css');

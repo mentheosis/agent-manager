@@ -71,6 +71,12 @@ class Registry:
                 path=rec.path,
                 provider=rec.provider or "claude",
                 kind=rec.kind or ("loop" if rec.instance_type == "loop" else "agent"),
+                instance_id=rec.instance_id,
+                controller_mode=rec.controller_mode,
+                queue_profile=rec.queue_profile,
+                queue_id=rec.queue_id,
+                queue_initial_max_workers=rec.queue_initial_max_workers,
+                queue_attempt=rec.queue_attempt,
                 permission_mode=rec.permission_mode,
                 model=rec.model or None,
                 display_title=rec.display_title,
@@ -98,6 +104,7 @@ class Registry:
             self._wire_hooks(inst)
             async with self._lock:
                 self._instances[rec.title] = inst
+        await self._save_records()
         await self._backfill_team_history()
         # Start tasks outside the lock to avoid contention.
         for inst in list(self._instances.values()):
@@ -123,7 +130,7 @@ class Registry:
         # Older parents only stored a provider conversation. Seed their activity
         # once from retained child histories, then use live forwarding thereafter.
         for parent in list(self._instances.values()):
-            if parent.kind != "loop" or any(e.get("type") == "team_event" for e in parent.history()):
+            if parent.kind != "loop" or parent.controller_mode != "team" or any(e.get("type") == "team_event" for e in parent.history()):
                 continue
             events = [
                 (inst, event)
@@ -136,7 +143,7 @@ class Registry:
 
     async def _forward_team_event(self, inst: Instance, event: Event) -> None:
         parent = self.get(inst.parent) if inst.parent else None
-        if not parent or parent.kind != "loop" or inst.kind == "loop":
+        if not parent or parent.kind != "loop" or parent.controller_mode != "team" or inst.kind == "loop":
             return
         event_type = event.get("type")
         target = None
@@ -198,6 +205,10 @@ class Registry:
         provider: str = "claude",
         kind: str = "agent",
         memory_file: str | None = None,
+        controller_mode: str | None = None,
+        queue_profile: str | None = None,
+        queue_id: str | None = None,
+        queue_initial_max_workers: int = 1,
     ) -> Instance:
         """Create an instance from a free-form display name.
 
@@ -210,6 +221,10 @@ class Registry:
             raise ValueError("name must not be empty")
         provider = _normalize_provider(provider)
         kind = _normalize_kind(kind)
+        if controller_mode not in (None, "team", "task_queue"):
+            raise ValueError("Invalid controller mode")
+        if controller_mode and kind != "loop":
+            raise ValueError("Controller mode requires kind=loop")
         permission_mode = _normalize_permission_mode(provider, permission_mode)
         base = slugify(cleaned)
         expanded = str(Path(path).expanduser().resolve())
@@ -229,6 +244,10 @@ class Registry:
                 path=expanded,
                 provider=provider,
                 kind=kind,
+                controller_mode=controller_mode,
+                queue_profile=queue_profile,
+                queue_id=queue_id,
+                queue_initial_max_workers=queue_initial_max_workers,
                 instance_type="loop" if kind == "loop" else provider,
                 permission_mode=permission_mode,
                 model=model or None,
@@ -379,6 +398,8 @@ class Registry:
                 return None
 
             # Validation
+            if inst.queue_attempt:
+                raise ValueError("Queue attempt ownership cannot be changed")
             if inst.kind == "loop":
                 raise ValueError("loop instances cannot be reparented")
             if inst.agent_preset == "orchestrator" and new_parent is None:
@@ -388,6 +409,8 @@ class Registry:
                 parent_inst = self._instances.get(new_parent)
                 if parent_inst is None:
                     raise ValueError(f"parent instance not found: {new_parent}")
+                if parent_inst.controller_mode == "task_queue":
+                    raise ValueError("Queue workers are created by the scheduler")
                 if parent_inst.kind != "loop":
                     raise ValueError("can only reparent into loop instances")
 
@@ -509,6 +532,12 @@ class Registry:
                     path=i.path,
                     provider=i.provider,
                     kind=i.kind,
+                    instance_id=i.instance_id,
+                    controller_mode=i.controller_mode,
+                    queue_profile=i.queue_profile,
+                    queue_id=i.queue_id,
+                    queue_initial_max_workers=i.queue_initial_max_workers,
+                    queue_attempt=i.queue_attempt,
                     permission_mode=i.permission_mode,
                     model=i.model or None,
                     display_title=i.display_title,

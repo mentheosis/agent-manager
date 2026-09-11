@@ -16,8 +16,10 @@ import './am-diff-pane.js';
 import './am-file-editor.js';
 import './am-new-dialog.js';
 import './am-login-dialog.js';
-import './am-team-panel.js';
-import './am-loop-pane.js';
+import './teams/am-team-panel.js';
+import './task_queues/am-task-queue-panel.js';
+import './task_queues/am-task-queue-tasks.js';
+import './teams/am-team-activity.js';
 
 // Map internal tab names to URL-friendly names
 const TAB_TO_URL = {
@@ -66,6 +68,7 @@ class AmApp extends HTMLElement {
                     <div id="tab-content">
                         <am-terminal-pane data-pane="terminal" class="tab-pane active"></am-terminal-pane>
                         <am-loop-pane data-pane="loop" class="tab-pane"></am-loop-pane>
+                        <am-task-queue-tasks data-pane="task_queue" class="tab-pane"></am-task-queue-tasks>
                         <am-diff-pane data-pane="diff" class="tab-pane"></am-diff-pane>
                         <am-file-editor data-pane="settings" data-endpoint="rules" data-has-permissions="true" class="tab-pane"></am-file-editor>
                         <am-file-editor data-pane="plans" data-endpoint="plans" class="tab-pane"></am-file-editor>
@@ -74,6 +77,7 @@ class AmApp extends HTMLElement {
                 </div>
             </div>
             <am-team-panel></am-team-panel>
+            <am-task-queue-panel></am-task-queue-panel>
             <am-new-dialog></am-new-dialog>
             <am-login-dialog></am-login-dialog>
         `;
@@ -343,6 +347,10 @@ class AmApp extends HTMLElement {
     selectInstance(inst) {
         this.currentTitle = inst.title;
         this.currentInst = inst;
+        const managed = inst.controller_mode === 'task_queue' || !!inst.queue_attempt;
+        const tabs = this.querySelector('am-tabs');
+        tabs.querySelectorAll('[data-tab]').forEach(tab => tab.hidden = managed && tab.dataset.tab !== 'terminal');
+        if (managed) { this.activeTab = 'terminal'; tabs.activeTab = 'terminal'; }
 
         // Show active view, hide empty state
         this.querySelector('#empty-state').style.display = 'none';
@@ -359,7 +367,7 @@ class AmApp extends HTMLElement {
         const terminal = this.querySelector('am-terminal-pane');
         const isLoop = inst.kind === 'loop' || inst.instance_type === 'loop';
         terminal.instance = isLoop ? null : inst;
-        if (isLoop) terminal.disablePrompt();
+        if (isLoop || inst.queue_attempt) terminal.disablePrompt();
         else terminal.enablePrompt();
 
         // Update team panel (show for loop instances on conversation tab)
@@ -395,6 +403,8 @@ class AmApp extends HTMLElement {
         // Hide team panel
         this.querySelector('am-team-panel').instance = null;
         this.querySelector('am-loop-pane').instance = null;
+        this.querySelector('am-task-queue-tasks').instance = null;
+        this.querySelector('am-task-queue-panel').instance = null;
 
         // Update URL
         this.updateURL();
@@ -445,7 +455,12 @@ class AmApp extends HTMLElement {
     updateTeamPanel() {
         const teamPanel = this.querySelector('am-team-panel');
         const isLoop = this.currentInst?.kind === 'loop' || this.currentInst?.instance_type === 'loop';
-        const showLoop = isLoop && this.activeTab === 'terminal';
+        const showQueue = this.currentInst?.controller_mode === 'task_queue' && this.activeTab === 'terminal';
+        const showLoop = isLoop && !showQueue && this.currentInst?.controller_mode !== 'task_queue' && this.activeTab === 'terminal';
+        const queuePane = this.querySelector('am-task-queue-tasks');
+        if (queuePane) {queuePane.classList.toggle('active', showQueue); queuePane.instance = showQueue ? this.currentInst : null;}
+        const queuePanel = this.querySelector('am-task-queue-panel');
+        if (queuePanel) queuePanel.instance = showQueue ? this.currentInst : null;
         const loopPane = this.querySelector('am-loop-pane');
         loopPane.classList.toggle('active', showLoop);
         loopPane.instance = showLoop ? this.currentInst : null;

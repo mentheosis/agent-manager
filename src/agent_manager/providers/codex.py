@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import datetime as dt
+import os
 import json
 import logging
 import shutil
@@ -144,6 +145,7 @@ class CodexRuntime(BaseRuntime):
                 self._proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     cwd=self.config.cwd,
+                    env={k: v for k, v in os.environ.items() if k not in self.config.exclude_env},
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     limit=CODEX_STREAM_LIMIT,
@@ -400,12 +402,18 @@ class CodexRuntime(BaseRuntime):
         return cmd
 
     def _team_mcp_args(self) -> list[str]:
-        if not self.config.team_mcp:
-            return []
-        return [
-            "-c", "mcp_servers.team.command=" + json.dumps(self.config.team_mcp["command"]),
-            "-c", "mcp_servers.team.args=" + json.dumps(self.config.team_mcp["args"]),
-        ]
+        servers = dict(self.config.mcp_servers)
+        if self.config.team_mcp:
+            servers["team"] = self.config.team_mcp
+        args = []
+        for name, config in servers.items():
+            for key in ("command", "args"):
+                args.extend(["-c", f"mcp_servers.{name}.{key}=" + json.dumps(config[key])])
+            if config.get("env"):
+                # TOML inline table; JSON object syntax is not TOML.
+                table = ", ".join(json.dumps(k) + "=" + json.dumps(v) for k, v in config["env"].items())
+                args.extend(["-c", f"mcp_servers.{name}.env={{" + table + "}"])
+        return args
 
     def _developer_instructions(self) -> str | None:
         """Build the TOML config override for codex's developer_instructions.

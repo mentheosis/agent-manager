@@ -5,8 +5,12 @@ const vm = require('node:vm');
 const path = require('node:path');
 function load(file, globals = {}) {
     let component;
+    const context = {document: {createElement: element}, ...globals};
+    for (const dependency of ['am-controller-activity.js','teams/view-config.js','task_queues/view-config.js']) {
+        vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../static/components', dependency), 'utf8').replace(/export /g, '') + (dependency.includes('view-config') ? `; globalThis.${dependency.startsWith('teams') ? 'teamFilters' : 'queueFilters'} = ${dependency.startsWith('teams') ? 'teamFilters' : 'queueFilters'};` : ''), context);
+    }
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../static/components', file), 'utf8').replace(/^import[\s\S]*?;$/gm, ''), {
-        HTMLElement: class {}, customElements: {define(name, cls) {component = cls;}}, ...globals,
+        HTMLElement: class {}, customElements: {define(name, cls) {component = cls;}}, ...context,
     });
     return component;
 }
@@ -18,7 +22,7 @@ function element() {
 
 test('loop pane ignores old Claude events and replays reconnect delta once', () => {
     const history = [];
-    const Component = load('am-loop-pane.js', {document: {createElement: element}, streamManager: {get: () => ({eventHistory: history})}});
+    const Component = load('teams/am-team-activity.js', {document: {createElement: element}, streamManager: {get: () => ({eventHistory: history})}});
     const pane = new Component();
     const output = element();
     pane._instance = {title: 'team'};
@@ -60,7 +64,7 @@ test('conversation routes loop parents to activity view and agents to terminal',
 
 
 test('team filters affect existing and arriving events without changing agent filters', () => {
-    const Pane = load('am-loop-pane.js', {document: {createElement: element}});
+    const Pane = load('teams/am-team-activity.js', {document: {createElement: element}});
     const pane = new Pane();
     const output = element();
     pane.querySelector = () => output;

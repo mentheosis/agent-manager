@@ -1,4 +1,4 @@
-package main
+package teams
 
 import _ "embed"
 

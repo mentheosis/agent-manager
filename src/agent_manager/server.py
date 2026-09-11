@@ -200,6 +200,10 @@ def _merge_settings_json(workdir: Path, settings: dict[str, Any]) -> None:
 
 
 class CreateInstanceBody(BaseModel):
+    controller_mode: str | None = None
+    queue_profile: str | None = None
+    queue_id: str | None = None
+    queue_initial_max_workers: int = 1
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     provider: str = "claude"
@@ -282,6 +286,11 @@ def _summary(inst: Instance) -> dict[str, Any]:
         "path": inst.path,
         "provider": inst.provider,
         "kind": inst.kind,
+        "instance_id": inst.instance_id,
+        "controller_mode": inst.controller_mode,
+        "queue_profile": inst.queue_profile,
+        "queue_id": inst.queue_id,
+        "queue_attempt": inst.queue_attempt,
         "permission_mode": inst.permission_mode,
         "model": inst.model or None,
         "status": inst.status,
@@ -586,6 +595,8 @@ def build_app() -> FastAPI:
                 await auth_registry.shutdown()
 
     app = FastAPI(title="agent-manager", version="0.1.0", lifespan=lifespan)
+    from .orchestration.task_queues import mount_routes as mount_queue_routes
+    mount_queue_routes(app, registry, orchestrator_manager)
     app.state.registry = registry
     app.state.auth = auth
     app.state.provider_auth = provider_auth
@@ -694,6 +705,16 @@ def build_app() -> FastAPI:
     @app.post("/api/instances", status_code=201)
     async def create_instance(body: CreateInstanceBody) -> dict[str, Any]:
         try:
+            if body.controller_mode == "task_queue":
+                from .orchestration.controllers import queue_config
+                cfg = queue_config(body.queue_profile or "")
+                import re
+                selected_queue = body.queue_id or cfg.get("queue_id", "")
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", selected_queue):
+                    raise ValueError("Queue identifier is required (letters, numbers, underscore or hyphen)")
+                body.queue_id = selected_queue
+                if not 1 <= body.queue_initial_max_workers <= cfg.get("max_workers_ceiling", 8):
+                    raise ValueError("Initial max workers outside configured range")
             inst = await registry.create(
                 body.name,
                 body.path,
@@ -703,6 +724,10 @@ def build_app() -> FastAPI:
                 provider=body.provider,
                 kind=body.kind,
                 memory_file=body.memory_file,
+                controller_mode=body.controller_mode,
+                queue_profile=body.queue_profile,
+                queue_id=body.queue_id,
+                queue_initial_max_workers=body.queue_initial_max_workers,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -730,6 +755,11 @@ def build_app() -> FastAPI:
     async def delete_instance(title: str) -> Response:
         # Stop orchestrator if this is a loop instance
         inst = registry.get(title)
+        if inst and inst.queue_attempt:
+            raise HTTPException(409, "Attempt conversations are retained for audit history")
+        if inst and inst.controller_mode == "task_queue":
+            await app.state.delete_queue_controller(title)
+            return Response(status_code=204)
         if inst and inst.kind == "loop":
             await orchestrator_manager.stop(title)
 
@@ -747,6 +777,9 @@ def build_app() -> FastAPI:
 
     @app.patch("/api/instances/{title}/permissions")
     async def update_permissions(title: str, body: PermissionsBody) -> dict[str, Any]:
+        existing = registry.get(title)
+        if existing and (existing.queue_attempt or existing.controller_mode == "task_queue"):
+            raise HTTPException(409, "Queue execution settings come from its deployment profile")
         inst = await registry.update_permissions(
             title,
             permission_mode=body.permission_mode,
@@ -780,6 +813,9 @@ def build_app() -> FastAPI:
 
     @app.patch("/api/instances/{title}/task")
     async def update_task(title: str, body: TaskBody) -> dict[str, Any]:
+        existing = registry.get(title)
+        if existing and (existing.queue_attempt or existing.controller_mode == "task_queue"):
+            raise HTTPException(409, "Queue attempts and controller configuration are managed by the queue")
         try:
             inst = await registry.update_task(title, body.task)
         except ValueError as e:
@@ -790,6 +826,9 @@ def build_app() -> FastAPI:
 
     @app.patch("/api/instances/{title}/type")
     async def update_instance_type(title: str, body: InstanceTypeBody) -> dict[str, Any]:
+        existing = registry.get(title)
+        if existing and (existing.queue_attempt or existing.controller_mode == "task_queue"):
+            raise HTTPException(409, "Queue attempts and controller configuration are managed by the queue")
         try:
             inst = await registry.update_instance_type(
                 title,
@@ -814,6 +853,9 @@ def build_app() -> FastAPI:
 
     @app.patch("/api/instances/{title}/memory-file")
     async def update_memory_file(title: str, body: MemoryFileBody) -> dict[str, Any]:
+        existing = registry.get(title)
+        if existing and (existing.queue_attempt or existing.controller_mode == "task_queue"):
+            raise HTTPException(409, "Queue attempts and controller configuration are managed by the queue")
         """Update the memory file for an instance.
 
         The contents of this file will be prepended to every prompt sent to the agent.
@@ -831,6 +873,8 @@ def build_app() -> FastAPI:
     # --- Orchestrator process management --------------------------------------
 
     async def prepare_team(inst: Instance) -> list[Instance]:
+        if inst.controller_mode != "team":
+            raise HTTPException(status_code=400, detail="Use task queue controls")
         children = registry.get_children(inst.title)
         leaders = [child for child in children if child.agent_preset == "orchestrator"]
         if len(leaders) != 1:
@@ -849,6 +893,9 @@ def build_app() -> FastAPI:
         return children
 
     async def controller_request(title: str, path: str, payload: dict | None = None) -> dict:
+        inst = registry.get(title)
+        if inst and inst.controller_mode != "team":
+            raise HTTPException(status_code=400, detail="Use task queue controls")
         proc = orchestrator_manager.get(title)
         if not proc or not proc.is_running:
             raise HTTPException(status_code=409, detail="Team controller is not running")
@@ -909,6 +956,8 @@ def build_app() -> FastAPI:
         if not inst:
             raise HTTPException(status_code=404)
 
+        if inst.controller_mode == "task_queue":
+            raise HTTPException(409, "Use queue drain controls")
         await orchestrator_manager.stop(title)
         return {"ok": True}
 
@@ -1048,8 +1097,8 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
-        if inst.kind == "loop":
-            raise HTTPException(status_code=400, detail="Use the team task and controller controls")
+        if inst.kind == "loop" or inst.queue_attempt:
+            raise HTTPException(status_code=400, detail="Use the controller controls for managed work")
         images = None
         if body.images:
             images = [{"media_type": img.media_type, "data": img.data} for img in body.images]
@@ -1062,6 +1111,8 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
+        if inst.queue_attempt or inst.controller_mode == "task_queue":
+            raise HTTPException(409, "Use queue cancellation/drain controls")
         await inst.abort()
         return {"ok": True}
 

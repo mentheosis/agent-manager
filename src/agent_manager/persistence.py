@@ -26,6 +26,12 @@ class InstanceRecord:
     title: str
     path: str
     provider: str = "claude"
+    instance_id: str = ""
+    controller_mode: str | None = None
+    queue_profile: str | None = None
+    queue_id: str | None = None
+    queue_initial_max_workers: int = 1
+    queue_attempt: dict | None = None
     kind: str = "agent"
     permission_mode: str = "acceptEdits"
     model: str | None = None
@@ -56,6 +62,12 @@ class InstanceRecord:
             "path": self.path,
             "provider": self.provider,
             "kind": self.kind,
+            "instance_id": self.instance_id,
+            "controller_mode": self.controller_mode or ("team" if self.kind == "loop" else None),
+            "queue_profile": self.queue_profile,
+            "queue_id": self.queue_id,
+            "queue_initial_max_workers": self.queue_initial_max_workers,
+            "queue_attempt": self.queue_attempt,
             "permission_mode": self.permission_mode,
             "model": self.model,
             "display_title": self.display_title,
@@ -96,6 +108,12 @@ class InstanceRecord:
             path=d["path"],
             provider=provider,
             kind=kind,
+            instance_id=d.get("instance_id") or "",
+            controller_mode=d.get("controller_mode") or ("team" if kind == "loop" else None),
+            queue_profile=d.get("queue_profile"),
+            queue_id=d.get("queue_id"),
+            queue_initial_max_workers=d.get("queue_initial_max_workers", 1),
+            queue_attempt=d.get("queue_attempt"),
             permission_mode=d.get("permission_mode") or "acceptEdits",
             model=d.get("model") or None,
             display_title=d.get("display_title"),

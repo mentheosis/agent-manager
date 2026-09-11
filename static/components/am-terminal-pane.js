@@ -150,7 +150,7 @@ class AmTerminalPane extends HTMLElement {
 
         // Listen for filter changes from toolbar
         document.addEventListener('filter-changed', (e) => {
-            if (e.detail.scope === 'team') return;
+            if (e.detail.scope && e.detail.scope !== 'agent') return;
             this._filters = { ...e.detail.filters };
             this.applyFilters();
         });

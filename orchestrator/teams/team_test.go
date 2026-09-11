@@ -1,9 +1,10 @@
-package main
+package teams
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	orchestration "github.com/anthropics/agent-manager/orchestrator"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,7 @@ func TestTeamLifecycle(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/children"):
-			json.NewEncoder(w).Encode([]InstanceInfo{{Title: "leader", AgentPreset: "orchestrator", Status: "ready"}, {Title: "worker", Status: "ready"}})
+			json.NewEncoder(w).Encode([]orchestration.InstanceInfo{{Title: "leader", AgentPreset: "orchestrator", Status: "ready"}, {Title: "worker", Status: "ready"}})
 		case strings.HasSuffix(r.URL.Path, "/send"):
 			var b map[string]string
 			json.NewDecoder(r.Body).Decode(&b)
@@ -42,7 +43,7 @@ func TestTeamLifecycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
-	go func() { result <- runTeam(ctx, cfg, "team", port, "test task", mcp) }()
+	go func() { result <- Run(ctx, cfg, "team", port, "test task", mcp) }()
 	expectPrompt := func(want string) {
 		t.Helper()
 		select {
@@ -128,7 +129,7 @@ func TestTeamBindFailure(t *testing.T) {
 	}
 	defer ln.Close()
 	mcp := NewMCPServer("http://127.0.0.1:1", "team")
-	if e := runTeam(context.Background(), DefaultConfig(), "team", ln.Addr().(*net.TCPAddr).Port, "task", mcp); e == nil {
+	if e := Run(context.Background(), DefaultConfig(), "team", ln.Addr().(*net.TCPAddr).Port, "task", mcp); e == nil {
 		t.Fatal("expected bind error")
 	}
 }
@@ -160,14 +161,14 @@ func TestReadAgentOutputPreservesFullMessages(t *testing.T) {
 			full := strings.Repeat("Long message 内容\n", 500) + "END OF MESSAGE"
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/children") {
-					json.NewEncoder(w).Encode([]InstanceInfo{{Title: "worker"}})
+					json.NewEncoder(w).Encode([]orchestration.InstanceInfo{{Title: "worker"}})
 					return
 				}
 				if r.URL.Query().Get("tail") != "2" || r.URL.Query().Get("offset") != "3" {
 					t.Error("pagination parameters were not preserved")
 				}
-				json.NewEncoder(w).Encode(HistoryResponse{
-					Events:     []Event{{Type: kind, Text: full, Output: full}, {Type: "tool_result", Output: full, IsError: true}},
+				json.NewEncoder(w).Encode(orchestration.HistoryResponse{
+					Events:     []orchestration.Event{{Type: kind, Text: full, Output: full}, {Type: "tool_result", Output: full, IsError: true}},
 					TotalCount: 10, HasMore: true,
 				})
 			}))

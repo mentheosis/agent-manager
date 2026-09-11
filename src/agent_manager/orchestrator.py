@@ -55,6 +55,13 @@ class OrchestratorManager:
         self._port_counter = 0
         self._lock = asyncio.Lock()
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def find_binary(self) -> str | None:
+        return self._find_binary()
+
     def _find_binary(self) -> str | None:
         """Find the am-orchestrator binary."""
         # Check common locations
@@ -107,12 +114,15 @@ class OrchestratorManager:
 
             port = self._allocate_port()
 
+            from .orchestration.controllers import launch_environment
+            environment = launch_environment(instance, self._base_url)
+            mode = "task-queue" if getattr(instance, "controller_mode", None) == "task_queue" else "team"
             # Build command line args
             cmd = [
                 binary,
                 "--group", instance.title,
                 "--base-url", self._base_url,
-                "--mode", "team",
+                "--mode", mode,
                 "--mcp-port", str(port),
             ]
 
@@ -127,7 +137,7 @@ class OrchestratorManager:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=instance.path,
-                    env={**os.environ, "AM_ORCHESTRATOR_LOG": "info"},
+                    env={**os.environ, "AM_ORCHESTRATOR_LOG": "info", **environment},
                 )
             except Exception as e:
                 log.error("Failed to start orchestrator for %s: %s", instance.title, e)
@@ -175,7 +185,7 @@ class OrchestratorManager:
                 proc._output_lines.append(text)
                 if proc.instance is not None and hasattr(proc.instance, "_publish"):
                     await proc.instance._publish({
-                        "type": "team_event", "actor": "Controller",
+                        "type": "controller_diagnostic" if getattr(proc.instance, "controller_mode", None) == "task_queue" else "team_event", "actor": "Controller",
                         "event_type": "controller", "text": text,
                     })
                 # Keep only last 1000 lines
@@ -193,7 +203,7 @@ class OrchestratorManager:
             log.info("Orchestrator for %s exited with code %d", proc.title, proc.process.returncode)
             if proc.instance is not None and hasattr(proc.instance, "_publish"):
                 await proc.instance._publish({
-                    "type": "team_event", "actor": "Controller",
+                    "type": "controller_diagnostic" if getattr(proc.instance, "controller_mode", None) == "task_queue" else "team_event", "actor": "Controller",
                     "event_type": "controller",
                     "text": f"Controller stopped (exit code {proc.process.returncode})",
                 })

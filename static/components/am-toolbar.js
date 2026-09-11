@@ -3,6 +3,8 @@
  */
 
 import * as api from '../lib/api.js';
+import { teamFilters } from './teams/view-config.js';
+import { queueFilters } from './task_queues/view-config.js';
 import {
     ensureNotificationPermission,
     idleNotificationsEnabled,
@@ -15,6 +17,7 @@ class AmToolbar extends HTMLElement {
         super();
         this._instance = null;
         this._filterOpen = false;
+        this._queueFilters = Object.fromEntries(Object.keys(queueFilters).map(key => [key,true]));
         this._teamFilters = {user_prompt: true, assistant_text: true, tool_use: true, result: true, status: true, controller: true, error: true};
         this._filters = {
             assistant_text: true,
@@ -112,14 +115,17 @@ class AmToolbar extends HTMLElement {
     update() {
         const titleInput = this.querySelector('#toolbar-title');
         const typeBadge = this.querySelector('#toolbar-type-badge');
-        const isLoop = this._instance?.instance_type === 'loop';
+        const isLoop = this._instance?.instance_type === 'loop' && !this.isQueueView();
 
         if (this._instance) {
             titleInput.value = this._instance.display_title || this._instance.title;
             titleInput.disabled = false;
 
             // Show type badge for loop instances
-            if (isLoop) {
+            if (this.isQueueView()) {
+                typeBadge.textContent = 'task queue';
+                typeBadge.hidden = false;
+            } else if (isLoop) {
                 typeBadge.textContent = 'team';
                 typeBadge.hidden = false;
             } else if (this._instance.agent_preset) {
@@ -135,6 +141,10 @@ class AmToolbar extends HTMLElement {
         }
 
         this.updateNotifyButton();
+        const managed = this.isQueueView() || !!this._instance?.queue_attempt;
+        this.querySelector('#btn-kill').hidden = !!this._instance?.queue_attempt;
+        this.querySelector('#btn-kill').textContent = this.isQueueView() ? 'Delete controller' : 'Kill';
+        this.querySelector('#btn-notify-idle').hidden = this.isQueueView();
 
         // Show/hide buttons based on instance type
         for (const btn of this.querySelectorAll('.loop-only')) {
@@ -207,11 +217,14 @@ class AmToolbar extends HTMLElement {
         if (!this._instance) return;
 
         const name = this._instance.display_title || this._instance.title;
-        const isTeam = this._instance.instance_type === 'loop';
+        const isQueue = this._instance.controller_mode === 'task_queue';
+        const isTeam = this._instance.instance_type === 'loop' && !isQueue;
         const childCount = this._instance.children?.length || 0;
 
         let confirmMsg = `Delete "${name}"? This will stop the session and remove all history.`;
-        if (isTeam && childCount > 0) {
+        if (isQueue) {
+            confirmMsg = `Delete controller "${name}"? This stops its workers and preserves task, attempt and worker conversation history.`;
+        } else if (isTeam && childCount > 0) {
             confirmMsg = `Delete team "${name}" and its ${childCount} member(s)? This will stop all sessions and remove all history.`;
         }
 
@@ -243,6 +256,7 @@ class AmToolbar extends HTMLElement {
 
     async restartOrchestrator() {
         if (!this._instance) return;
+        if (this.isQueueView()) return;
         if (this._instance.instance_type !== 'loop') return;
 
         const btn = this.querySelector('#btn-restart-loop');
@@ -291,19 +305,21 @@ class AmToolbar extends HTMLElement {
         filterMenu.addEventListener('change', (event) => {
             const checkbox = event.target;
             if (!checkbox.dataset.type) return;
-            const filters = this.isTeamView() ? this._teamFilters : this._filters;
+            const filters = this.isQueueView() ? this._queueFilters : this.isTeamView() ? this._teamFilters : this._filters;
             filters[checkbox.dataset.type] = checkbox.checked;
             this.dispatchFilterEvent();
         });
     }
+
+    isQueueView() { return this._instance?.controller_mode === 'task_queue'; }
 
     isTeamView() {
         return this._instance?.kind === 'loop' || this._instance?.instance_type === 'loop';
     }
 
     renderFilters() {
-        const labels = this.isTeamView()
-            ? {user_prompt: 'Tasks received', assistant_text: 'Messages', tool_use: 'Coordination', result: 'Turn results', status: 'Agent status', controller: 'Controller events', error: 'Errors'}
+        const labels = this.isQueueView() ? queueFilters : this.isTeamView()
+            ? teamFilters
             : {assistant_text: 'Assistant', thinking: 'Thinking', tool_use: 'Tools', result: 'Results', system_init: 'System', error: 'Errors'};
         const filters = this.filters;
         this.querySelector('#filter-menu').innerHTML = Object.entries(labels).map(([type, label]) =>
@@ -314,12 +330,12 @@ class AmToolbar extends HTMLElement {
     dispatchFilterEvent() {
         this.dispatchEvent(new CustomEvent('filter-changed', {
             bubbles: true,
-            detail: { scope: this.isTeamView() ? 'team' : 'agent', filters: this.filters }
+            detail: { scope: this.isQueueView() ? 'task_queue' : this.isTeamView() ? 'team' : 'agent', filters: this.filters }
         }));
     }
 
     get filters() {
-        return { ...(this.isTeamView() ? this._teamFilters : this._filters) };
+        return { ...(this.isQueueView() ? this._queueFilters : this.isTeamView() ? this._teamFilters : this._filters) };
     }
 }
 

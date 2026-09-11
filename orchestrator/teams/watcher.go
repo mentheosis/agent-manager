@@ -1,8 +1,9 @@
-package main
+package teams
 
 import (
 	"context"
 	"fmt"
+	orchestration "github.com/anthropics/agent-manager/orchestrator"
 	"sync"
 	"time"
 )
@@ -17,7 +18,7 @@ type StatusChange struct {
 // StatusWatcher monitors the status of child agents in a loop instance.
 // It polls the agent-manager API periodically and emits changes.
 type StatusWatcher struct {
-	client       *Client
+	client       *orchestration.Client
 	groupTitle   string
 	pollInterval time.Duration
 	statuses     map[string]string // current known statuses
@@ -27,7 +28,7 @@ type StatusWatcher struct {
 }
 
 // NewStatusWatcher creates a watcher for the given loop instance.
-func NewStatusWatcher(client *Client, groupTitle string, pollInterval time.Duration, logFunc func(string)) *StatusWatcher {
+func NewStatusWatcher(client *orchestration.Client, groupTitle string, pollInterval time.Duration, logFunc func(string)) *StatusWatcher {
 	return &StatusWatcher{
 		client:       client,
 		groupTitle:   groupTitle,
