@@ -118,6 +118,8 @@ func (s *MCPServer) handleToolCall(req *jsonRPCRequest, sw *StreamingResponseWri
 	s.log("tool: %s", params.Name)
 
 	switch params.Name {
+	case "athena_query":
+		return s.toolAthenaQuery(req.ID, params.Arguments)
 	case "list_profiles":
 		return s.toolListProfiles(req.ID)
 	case "start_job":

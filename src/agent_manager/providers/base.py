@@ -31,6 +31,7 @@ class AgentConfig:
     session_id: str | None = None
     add_dirs: list[str] = field(default_factory=list)
     memory_file: str | None = None
+    team_mcp: dict[str, Any] | None = None
 
 
 class AgentRuntime(Protocol):
@@ -43,6 +44,11 @@ class AgentRuntime(Protocol):
     emit async events AFTER a turn's ResultMessage (from background tasks that
     completed later), stream those events immediately instead of queuing them
     until the next user prompt.
+
+    A result with `terminal=True` guarantees no continuation remains for that
+    run, even if some tool outputs were not recorded. Codex publishes it after
+    its process exits and both event sources drain; intermediate completion
+    records must not end a run that is waiting for background work.
 
     `run_turn()` is provided as a convenience wrapper (`query()` + drain events
     until the first "result") mainly so tests can use request/response semantics
@@ -69,7 +75,7 @@ class AgentRuntime(Protocol):
 
         Yields events as they arrive, including any that come AFTER a "result"
         event (from async task completions on the provider side). The Instance
-        drives one background pump on this stream and treats each "result"
+    drives one background pump on this stream and treats each "result"
         event as a logical turn boundary.
         """
 
@@ -271,4 +277,3 @@ def build_prompt_with_context(
     parts.append(user_text)
 
     return "\n\n".join(parts)
-

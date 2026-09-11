@@ -73,6 +73,10 @@ class Instance:
         self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
     async def _run(self) -> None:
+        if self.kind == "loop":
+            # A controller owns an event stream, not a provider conversation.
+            await self._set_status("ready")
+            return
         # Continuous event pump architecture:
         #
         #   Inbox loop (this method)         Event pump (background task)
@@ -107,7 +111,7 @@ class Instance:
         turn_complete.set()
 
         # Tool-call bookkeeping for the "stay running through async work" rule.
-        # A "result" event with entries still open means we KNOW more events
+        # A nonterminal "result" with entries still open means more events
         # (a tool_result, then more assistant_text, then another result) are
         # coming — hold status as "running" until those resolve.
         open_tool_ids: set[str] = set()
@@ -135,7 +139,7 @@ class Instance:
               while we're in "ready", flip status back to "running" BEFORE
               publishing so the UI shows activity before the content lands.
             - Rule 2 (open tool calls): on a "result" event, only transition
-              to "ready" if no tool_use is still awaiting its tool_result —
+              to "ready" if terminal or no tool_use awaits its tool_result —
               otherwise stay "running" until every open tool closes and the
               next "result" arrives.
             """
@@ -166,6 +170,11 @@ class Instance:
                     await self._publish(event)
 
                     if etype == "result":
+                        # A definitive provider completion ends execution even
+                        # if some tool outputs are missing. Do not carry those
+                        # stale IDs into the next turn or fabricate successes.
+                        if event.get("terminal") is True:
+                            open_tool_ids.clear()
                         # Always release the inbox loop on the first result of a
                         # turn — the user can send the next prompt whenever
                         # they want, even if background tool work is still
@@ -286,6 +295,20 @@ class Instance:
             if self._runtime is runtime:
                 self._runtime = None
 
+    def _team_mcp_config(self) -> dict | None:
+        if not self.parent or self.agent_preset != "orchestrator":
+            return None
+        from .orchestrator import get_manager
+        manager = get_manager()
+        binary = manager._find_binary()
+        if not binary:
+            return None
+        return {
+            "command": binary,
+            "args": ["--mode", "mcp", "--managed", "--group", self.parent,
+                     "--base-url", manager._base_url],
+        }
+
     def _create_runtime(self) -> AgentRuntime:
         config = AgentConfig(
             title=self.title,
@@ -296,6 +319,7 @@ class Instance:
             session_id=self.session_id,
             add_dirs=list(self.add_dirs or []),
             memory_file=self.memory_file,
+            team_mcp=self._team_mcp_config(),
         )
         if self._runtime_factory is not None:
             return self._runtime_factory(config)

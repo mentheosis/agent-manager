@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -13,6 +15,7 @@ import (
 // MCPServer implements an MCP server that provides orchestration
 // tools to the leader Claude session.
 type MCPServer struct {
+	managed    bool // stdio tools forward completion to the supervised controller
 	client     *Client
 	groupTitle string
 	logFunc    func(string)
@@ -191,9 +194,10 @@ func (s *MCPServer) Run() error {
 
 // RunHTTP starts the MCP server as an HTTP server on the given port.
 func (s *MCPServer) RunHTTP(port int) error {
-	addr := fmt.Sprintf(":%d", port)
-	s.log("Starting HTTP server on %s", addr)
+	return http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", port), s.handler())
+}
 
+func (s *MCPServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/task", s.handleTask)
@@ -201,13 +205,15 @@ func (s *MCPServer) RunHTTP(port int) error {
 	mux.HandleFunc("/resume", s.handleResume)
 	mux.HandleFunc("/", s.handleHTTP)
 
-	return http.ListenAndServe(addr, mux)
+	return mux
 }
 
 func (s *MCPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"state": s.stateFunc(),
+		"group": s.groupTitle,
+		"pid":   os.Getpid(),
 	})
 }
 
@@ -285,7 +291,7 @@ func (s *MCPServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if resp == nil {
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
@@ -461,6 +467,20 @@ func (s *MCPServer) toolListAgents() (string, error) {
 	return string(out), nil
 }
 
+// Team tools may only address current children of this controller's parent.
+func (s *MCPServer) checkAgent(title string) error {
+	children, err := s.client.GetChildren(s.groupTitle)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		if child.Title == title {
+			return nil
+		}
+	}
+	return fmt.Errorf("agent %q is not a member of team %q", title, s.groupTitle)
+}
+
 func (s *MCPServer) toolSendToAgent(args json.RawMessage) (string, error) {
 	var params struct {
 		Agent  string `json:"agent"`
@@ -468,6 +488,9 @@ func (s *MCPServer) toolSendToAgent(args json.RawMessage) (string, error) {
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if err := s.checkAgent(params.Agent); err != nil {
+		return "", err
 	}
 
 	s.log("send_to_agent(%s, %d chars)", params.Agent, len(params.Prompt))
@@ -486,6 +509,9 @@ func (s *MCPServer) toolReadAgentOutput(args json.RawMessage) (string, error) {
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if err := s.checkAgent(params.Agent); err != nil {
+		return "", err
 	}
 
 	// Apply defaults
@@ -516,19 +542,19 @@ func (s *MCPServer) toolReadAgentOutput(args json.RawMessage) (string, error) {
 		// Include relevant content based on event type
 		switch event.Type {
 		case "assistant_text":
-			output.WriteString(truncate(event.Text, 1000))
+			output.WriteString(event.Text)
 			output.WriteString("\n")
 		case "tool_use":
 			output.WriteString(fmt.Sprintf("Tool: %s\n", event.Name))
 		case "tool_result":
 			if event.IsError {
-				output.WriteString(fmt.Sprintf("ERROR: %s\n", truncate(event.Output, 500)))
+				output.WriteString(fmt.Sprintf("ERROR: %s\n", event.Output))
 			} else {
-				output.WriteString(truncate(event.Output, 500))
+				output.WriteString(event.Output)
 				output.WriteString("\n")
 			}
 		case "thinking":
-			output.WriteString(truncate(event.Text, 500))
+			output.WriteString(event.Text)
 			output.WriteString("\n")
 		case "error":
 			output.WriteString(event.Text)
@@ -547,6 +573,9 @@ func (s *MCPServer) toolGetAgentStatus(args json.RawMessage) (string, error) {
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
+	if err := s.checkAgent(params.Agent); err != nil {
+		return "", err
+	}
 
 	status, err := s.client.GetInstanceStatus(params.Agent)
 	if err != nil {
@@ -563,6 +592,17 @@ func (s *MCPServer) toolMarkTaskDone(args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 
+	if s.managed {
+		resp, err := s.client.httpClient.Post(s.client.baseURL+"/api/instances/"+url.PathEscape(s.groupTitle)+"/orchestrator/complete", "application/json", bytes.NewReader(args))
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("controller completion returned HTTP %d", resp.StatusCode)
+		}
+		return "Task marked as done.", nil
+	}
 	s.log("mark_task_done: %s", params.Summary)
 
 	select {

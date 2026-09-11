@@ -57,6 +57,17 @@
     letter-spacing: 0.5px;
 }
 
+/* Keep the task and controller help text on the same body-text scale. */
+#team-panel #task-input,
+#team-panel .control-description {
+    font-size: var(--fs-md);
+    line-height: 1.5;
+}
+
+#team-panel .control-description {
+    margin: 0;
+}
+
 /* Task input */
 #task-input {
     background: var(--bg);

@@ -14,12 +14,14 @@ venv/
 # Local state
 state.json
 .agent-manager/
+docker-mcp/athena-venv
 
 # Per-developer docker-compose overrides (mount your own host paths)
 docker-compose.local.yml
 Dockerfile.local
 requirements.local.txt
 constraints.local.txt
+certs.local/
 
 # docker-mcp (host-side binary and user config)
 docker-mcp/am-docker-mcp

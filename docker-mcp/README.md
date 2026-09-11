@@ -224,3 +224,69 @@ The exact field names depend on which version of the SDK you're on; consult the 
 * **In-memory job registry**. Job metadata is lost on daemon restart (logs persist on disk). Fine for dev workflow.
 * **Single-tenant token**. There is one bearer token, not per-client tokens. Rotate by restarting the daemon with a new env value.
 * **No streaming progress**. Polling-only, by design. If you ever want live streaming, MCP supports progress notifications inside a single tool call — a future addition.
+
+## Typed Athena queries (macOS/Linux host)
+
+Athena profiles run `athena_runner.py` using a fixed absolute Python executable,
+with isolated Python imports (`-I`) and JSON stdin. SQL is never interpolated into
+argv or a shell. Existing command profiles remain supported in the same instance.
+`start_job` rejects Athena profiles; use `athena_query` instead.
+
+Host setup:
+
+```bash
+python3 -m venv /absolute/host/path/athena-venv
+/absolute/host/path/athena-venv/bin/pip install -r requirements-athena.txt
+aws sso login --profile YOUR_SSO_PROFILE
+aws sts get-caller-identity --profile YOUR_QUERY_PROFILE
+go build -o am-docker-mcp .
+```
+
+Copy the object in `athena-profile.example.json` into your existing config's
+`profiles` array. Replace absolute paths and AWS profile, verify workgroup/results
+location, and explicitly enumerate all permitted tables as `catalog.database.table`.
+Restart the daemon with that config. No active host config is modified by this change.
+The workgroup may override the configured results location. The host query profile
+must resolve the intended SSO/assumed role; AWS credentials are not passed from the
+container. Full environment inheritance is disabled for Athena jobs even when the
+daemon uses `inherit_env: true` for other profiles.
+
+Call `athena_query` with:
+
+```json
+{"profile":"prod-audit","sql":"SELECT kind, sum(rewards) FROM transactions_cumulatives WHERE symbol = 'LPT' GROUP BY kind","max_rows":1000}
+```
+
+Returns the existing job snapshot immediately. Poll `get_job_status`, then read
+`tail_job_log` starting at `since_line: 1`. Output is JSON lines: query execution ID,
+then column metadata, rows, truncation flag and Athena execution statistics (or an
+error and nonzero job exit). Values remain strings, with SQL NULL represented as
+JSON null. This version returns a bounded preview, not a downloadable full export.
+Use narrower queries if truncated. Existing log retention behavior is unchanged.
+
+Enforced limits: HTTP body 128 KiB; SQL 64 KiB; one parsed read query; explicit table
+allowlist (including nested queries and CTEs); 1–1000 rows; approximately 512 KB row
+payload; per-profile job concurrency; 30–600 second host timeout. The helper reserves
+10 seconds for cleanup and attempts Athena cancellation on timeout/SIGTERM. Network
+failure or forced host termination can prevent cancellation; configure workgroup
+scan limits as a separate control. A row limit does not limit Athena bytes scanned.
+HTTP connections have header/read/idle deadlines; async Athena tools avoid holding
+an HTTP request open for query execution.
+
+SQL validation uses sqlglot's Trino parser and rejects mutations, multiple statements,
+unknown functions, and table functions. It deliberately supports a restricted subset
+of Athena SQL; unsupported valid queries fail closed. Use a read-scoped AWS role with
+only needed Glue/Lake Formation/S3 access, query-results writes, and workgroup access.
+Do not grant external-function/federated Lambda invocation for this use case. Handler
+validation complements AWS authorization rather than replacing it.
+
+Security scope: one existing bearer token still authorizes all configured profiles
+and job logs. This change does not isolate agents from existing build capabilities,
+protect writable host scripts/configs, add log retention, or provision AWS IAM.
+
+Tests (no AWS credentials required):
+
+```bash
+go test ./...
+/absolute/host/path/athena-venv/bin/python -m unittest -v test_athena_runner
+```

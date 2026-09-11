@@ -10,10 +10,11 @@ import asyncio
 import logging
 import os
 import shutil
-import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import httpx
 
 if TYPE_CHECKING:
     from .instance import Instance
@@ -29,6 +30,7 @@ class OrchestratorProcess:
     port: int = 0
     task: asyncio.Task | None = None
     _output_lines: list[str] = field(default_factory=list)
+    instance: Instance | None = None
 
     @property
     def is_running(self) -> bool:
@@ -46,7 +48,7 @@ class OrchestratorManager:
     The manager handles spawning, monitoring, and cleanup.
     """
 
-    def __init__(self, base_url: str = "http://localhost:8765", base_port: int = 9100):
+    def __init__(self, base_url: str = "http://localhost:8787", base_port: int = 9100):
         self._processes: dict[str, OrchestratorProcess] = {}
         self._base_url = base_url
         self._base_port = base_port
@@ -59,7 +61,7 @@ class OrchestratorManager:
         locations = [
             "/usr/local/bin/am-orchestrator",
             "/usr/bin/am-orchestrator",
-            str(Path(__file__).parent.parent.parent.parent / "orchestrator" / "am-orchestrator"),
+            str(Path(__file__).resolve().parents[2] / "orchestrator" / "am-orchestrator"),
             shutil.which("am-orchestrator"),
         ]
         for loc in locations:
@@ -76,6 +78,8 @@ class OrchestratorManager:
         self,
         instance: Instance,
         children: list[Instance] | None = None,
+        *,
+        replace: bool = False,
     ) -> OrchestratorProcess:
         """Start an orchestrator process for a loop instance.
 
@@ -90,17 +94,16 @@ class OrchestratorManager:
             RuntimeError: If the binary is not found or process fails to start.
         """
         async with self._lock:
-            # Stop existing process if any
-            if instance.title in self._processes:
+            # Serialize duplicate starts as well as stop/restart operations.
+            existing = self._processes.get(instance.title)
+            if existing and existing.is_running and not replace:
+                raise RuntimeError("Team controller already running")
+            if existing:
                 await self._stop_locked(instance.title)
 
             binary = self._find_binary()
             if not binary:
-                log.warning("am-orchestrator binary not found, skipping orchestrator start")
-                # Return a dummy process object
-                proc = OrchestratorProcess(title=instance.title, port=0)
-                self._processes[instance.title] = proc
-                return proc
+                raise RuntimeError("am-orchestrator binary not found; rebuild the container")
 
             port = self._allocate_port()
 
@@ -109,16 +112,12 @@ class OrchestratorManager:
                 binary,
                 "--group", instance.title,
                 "--base-url", self._base_url,
-                "--port", str(port),
+                "--mode", "team",
+                "--mcp-port", str(port),
             ]
 
             if instance.task:
                 cmd.extend(["--task", instance.task])
-
-            # Add child agent names
-            if children:
-                for child in children:
-                    cmd.extend(["--agent", child.title])
 
             log.info("Starting orchestrator for %s: %s", instance.title, " ".join(cmd))
 
@@ -138,14 +137,29 @@ class OrchestratorManager:
                 title=instance.title,
                 process=process,
                 port=port,
+                instance=instance,
             )
             self._processes[instance.title] = proc
 
             # Start background task to read output
             proc.task = asyncio.create_task(self._read_output(proc))
 
-            log.info("Orchestrator started for %s (pid=%d, port=%d)", instance.title, process.pid, port)
-            return proc
+            # Do not report success for invalid flags, bind failures, or an old binary.
+            async with httpx.AsyncClient(timeout=0.5, trust_env=False) as client:
+                for _ in range(50):
+                    if process.returncode is not None:
+                        raise RuntimeError("Orchestrator exited: " + "\n".join(proc._output_lines[-10:]))
+                    try:
+                        response = await client.get(f"http://127.0.0.1:{port}/status")
+                        response.raise_for_status()
+                        status = response.json()
+                        if status.get("pid") == process.pid and status.get("group") == instance.title:
+                            return proc
+                    except (httpx.HTTPError, ValueError):
+                        pass
+                    await asyncio.sleep(0.1)
+            await self._stop_locked(instance.title)
+            raise RuntimeError("Orchestrator did not become ready")
 
     async def _read_output(self, proc: OrchestratorProcess) -> None:
         """Read stdout/stderr from the orchestrator process."""
@@ -159,6 +173,11 @@ class OrchestratorManager:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
                 proc._output_lines.append(text)
+                if proc.instance is not None and hasattr(proc.instance, "_publish"):
+                    await proc.instance._publish({
+                        "type": "team_event", "actor": "Controller",
+                        "event_type": "controller", "text": text,
+                    })
                 # Keep only last 1000 lines
                 if len(proc._output_lines) > 1000:
                     proc._output_lines = proc._output_lines[-500:]
@@ -172,6 +191,12 @@ class OrchestratorManager:
         if proc.process:
             await proc.process.wait()
             log.info("Orchestrator for %s exited with code %d", proc.title, proc.process.returncode)
+            if proc.instance is not None and hasattr(proc.instance, "_publish"):
+                await proc.instance._publish({
+                    "type": "team_event", "actor": "Controller",
+                    "event_type": "controller",
+                    "text": f"Controller stopped (exit code {proc.process.returncode})",
+                })
 
     async def stop(self, title: str) -> None:
         """Stop the orchestrator process for a loop instance."""
@@ -183,13 +208,6 @@ class OrchestratorManager:
         proc = self._processes.pop(title, None)
         if not proc:
             return
-
-        if proc.task and not proc.task.done():
-            proc.task.cancel()
-            try:
-                await proc.task
-            except asyncio.CancelledError:
-                pass
 
         if proc.process and proc.process.returncode is None:
             log.info("Stopping orchestrator for %s (pid=%d)", title, proc.process.pid)
@@ -204,13 +222,20 @@ class OrchestratorManager:
             except ProcessLookupError:
                 pass  # Already dead
 
+        if proc.task and not proc.task.done():
+            proc.task.cancel()
+            try:
+                await proc.task
+            except asyncio.CancelledError:
+                pass
+
     async def restart(
         self,
         instance: Instance,
         children: list[Instance] | None = None,
     ) -> OrchestratorProcess:
         """Restart the orchestrator process for a loop instance."""
-        return await self.start(instance, children)
+        return await self.start(instance, children, replace=True)
 
     def get(self, title: str) -> OrchestratorProcess | None:
         """Get the orchestrator process for a loop instance."""
@@ -235,7 +260,7 @@ class OrchestratorManager:
 _manager: OrchestratorManager | None = None
 
 
-def get_manager(base_url: str = "http://localhost:8765") -> OrchestratorManager:
+def get_manager(base_url: str = "http://localhost:8787") -> OrchestratorManager:
     """Get or create the global orchestrator manager."""
     global _manager
     if _manager is None:

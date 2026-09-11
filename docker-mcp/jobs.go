@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -26,17 +27,17 @@ const (
 // Job is one invocation of a profile. It owns a log file on disk and an
 // in-memory ring of recent lines for cheap tailing.
 type Job struct {
-	ID          string    `json:"id"`
-	Profile     string    `json:"profile"`
-	Argv        []string  `json:"argv"`
-	Cwd         string    `json:"cwd"`
-	StartedAt   time.Time     `json:"started_at"`
-	FinishedAt  time.Time     `json:"finished_at,omitempty"`
-	State       JobState      `json:"state"`
-	ExitCode    int           `json:"exit_code"`
-	LinesLogged atomic.Int64  `json:"-"` // exposed via Snapshot()
-	LogPath     string        `json:"log_path"`
-	Error       string        `json:"error,omitempty"`
+	ID          string       `json:"id"`
+	Profile     string       `json:"profile"`
+	Argv        []string     `json:"argv"`
+	Cwd         string       `json:"cwd"`
+	StartedAt   time.Time    `json:"started_at"`
+	FinishedAt  time.Time    `json:"finished_at,omitempty"`
+	State       JobState     `json:"state"`
+	ExitCode    int          `json:"exit_code"`
+	LinesLogged atomic.Int64 `json:"-"` // exposed via Snapshot()
+	LogPath     string       `json:"log_path"`
+	Error       string       `json:"error,omitempty"`
 
 	// runtime — not serialized
 	cmd       *exec.Cmd
@@ -75,11 +76,18 @@ func NewJobManager(cfg *Config) (*JobManager, error) {
 // concurrency limit. Returns the new job, or an error if the profile is
 // unknown or the limit is hit.
 func (m *JobManager) Start(profileName string) (*Job, error) {
+	return m.start(profileName, nil)
+}
+
+func (m *JobManager) start(profileName string, input []byte) (*Job, error) {
 	prof := m.cfg.FindProfile(profileName)
 	if prof == nil {
 		return nil, fmt.Errorf("unknown profile %q", profileName)
 	}
 
+	if prof.Athena != nil && input == nil {
+		return nil, fmt.Errorf("use athena_query for Athena profiles")
+	}
 	m.mu.Lock()
 	if m.cfg.MaxConcurrentPerProfile > 0 {
 		running := 0
@@ -105,11 +113,18 @@ func (m *JobManager) Start(profileName string) (*Job, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(ctx, prof.Argv[0], prof.Argv[1:]...)
+	argv := prof.Argv
+	if prof.Athena != nil {
+		argv = []string{prof.Argv[0], "-I", prof.Argv[1]}
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = prof.Cwd
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if m.cfg.InheritEnv {
+	if m.cfg.InheritEnv && prof.Athena == nil {
 		// Inherit full host environment, plus any profile-specific overrides
 		cmd.Env = append(os.Environ(), envMapToSlice(prof.Env)...)
 	} else {

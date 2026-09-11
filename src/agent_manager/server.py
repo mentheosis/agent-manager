@@ -563,7 +563,10 @@ def build_app() -> FastAPI:
     registry.auth_registries = provider_auth
 
     # Initialize orchestrator manager
-    orchestrator_manager = get_orchestrator_manager(base_url="http://localhost:8765")
+    api_base_url = os.environ.get("AGENT_MANAGER_BASE_URL") or (
+        f"http://127.0.0.1:{os.environ.get('AGENT_MANAGER_PORT', '8787')}"
+    )
+    orchestrator_manager = get_orchestrator_manager(base_url=api_base_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -827,6 +830,54 @@ def build_app() -> FastAPI:
 
     # --- Orchestrator process management --------------------------------------
 
+    async def prepare_team(inst: Instance) -> list[Instance]:
+        children = registry.get_children(inst.title)
+        leaders = [child for child in children if child.agent_preset == "orchestrator"]
+        if len(leaders) != 1:
+            raise HTTPException(status_code=400, detail="Team requires exactly one orchestrator leader")
+        if not any(child.kind == "agent" and child.agent_preset != "orchestrator" for child in children):
+            raise HTTPException(status_code=400, detail="Team requires at least one worker agent")
+        if not inst.task or not inst.task.strip():
+            raise HTTPException(status_code=400, detail="Save a team task before starting")
+        if leaders[0].status != "ready":
+            raise HTTPException(status_code=409, detail="Wait for the team leader to become ready")
+        if not orchestrator_manager._find_binary():
+            raise HTTPException(status_code=500, detail="am-orchestrator binary not found; rebuild the container")
+        # Preset/parent may have changed since this session started. Reload to
+        # attach team MCP tools, preserving its conversation/session ID.
+        await leaders[0].reload_options()
+        return children
+
+    async def controller_request(title: str, path: str, payload: dict | None = None) -> dict:
+        proc = orchestrator_manager.get(title)
+        if not proc or not proc.is_running:
+            raise HTTPException(status_code=409, detail="Team controller is not running")
+        try:
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                response = await client.post(f"http://127.0.0.1:{proc.port}/{path}", json=payload or {})
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Team controller did not respond") from exc
+
+    @app.post("/api/instances/{title}/orchestrator/complete")
+    async def complete_orchestration(title: str, body: dict) -> dict:
+        summary = body.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            raise HTTPException(status_code=400, detail="summary is required")
+        return await controller_request(title, "", {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "mark_task_done", "arguments": {"summary": summary}},
+        })
+
+    @app.post("/api/instances/{title}/orchestrator/pause")
+    async def pause_orchestration(title: str) -> dict:
+        return await controller_request(title, "pause")
+
+    @app.post("/api/instances/{title}/orchestrator/resume")
+    async def resume_orchestration(title: str) -> dict:
+        return await controller_request(title, "resume")
+
     @app.post("/api/instances/{title}/orchestrator/start")
     async def start_orchestrator(title: str) -> dict[str, Any]:
         """Start the orchestrator process for a loop instance."""
@@ -836,7 +887,10 @@ def build_app() -> FastAPI:
         if inst.kind != "loop":
             raise HTTPException(status_code=400, detail="can only start orchestrator for loop instances")
 
-        children = registry.get_children(title)
+        existing = orchestrator_manager.get(title)
+        if existing and existing.is_running:
+            raise HTTPException(status_code=409, detail="Team controller already started; use Resume or Restart")
+        children = await prepare_team(inst)
         try:
             proc = await orchestrator_manager.start(inst, children)
             return {
@@ -867,7 +921,7 @@ def build_app() -> FastAPI:
         if inst.kind != "loop":
             raise HTTPException(status_code=400, detail="can only restart orchestrator for loop instances")
 
-        children = registry.get_children(title)
+        children = await prepare_team(inst)
         try:
             proc = await orchestrator_manager.restart(inst, children)
             return {
@@ -888,10 +942,20 @@ def build_app() -> FastAPI:
 
         proc = orchestrator_manager.get(title)
         if not proc:
-            return {"running": False, "pid": None, "port": None}
+            return {"running": False, "state": "stopped", "pid": None, "port": None}
 
+        state = "stopped"
+        if proc.is_running:
+            try:
+                async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
+                    response = await client.get(f"http://127.0.0.1:{proc.port}/status")
+                    response.raise_for_status()
+                    state = response.json()["state"]
+            except (httpx.HTTPError, ValueError, KeyError):
+                state = "unavailable"
         return {
             "running": proc.is_running,
+            "state": state,
             "pid": proc.pid,
             "port": proc.port,
         }
@@ -984,6 +1048,8 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
+        if inst.kind == "loop":
+            raise HTTPException(status_code=400, detail="Use the team task and controller controls")
         images = None
         if body.images:
             images = [{"media_type": img.media_type, "data": img.data} for img in body.images]

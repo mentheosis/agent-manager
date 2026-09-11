@@ -148,6 +148,10 @@
     background: var(--green);
 }
 
+.tool-status.unavailable {
+    background: var(--text-dim);
+}
+
 .tool-status.error {
     background: var(--red);
 }

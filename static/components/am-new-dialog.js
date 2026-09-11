@@ -4,6 +4,30 @@
 
 import * as api from '../lib/api.js';
 
+const DEFAULT_TEAM_YAML = `title: my-team
+# Set these paths to your workspace inside the container.
+path: .
+task: Ask worker-1 to summarize the README and worker-2 to review the summary. Do not edit files.
+agents:
+  - name: team-leader
+    path: .
+    preset: orchestrator
+    provider: codex
+    model: gpt-6-astra
+    permission_mode: danger-full-access
+  - name: worker-1
+    path: .
+    preset: coder
+    provider: codex
+    model: gpt-6-astra
+    permission_mode: danger-full-access
+  - name: worker-2
+    path: .
+    preset: coder
+    provider: claude
+    model: claude-opus-4-8
+    permission_mode: bypassPermissions`;
+
 class AmNewDialog extends HTMLElement {
     constructor() {
         super();
@@ -99,23 +123,7 @@ permissions:
                     <!-- Team Form -->
                     <form id="team-form" class="mode-form">
                         <p class="form-hint">Define your team using YAML configuration:</p>
-                        <textarea id="team-yaml" class="yaml-input" spellcheck="false" placeholder="title: my-team
-path: /path/to/workspace
-provider: claude
-model: claude-sonnet-4-20250514  # optional
-memory_file: /path/to/team-memory.md  # optional
-task: Build feature X with tests
-agents:
-  - name: coder-1
-    path: /path/to/repo
-    provider: claude
-    preset: coder
-    model: claude-opus-4-20250514  # optional
-    memory_file: /path/to/coder-memory.md  # optional
-  - name: researcher
-    path: /path/to/docs
-    provider: claude
-    preset: researcher"></textarea>
+                        <textarea id="team-yaml" class="yaml-input" spellcheck="false" wrap="off">${DEFAULT_TEAM_YAML}</textarea>
                         <div id="yaml-error" class="yaml-error"></div>
                         <menu>
                             <button type="button" class="btn-cancel">Cancel</button>
@@ -467,6 +475,7 @@ agents:
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: config.title,
+                    kind: 'loop',
                     path: config.path,
                     permission_mode: 'plan',
                     model: config.model || null,
@@ -507,7 +516,8 @@ agents:
                         body: JSON.stringify({
                             name: agent.name,
                             path: agent.path,
-                            permission_mode: 'acceptEdits',
+                            provider: agent.provider || config.provider || 'claude',
+                            permission_mode: agent.permission_mode || ((agent.provider || config.provider) === 'codex' ? 'workspace-write' : 'acceptEdits'),
                             model: agent.model || null,
                             memory_file: agent.memory_file || null,
                         })
@@ -542,7 +552,6 @@ agents:
                 detail: { title: loopInst.title }
             }));
             this.close();
-            this.querySelector('#team-yaml').value = '';
 
         } catch (e) {
             errorDiv.textContent = e.message;
@@ -990,7 +999,7 @@ agents:
         this.querySelector('#new-dialog').close();
         // Reset forms
         this.querySelector('#agent-form').reset();
-        this.querySelector('#team-yaml').value = '';
+        this.querySelector('#team-yaml').value = DEFAULT_TEAM_YAML;
         this.querySelector('#yaml-error').textContent = '';
         // Reset batch form
         this.querySelector('#batch-form').reset();

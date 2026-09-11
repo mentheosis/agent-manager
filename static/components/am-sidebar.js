@@ -311,7 +311,7 @@ class AmSidebar extends HTMLElement {
 
         // Also add any orphaned children that might have been missed
         for (const inst of this._instances) {
-            if (!rendered.has(inst.title)) {
+            if (!rendered.has(inst.title) && !this._instances.some(parent => parent.title === inst.parent)) {
                 const item = this.createInstanceItem(inst);
                 list.appendChild(item);
             }
@@ -328,7 +328,7 @@ class AmSidebar extends HTMLElement {
         rendered.add(inst.title);
 
         // Render children if this is a loop instance and expanded
-        if (inst.instance_type === 'loop') {
+        if ((inst.kind === 'loop' || inst.instance_type === 'loop')) {
             const children = childrenMap.get(inst.title) || [];
             const isExpanded = this._expandedTeams.has(inst.title);
 
@@ -638,7 +638,7 @@ class AmSidebar extends HTMLElement {
         item.classList.add(status);
 
         // Add visual distinction for loop instances
-        if (inst.instance_type === 'loop') {
+        if ((inst.kind === 'loop' || inst.instance_type === 'loop')) {
             item.classList.add('loop-instance');
         }
         // Indent children under their parent
@@ -648,10 +648,10 @@ class AmSidebar extends HTMLElement {
 
         const presetBadge = inst.agent_preset
             ? `<span class="preset-badge preset-${inst.agent_preset}">${inst.agent_preset}</span>`
-            : (inst.instance_type === 'loop' ? '<span class="preset-badge preset-loop">team</span>' : '');
+            : ((inst.kind === 'loop' || inst.instance_type === 'loop') ? '<span class="preset-badge preset-loop">team</span>' : '');
 
         // Collapse/expand arrow for loop instances
-        const isLoop = inst.instance_type === 'loop';
+        const isLoop = (inst.kind === 'loop' || inst.instance_type === 'loop');
         const childCount = children?.length || 0;
         const isExpanded = this._expandedTeams.has(inst.title);
         const expandArrow = isLoop && childCount > 0
@@ -879,7 +879,7 @@ class AmSidebar extends HTMLElement {
             return;
         }
         // Prevent dragging loop instances
-        if (inst.instance_type === 'loop') {
+        if ((inst.kind === 'loop' || inst.instance_type === 'loop')) {
             e.preventDefault();
             return;
         }

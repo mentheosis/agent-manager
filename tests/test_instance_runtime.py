@@ -260,6 +260,32 @@ async def test_async_events_between_turns_stream_in_order() -> None:
         await inst.stop()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_error", [False, True])
+async def test_terminal_completion_clears_missing_tools_between_turns(is_error: bool) -> None:
+    class MissingOutputRuntime(FakeRuntime):
+        async def query(self, message: AgentInput) -> None:
+            self.inputs.append(message)
+            if len(self.inputs) == 1:
+                await self._emit_event({"type": "tool_use", "id": "missing", "name": "exec", "input": "code"})
+                await self._emit_event({"type": "result", "terminal": True, "is_error": is_error})
+            else:
+                # A stale ID from the previous turn must not block readiness.
+                await self._emit_event({"type": "result", "is_error": False})
+
+    inst = Instance(title="missing-output", path="/tmp", provider="codex", _runtime_factory=MissingOutputRuntime)
+    try:
+        await inst.start()
+        await _wait_for(lambda: inst.status == "ready")
+        for count in (1, 2):
+            await inst.send("go")
+            await _wait_for(lambda: sum(e.get("type") == "result" for e in inst.history()) == count)
+            assert inst.status == "ready"
+        assert not any(e.get("type") == "tool_result" for e in inst.history())
+    finally:
+        await inst.stop()
+
+
 class ToolCallRuntime(BaseRuntime):
     """Runtime whose turn emits a tool_use, a result, then later a tool_result.
 

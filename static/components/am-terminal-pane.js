@@ -150,6 +150,7 @@ class AmTerminalPane extends HTMLElement {
 
         // Listen for filter changes from toolbar
         document.addEventListener('filter-changed', (e) => {
+            if (e.detail.scope === 'team') return;
             this._filters = { ...e.detail.filters };
             this.applyFilters();
         });
@@ -742,6 +743,14 @@ class AmTerminalPane extends HTMLElement {
     appendEventToCurrentTurn(event) {
         this.checkScrollPosition();
 
+        if (event.type === 'result' && event.terminal === true) {
+            for (const status of this.querySelectorAll('.tool-status.pending')) {
+                status.classList.remove('pending');
+                status.classList.add('unavailable');
+                status.title = 'Turn ended; tool result unavailable';
+            }
+        }
+
         // Handle tool_result specially - nest it under the matching tool_use
         if (event.type === 'tool_result' && event.tool_id) {
             const toolUses = this.querySelectorAll(`.event-tool_use[data-tool-id="${CSS.escape(event.tool_id)}"]`);
@@ -758,7 +767,7 @@ class AmTerminalPane extends HTMLElement {
                 // Update tool_use status indicator
                 const statusEl = toolUse.querySelector('.tool-status');
                 if (statusEl) {
-                    statusEl.classList.remove('pending');
+                    statusEl.classList.remove('pending', 'unavailable', 'error', 'success');
                     statusEl.classList.add(event.is_error ? 'error' : 'success');
                     statusEl.title = event.is_error ? 'Error' : 'Success';
                 }

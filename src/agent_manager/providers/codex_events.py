@@ -116,6 +116,9 @@ def translate_codex_event(raw: dict[str, Any], system_context: dict[str, Any] | 
             tool_id = item_id or f"codex-{abs(hash(str(raw))) & 0xffffffff:x}"
             if event_type == "item.started":
                 events.append(_tool_use_event(tool_id, tool_name, _tool_input_from(item, raw)))
+            elif event_type == "item.updated":
+                # Progress on a long-running command is not its result.
+                return []
             elif event_type in {"item.failed", "item.cancelled"}:
                 output = _output_from(item) or _output_from(raw) or item_type
                 events.append(
@@ -152,15 +155,25 @@ def translate_codex_transcript_event(raw: dict[str, Any], system_context: dict[s
 
     The `codex exec --json` stdout stream is intentionally compact and can
     collapse file edits into anonymous `file_change` items. The persisted
-    transcript contains richer patch records. Only emit events that add detail
-    we do not reliably get from stdout, so the UI does not double-render every
-    shell command and assistant message.
+    transcript contains richer patch records and a fallback for assistant
+    messages that may not reach stdout. The runtime deduplicates assistant
+    text across the two streams before publishing it to the UI.
     """
     payload = _dict(raw.get("payload"))
     if not payload:
         return []
 
     payload_type = str(payload.get("type") or "")
+    if raw.get("type") == "response_item" and payload_type == "message" and payload.get("role") == "assistant":
+        text = _text_from(payload)
+        return [{"type": "assistant_text", "text": text}] if text else []
+
+    if raw.get("type") == "event_msg" and payload_type == "item_completed":
+        item = _dict(payload.get("item"))
+        if item.get("type") == "AgentMessage":
+            text = _text_from(item)
+            return [{"type": "assistant_text", "text": text}] if text else []
+
     if raw.get("type") == "response_item" and payload_type in {
         "function_call",
         "custom_tool_call",
@@ -180,6 +193,7 @@ def translate_codex_transcript_event(raw: dict[str, Any], system_context: dict[s
 
     if raw.get("type") == "response_item" and payload_type in {
         "function_call_output",
+        "custom_tool_call_output",
         "tool_search_output",
     }:
         tool_id = _first_str(payload, "call_id", "id") or f"codex-result-{abs(hash(str(raw))) & 0xffffffff:x}"
@@ -214,15 +228,23 @@ def translate_codex_transcript_event(raw: dict[str, Any], system_context: dict[s
         return []
 
     if raw.get("type") == "event_msg" and payload_type == "task_complete":
-        return [
+        # Recover the final answer even if stdout or an earlier transcript
+        # record was missed. The runtime deduplicates it across both streams.
+        events: list[AgentEvent] = []
+        message = payload.get("last_agent_message")
+        if isinstance(message, str) and message.strip():
+            events.append({"type": "assistant_text", "text": message})
+        events.append(
             {
                 "type": "result",
                 "subtype": "success",
                 "duration_ms": payload.get("duration_ms"),
                 "is_error": False,
-                "terminal": True,
             }
-        ]
+        )
+        # This ends a logical turn, not necessarily the Codex process: pending
+        # background work can wake it again. Only process exit is definitive.
+        return events
 
     if _is_image_tool_item(payload_type, str(payload.get("name") or "")):
         return _image_artifact_events_from_raw(raw)

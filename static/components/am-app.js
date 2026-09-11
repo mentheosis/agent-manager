@@ -17,6 +17,7 @@ import './am-file-editor.js';
 import './am-new-dialog.js';
 import './am-login-dialog.js';
 import './am-team-panel.js';
+import './am-loop-pane.js';
 
 // Map internal tab names to URL-friendly names
 const TAB_TO_URL = {
@@ -64,6 +65,7 @@ class AmApp extends HTMLElement {
                     <am-toolbar></am-toolbar>
                     <div id="tab-content">
                         <am-terminal-pane data-pane="terminal" class="tab-pane active"></am-terminal-pane>
+                        <am-loop-pane data-pane="loop" class="tab-pane"></am-loop-pane>
                         <am-diff-pane data-pane="diff" class="tab-pane"></am-diff-pane>
                         <am-file-editor data-pane="settings" data-endpoint="rules" data-has-permissions="true" class="tab-pane"></am-file-editor>
                         <am-file-editor data-pane="plans" data-endpoint="plans" class="tab-pane"></am-file-editor>
@@ -355,10 +357,10 @@ class AmApp extends HTMLElement {
 
         // Update terminal pane
         const terminal = this.querySelector('am-terminal-pane');
-        terminal.instance = inst;
-
-        // Enable prompt form
-        terminal.enablePrompt();
+        const isLoop = inst.kind === 'loop' || inst.instance_type === 'loop';
+        terminal.instance = isLoop ? null : inst;
+        if (isLoop) terminal.disablePrompt();
+        else terminal.enablePrompt();
 
         // Update team panel (show for loop instances on conversation tab)
         this.updateTeamPanel();
@@ -392,6 +394,7 @@ class AmApp extends HTMLElement {
 
         // Hide team panel
         this.querySelector('am-team-panel').instance = null;
+        this.querySelector('am-loop-pane').instance = null;
 
         // Update URL
         this.updateURL();
@@ -441,8 +444,13 @@ class AmApp extends HTMLElement {
     // Update team panel visibility based on instance type and active tab
     updateTeamPanel() {
         const teamPanel = this.querySelector('am-team-panel');
-        // Show team panel only for loop instances on conversation (terminal) tab
-        if (this.currentInst?.instance_type === 'loop' && this.activeTab === 'terminal') {
+        const isLoop = this.currentInst?.kind === 'loop' || this.currentInst?.instance_type === 'loop';
+        const showLoop = isLoop && this.activeTab === 'terminal';
+        const loopPane = this.querySelector('am-loop-pane');
+        loopPane.classList.toggle('active', showLoop);
+        loopPane.instance = showLoop ? this.currentInst : null;
+        this.querySelector('am-terminal-pane').classList.toggle('active', !isLoop && this.activeTab === 'terminal');
+        if (showLoop) {
             teamPanel.instance = this.currentInst;
         } else {
             teamPanel.instance = null;

@@ -15,6 +15,7 @@ class AmToolbar extends HTMLElement {
         super();
         this._instance = null;
         this._filterOpen = false;
+        this._teamFilters = {user_prompt: true, assistant_text: true, tool_use: true, result: true, status: true, controller: true, error: true};
         this._filters = {
             assistant_text: true,
             thinking: true,
@@ -104,6 +105,8 @@ class AmToolbar extends HTMLElement {
     set instance(inst) {
         this._instance = inst;
         this.update();
+        this.renderFilters();
+        this.dispatchFilterEvent();
     }
 
     update() {
@@ -284,25 +287,39 @@ class AmToolbar extends HTMLElement {
             }
         });
 
-        // Handle checkbox changes
-        for (const checkbox of this.querySelectorAll('#filter-menu input[type="checkbox"]')) {
-            checkbox.addEventListener('change', () => {
-                const eventType = checkbox.dataset.type;
-                this._filters[eventType] = checkbox.checked;
-                this.dispatchFilterEvent();
-            });
-        }
+        // Delegate changes because the menu changes with the selected view.
+        filterMenu.addEventListener('change', (event) => {
+            const checkbox = event.target;
+            if (!checkbox.dataset.type) return;
+            const filters = this.isTeamView() ? this._teamFilters : this._filters;
+            filters[checkbox.dataset.type] = checkbox.checked;
+            this.dispatchFilterEvent();
+        });
+    }
+
+    isTeamView() {
+        return this._instance?.kind === 'loop' || this._instance?.instance_type === 'loop';
+    }
+
+    renderFilters() {
+        const labels = this.isTeamView()
+            ? {user_prompt: 'Tasks received', assistant_text: 'Messages', tool_use: 'Coordination', result: 'Turn results', status: 'Agent status', controller: 'Controller events', error: 'Errors'}
+            : {assistant_text: 'Assistant', thinking: 'Thinking', tool_use: 'Tools', result: 'Results', system_init: 'System', error: 'Errors'};
+        const filters = this.filters;
+        this.querySelector('#filter-menu').innerHTML = Object.entries(labels).map(([type, label]) =>
+            `<label class="filter-item"><input type="checkbox" data-type="${type}" ${filters[type] ? 'checked' : ''}><span class="filter-label">${label}</span></label>`
+        ).join('');
     }
 
     dispatchFilterEvent() {
         this.dispatchEvent(new CustomEvent('filter-changed', {
             bubbles: true,
-            detail: { filters: { ...this._filters } }
+            detail: { scope: this.isTeamView() ? 'team' : 'agent', filters: this.filters }
         }));
     }
 
     get filters() {
-        return { ...this._filters };
+        return { ...(this.isTeamView() ? this._teamFilters : this._filters) };
     }
 }
 

@@ -98,6 +98,13 @@ class ClaudeRuntime(BaseRuntime):
                 },
             }
 
+        if self.config.team_mcp:
+            opts.setdefault("mcp_servers", {})["team"] = self.config.team_mcp
+            opts["allowed_tools"] = [f"mcp__team__{name}" for name in (
+                "list_agents", "send_to_agent", "read_agent_output",
+                "get_agent_status", "mark_task_done",
+            )]
+
         options = ClaudeAgentOptions(**opts)
         log.info(
             "instance %s: starting Claude SDK client (session_id=%s)",

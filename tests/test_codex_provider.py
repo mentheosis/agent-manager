@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 from agent_manager.artifacts import artifact_id_for_path, artifact_instruction
+from agent_manager.instance import Instance
 from agent_manager.providers.base import AgentConfig, AgentInput
 from agent_manager.providers.codex import CodexRuntime, _normalize_rate_limits, _should_emit_event
 from agent_manager.providers.codex_events import translate_codex_event, translate_codex_transcript_event
@@ -14,6 +17,150 @@ from agent_manager.providers.codex_metadata import (
     _parse_codex_doctor_metadata,
     _parse_codex_model_catalog,
 )
+
+
+@pytest.mark.parametrize("raw", [
+    {"type": "response_item", "payload": {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "output_text", "text": "Recovered answer"}]}},
+    {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "phase": "final_answer", "content": [{"type": "Text", "text": "Recovered answer"}]}}},
+])
+def test_new_transcript_assistant_formats(raw) -> None:
+    assert translate_codex_transcript_event(raw) == [{"type": "assistant_text", "text": "Recovered answer"}]
+
+
+def test_transcript_does_not_render_user_or_developer_messages() -> None:
+    for role in ("user", "developer"):
+        assert translate_codex_transcript_event({"type": "response_item", "payload": {
+            "type": "message", "role": role, "content": [{"type": "input_text", "text": "private context"}],
+        }}) == []
+
+
+def test_command_progress_does_not_complete_tool() -> None:
+    assert translate_codex_event({"type": "item.updated", "item": {
+        "id": "command-1", "type": "command_execution", "status": "in_progress", "aggregated_output": "still working",
+    }}) == []
+
+
+@pytest.mark.asyncio
+async def test_transcript_tail_retains_partial_utf8_records(tmp_path: Path) -> None:
+    runtime = CodexRuntime(AgentConfig(title="partial", provider="codex", cwd=str(tmp_path)))
+    runtime._proc = SimpleNamespace(returncode=None)
+    path = tmp_path / "transcript.jsonl"
+    first = {"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call-1", "name": "exec", "input": "code"}}
+    second = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "call-1", "output": "café"}}
+    data = (json.dumps(second, ensure_ascii=False) + "\n").encode()
+    split = data.index("é".encode()) + 1
+    path.write_bytes((json.dumps(first) + "\n").encode() + data[:split])
+    queue = asyncio.Queue()
+    task = asyncio.create_task(runtime._tail_codex_session_transcript(path, 0, queue, {}, {}))
+    try:
+        assert (await asyncio.wait_for(queue.get(), 2))["type"] == "tool_use"
+        with path.open("ab") as f:
+            f.write(data[split:])
+        runtime._proc.returncode = 0
+        await asyncio.wait_for(task, 2)
+        result = queue.get_nowait()
+        assert result["tool_id"] == "call-1"
+        assert result["output"] == "café"
+        assert queue.empty()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        runtime._proc = None
+
+
+@pytest.mark.asyncio
+async def test_codex_background_wakeup_delivers_answer_before_ready(tmp_path: Path, monkeypatch) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(json.dumps({"type": "event_msg", "payload": {"type": "agent_message", "message": "old answer"}}) + "\n")
+    release = tmp_path / "release"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    # The child models a job which Codex is waiting to wake up from. Completion
+    # is deliberately written before the job finishes; stdout arrives later.
+    child = "import pathlib,time; p=pathlib.Path(" + repr(str(release)) + "); end=time.monotonic()+5\nwhile not p.exists() and time.monotonic()<end: time.sleep(0.01)"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, subprocess, sys\n"
+        f"transcript = {str(transcript)!r}\n"
+        "def record(payload):\n"
+        "    with open(transcript, 'a') as f: f.write(json.dumps({'type':'event_msg','payload':payload})+'\\n')\n"
+        f"job = subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        "record({'type':'task_complete','last_agent_message':'Waiting for the job.'})\n"
+        "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10}}), flush=True)\n"
+        "job.wait()\n"
+        "record({'type':'item_completed','item':{'type':'AgentMessage','content':[{'type':'Text','text':'Job finished.'}]}})\n"
+        "record({'type':'task_complete','last_agent_message':'Job finished.'})\n"
+        "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'Job finished.'}}), flush=True)\n"
+        "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':20}}), flush=True)\n"
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setattr(CodexRuntime, "_codex_session_path", lambda self: transcript)
+    inst = Instance(title="background", path=str(tmp_path), provider="codex", model="test", _runtime_factory=CodexRuntime)
+
+    async def wait_for(predicate):
+        async with asyncio.timeout(3):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    try:
+        await inst.start()
+        await wait_for(lambda: inst.status == "ready")
+        await inst.send("run job")
+        await wait_for(lambda: any(e.get("text") == "Waiting for the job." for e in inst.history()))
+        assert inst.status == "running"
+        assert not any(e.get("type") == "result" for e in inst.history())
+        release.touch()
+        await wait_for(lambda: inst.status == "ready")
+        events = inst.history()
+        assert [e["text"] for e in events if e["type"] == "assistant_text"] == ["Waiting for the job.", "Job finished."]
+        results = [e for e in events if e["type"] == "result"]
+        assert len(results) == 1
+        assert results[0]["terminal"] is True
+        assert results[0]["usage"] == {"input_tokens": 20}
+        assert events[-1]["status"] == "ready"
+        assert events[-2]["type"] == "result"
+    finally:
+        release.touch()
+        await inst.stop()
+
+
+@pytest.mark.parametrize("output_type", ["function_call_output", "custom_tool_call_output", "tool_search_output"])
+def test_transcript_tool_output_matches_call(output_type: str) -> None:
+    call = translate_codex_transcript_event({
+        "type": "response_item",
+        "payload": {"type": "custom_tool_call", "call_id": "call-1", "name": "exec", "input": "code"},
+    })[0]
+    assert translate_codex_transcript_event({
+        "type": "response_item",
+        "payload": {"type": output_type, "call_id": "call-1", "output": "done"},
+    }) == [{"type": "tool_result", "tool_id": call["id"], "output": "done", "is_error": False}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crash", [False, True])
+async def test_codex_publishes_terminal_result_after_late_tool_output(monkeypatch, crash: bool) -> None:
+    runtime = CodexRuntime(AgentConfig(title="ordering", provider="codex", cwd="/tmp"))
+
+    async def produce(message):
+        yield {"type": "tool_use", "id": "call-1", "name": "exec", "input": "code"}
+        yield {"type": "result", "is_error": False, "usage": {"input_tokens": 42}}
+        await asyncio.sleep(0)
+        yield {"type": "tool_result", "tool_id": "call-1", "output": "done", "is_error": False}
+        if crash:
+            raise RuntimeError("failed while draining")
+
+    monkeypatch.setattr(runtime, "_produce_events", produce)
+    try:
+        events = [event async for event in runtime.run_turn(AgentInput("go"))]
+        assert [e["type"] for e in events] == (["tool_use", "tool_result", "error", "result"] if crash else ["tool_use", "tool_result", "result"])
+        assert events[-1]["terminal"] is True
+        assert events[-1]["is_error"] is crash
+        if not crash:
+            assert events[-1]["usage"] == {"input_tokens": 42}
+    finally:
+        await runtime.close()
 
 
 def test_translate_codex_thread_started_and_result() -> None:
@@ -436,12 +583,12 @@ def test_translate_codex_transcript_final_agent_message_and_task_complete() -> N
             "last_agent_message": "Finished the goal.",
         },
     }) == [
+        {"type": "assistant_text", "text": "Finished the goal."},
         {
             "type": "result",
             "subtype": "success",
             "duration_ms": 856271,
             "is_error": False,
-            "terminal": True,
         }
     ]
 
@@ -639,12 +786,12 @@ def test_should_emit_event_dedupes_assistant_text_within_turn() -> None:
     assert _should_emit_event({"type": "tool_use", "name": "update_plan"}, seen, seen_result) is True
 
 
-def test_should_emit_event_dedupes_result_within_turn() -> None:
+def test_should_emit_event_preserves_later_result_diagnostics() -> None:
     seen: set[str] = set()
     seen_result = {"emitted": False}
 
     assert _should_emit_event({"type": "result", "subtype": "success"}, seen, seen_result) is True
-    assert _should_emit_event({"type": "result", "subtype": "success"}, seen, seen_result) is False
+    assert _should_emit_event({"type": "result", "subtype": "success"}, seen, seen_result) is True
 
 
 @pytest.mark.asyncio
@@ -736,7 +883,8 @@ async def test_codex_runtime_reads_jsonl_from_subprocess(tmp_path: Path, monkeyp
                 "estimated_cost_model": None,
                 "is_error": False,
                 "session_id": "session-1",
-                "usage": None,
+                    "usage": None,
+                    "terminal": True,
         },
     ]
 

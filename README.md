@@ -46,6 +46,78 @@ services:
 
 `docker-compose.local.yml` is git-ignored so each developer keeps their own.
 
+### Host Codex login and corporate certificate trust
+
+The default Compose file uses independent named volumes for credentials; it
+does **not** inherit the host's Codex login or macOS Keychain certificate trust.
+To import a host login and trust your organization's HTTPS inspection CA, add
+the following to `docker-compose.local.yml`:
+
+```yaml
+services:
+  agent-manager:
+    environment:
+      AGENT_MANAGER_CODEX_AUTH_SOURCE: /mnt/host-codex-auth.json
+      AGENT_MANAGER_EXTRA_CA_CERTS: /mnt/host-ca.pem
+    volumes:
+      - type: bind
+        source: ${HOME}/.codex/auth.json
+        target: /mnt/host-codex-auth.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./certs.local/host-ca.pem
+        target: /mnt/host-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+```
+
+Export the approved corporate CA certificates from your host trust store as PEM
+into `certs.local/host-ca.pem` (excluded from Git and image build contexts).
+Use CA certificates from your administrator or trusted host store, not an
+unverified certificate downloaded from the failing connection. Omit the CA
+mount and environment setting when no additional CA is needed. The entrypoint
+combines these certificates with the system bundle and configures Python,
+curl, Node/Claude, and Codex to use it with certificate verification enabled.
+
+The entrypoint copies host Codex credentials into the existing `codex-auth`
+volume, with mode `0600`, on the first import and whenever the host file changes
+at startup. Container token refreshes are preserved when the host source is
+unchanged; nothing is written back to the host. This is a startup import, not
+live credential synchronization. After signing in again on the host or changing
+the CA bundle, recreate the service to refresh the file mounts:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --force-recreate
+```
+
+Codex must use file credential storage inside the container (the default).
+If the host login exists only in Keychain, create a file-backed login with
+`codex -c 'cli_auth_credentials_store="file"' login` before enabling the mount.
+See [OpenAI Docs: authentication](https://developers.openai.com/codex/auth/).
+Host and container token refreshes are independent; if a provider invalidates
+a shared refresh token, sign in again and recreate the container, or use a
+separate container login instead.
+
+After building the updated image, verify with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml exec agent-manager codex login status
+docker compose -f docker-compose.yml -f docker-compose.local.yml exec agent-manager claude auth status
+```
+
+The CA environment is set by the entrypoint for the server and its children.
+For a diagnostic CLI launched with `docker exec`, invoke the entrypoint too:
+
+```bash
+docker exec agent-manager python /usr/local/bin/agent-manager-entrypoint.py curl -I https://api.anthropic.com
+```
+
+An HTTP error such as 401 or 404 still demonstrates a verified TLS connection;
+it does not by itself verify provider credentials.
+
 ## Local image customization
 
 For dependencies that should exist in your own Agent Manager image but not be

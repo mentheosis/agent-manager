@@ -56,8 +56,6 @@ type Loop struct {
 	// logFunc is called for each log line. Defaults to fmt.Println.
 	logFunc func(string)
 
-	// pauseCh is used to signal pause/resume.
-	pauseCh chan struct{}
 	// restartCh is used to signal a restart from idle/done state.
 	restartCh chan string // carries optional new task prompt
 	// doneCh receives a summary when the leader calls mark_task_done via MCP.
@@ -76,7 +74,6 @@ func NewLoop(cfg Config, groupTitle string) *Loop {
 		groupTitle: groupTitle,
 		watcher:    NewStatusWatcher(client, groupTitle, cfg.PollInterval, logFunc),
 		logFunc:    logFunc,
-		pauseCh:    make(chan struct{}, 1),
 		restartCh:  make(chan string, 1),
 		state:      LoopStateIdle,
 	}
@@ -123,10 +120,6 @@ func (l *Loop) Resume() {
 	switch state {
 	case LoopStatePaused:
 		l.setState(LoopStateRunning)
-		select {
-		case l.pauseCh <- struct{}{}:
-		default:
-		}
 		l.log("Loop resumed from paused")
 	case LoopStateDone, LoopStateIdle:
 		l.log("Loop resumed from %s", state)
@@ -154,6 +147,8 @@ func (l *Loop) log(format string, args ...interface{}) {
 // Run starts the control loop. It blocks until the context is cancelled.
 func (l *Loop) Run(ctx context.Context, initialPrompt string) error {
 	l.log("Control loop starting")
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	// Start the status watcher in the background
 	go l.watcher.Run(ctx)
@@ -233,10 +228,13 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 	// Channel for signaling all agents are idle
 	allIdleCh := make(chan struct{}, 1)
 	stopHeartbeat := make(chan struct{})
-	defer close(stopHeartbeat)
+	var background sync.WaitGroup
+	defer func() { close(stopHeartbeat); background.Wait() }()
 
 	// Heartbeat goroutine
+	background.Add(1)
 	go func() {
+		defer background.Done()
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		consecutiveIdleCount := 0
@@ -253,7 +251,7 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 					allIdle := true
 					for _, t := range l.agentTitles {
 						s := l.watcher.GetStatus(t)
-						if s != "ready" && s != "" {
+						if s != "ready" {
 							allIdle = false
 							break
 						}
@@ -261,7 +259,7 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 					// Check leader too
 					if allIdle && l.leaderTitle != "" {
 						ls := l.watcher.GetStatus(l.leaderTitle)
-						if ls != "ready" && ls != "" {
+						if ls != "ready" {
 							allIdle = false
 						}
 					}
@@ -282,7 +280,9 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 	}()
 
 	// Error check goroutine - periodically check for permission errors
+	background.Add(1)
 	go func() {
+		defer background.Done()
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -318,16 +318,6 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 			return true, nil
 
 		case change := <-changes:
-			// Handle pause
-			if l.State() == LoopStatePaused {
-				l.log("Paused — waiting for resume...")
-				select {
-				case <-ctx.Done():
-					return false, ctx.Err()
-				case <-l.pauseCh:
-					// Resumed
-				}
-			}
 
 			// Only track agents in our group
 			isAgent := false
@@ -347,6 +337,9 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 			}
 
 		case <-allIdleCh:
+			if l.State() != LoopStateRunning {
+				continue
+			}
 			// All agents AND leader are idle — nudge the leader
 			leaderStatus := l.watcher.GetStatus(l.leaderTitle)
 			if leaderStatus != "ready" {
@@ -372,6 +365,9 @@ func (l *Loop) runLoop(ctx context.Context) (bool, error) {
 
 // notifyLeaderOfErrors sends error information to the leader.
 func (l *Loop) notifyLeaderOfErrors(ctx context.Context, errored []AgentStatus) {
+	if l.State() != LoopStateRunning {
+		return
+	}
 	leaderStatus := l.watcher.GetStatus(l.leaderTitle)
 	if leaderStatus != "ready" {
 		return
@@ -420,6 +416,9 @@ func (l *Loop) discoverAgents() error {
 	l.leaderTitle = ""
 	for _, inst := range children {
 		if inst.AgentPreset == "orchestrator" {
+			if l.leaderTitle != "" {
+				return fmt.Errorf("multiple team leaders found")
+			}
 			l.leaderTitle = inst.Title
 		} else {
 			l.agentTitles = append(l.agentTitles, inst.Title)
@@ -453,7 +452,7 @@ func (l *Loop) buildTeamDescription() string {
 		b.WriteString(fmt.Sprintf("- **%s** (%s): working in `%s`\n", inst.Title, preset, inst.Path))
 	}
 
-	b.WriteString("\nUse your MCP tools to coordinate them.\n")
+	b.WriteString("\n" + orchestratorRules + "\nUse your MCP tools to coordinate them.\n")
 	return b.String()
 }
 

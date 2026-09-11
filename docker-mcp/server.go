@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // HTTPServer wraps the MCPServer with a streamable-HTTP transport and
@@ -29,7 +30,7 @@ func (h *HTTPServer) ListenAndServe(addr string) error {
 	mux.HandleFunc("/healthz", h.handleHealth)
 	mux.HandleFunc("/", h.requireAuth(h.handleRPC))
 	h.mcp.log("HTTP listening on %s (auth: bearer token)", addr)
-	return http.ListenAndServe(addr, mux)
+	return (&http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}).ListenAndServe()
 }
 
 func (h *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +69,7 @@ func (h *HTTPServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 128*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)

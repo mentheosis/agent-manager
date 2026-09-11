@@ -54,7 +54,19 @@ type Config struct {
 // Profile is a single named, fully-fixed command the MCP server will run on
 // behalf of a client. The argv is taken literally — no shell interpolation,
 // no client-supplied arguments.
+type AthenaConfig struct {
+	AWSProfile     string   `json:"aws_profile"`
+	Region         string   `json:"region"`
+	Catalog        string   `json:"catalog"`
+	Database       string   `json:"database"`
+	Workgroup      string   `json:"workgroup"`
+	OutputLocation string   `json:"output_location"`
+	AllowedTables  []string `json:"allowed_tables"`
+}
+
 type Profile struct {
+	Athena *AthenaConfig `json:"athena,omitempty"`
+
 	// Name is the identifier the MCP client uses to invoke this profile.
 	// Must be unique within the config. Use kebab-case (e.g. "build-dev").
 	Name string `json:"name"`
@@ -173,6 +185,21 @@ func (c *Config) validate() error {
 			return fmt.Errorf("profile %q: cwd %q is not a directory", p.Name, p.Cwd)
 		}
 
+		if p.Athena != nil {
+			a := p.Athena
+			if len(p.Argv) != 2 || !filepath.IsAbs(p.Argv[0]) || !filepath.IsAbs(p.Argv[1]) || p.Script != "" || p.Command != "" {
+				return fmt.Errorf("Athena profile %q requires absolute Python and helper paths in argv", p.Name)
+			}
+			if a.AWSProfile == "" || a.Region == "" || a.Catalog == "" || a.Database == "" || a.Workgroup == "" || len(a.AllowedTables) == 0 {
+				return fmt.Errorf("Athena profile %q missing connection settings or allowed_tables", p.Name)
+			}
+			if p.TimeoutSeconds == 0 {
+				p.TimeoutSeconds = 330
+			}
+			if p.TimeoutSeconds < 30 || p.TimeoutSeconds > 600 {
+				return fmt.Errorf("Athena timeout must be 30..600 seconds")
+			}
+		}
 		// Exactly one of argv, script, or command must be set
 		hasArgv := len(p.Argv) > 0
 		hasScript := p.Script != ""

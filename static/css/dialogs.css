@@ -301,6 +301,12 @@ dialog #create-btn:hover { opacity: 0.85; }
     resize: vertical;
 }
 
+#team-yaml {
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+}
+
 .yaml-input:focus {
     outline: none;
     border-color: var(--accent);

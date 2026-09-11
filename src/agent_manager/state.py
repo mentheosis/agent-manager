@@ -98,25 +98,74 @@ class Registry:
             self._wire_hooks(inst)
             async with self._lock:
                 self._instances[rec.title] = inst
+        await self._backfill_team_history()
         # Start tasks outside the lock to avoid contention.
         for inst in list(self._instances.values()):
             await inst.start()
         log.info("loaded %d instance(s) from disk", len(self._instances))
 
     def _wire_hooks(self, inst: Instance) -> None:
-        if self.persistence is None:
-            return
         title = inst.title
 
         async def on_event(event: Event) -> None:
             self._handle_auth_signal(inst, event)
-            await self.persistence.append_event(title, event)
+            if self.persistence is not None:
+                await self.persistence.append_event(title, event)
+            await self._forward_team_event(inst, event)
 
         async def on_state_change() -> None:
             await self._save_records()
 
         inst._on_event = on_event
         inst._on_state_change = on_state_change
+
+    async def _backfill_team_history(self) -> None:
+        # Older parents only stored a provider conversation. Seed their activity
+        # once from retained child histories, then use live forwarding thereafter.
+        for parent in list(self._instances.values()):
+            if parent.kind != "loop" or any(e.get("type") == "team_event" for e in parent.history()):
+                continue
+            events = [
+                (inst, event)
+                for inst in self._instances.values() if inst.parent == parent.title
+                for event in inst.history()
+            ]
+            events.sort(key=lambda pair: pair[1].get("ts") or "")
+            for inst, event in events:
+                await self._forward_team_event(inst, event)
+
+    async def _forward_team_event(self, inst: Instance, event: Event) -> None:
+        parent = self.get(inst.parent) if inst.parent else None
+        if not parent or parent.kind != "loop" or inst.kind == "loop":
+            return
+        event_type = event.get("type")
+        target = None
+        if event_type in ("assistant_text", "user_prompt"):
+            text = event.get("text", "")
+        elif event_type == "status":
+            text = event.get("status", "")
+        elif event_type == "result":
+            if event.get("terminal") is False:
+                return
+            text = "Turn failed" if event.get("is_error") else "Turn completed"
+        elif event_type == "error":
+            text = event.get("message", "Error")
+        elif event_type == "tool_use" and "__team__" in event.get("name", ""):
+            args = event.get("input") or {}
+            target = args.get("agent")
+            text = event["name"].split("__")[-1]
+            detail = args.get("prompt") or args.get("summary")
+            if detail:
+                text += ": " + str(detail)
+        else:
+            return
+        if not text:
+            return
+        await parent._publish({
+            "type": "team_event", "actor": inst.title, "target": target,
+            "event_type": event_type, "text": str(text),
+            "source_seq": event.get("seq"), "ts": event.get("ts"),
+        })
 
     def _handle_auth_signal(self, inst: Instance, event: Event) -> None:
         """Update the provider's AuthRegistry based on a turn's outcome.
@@ -392,6 +441,7 @@ class Registry:
             inst = self._instances.get(title)
             if inst is None:
                 return None
+            previous_kind = inst.kind
             if kind is not None:
                 inst.kind = _normalize_kind(kind)
             if provider is not None:
@@ -413,6 +463,8 @@ class Registry:
                 if agent_preset not in ("coder", "researcher", "orchestrator", ""):
                     raise ValueError("agent_preset must be 'coder', 'researcher', 'orchestrator', or empty")
                 inst.agent_preset = agent_preset if agent_preset else None
+        if inst.kind != previous_kind:
+            await inst.reload_options()
         await self._save_records()
         return inst
 

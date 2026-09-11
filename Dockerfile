@@ -76,6 +76,7 @@ COPY --chown=agent:agent src/ ./src/
 RUN pip install --no-cache-dir --no-deps .
 
 FROM python-app AS python-test
+COPY scripts/container-entrypoint.py ./scripts/container-entrypoint.py
 COPY --chown=agent:agent tests/ ./tests/
 COPY --chown=agent:agent static/ ./static/
 RUN pip install --no-cache-dir -e ".[dev]"
@@ -97,6 +98,8 @@ COPY --chown=agent:agent static/ ./static/
 # --- Orchestrator binary (from Go build stage) -----------------------------
 COPY --from=go-build /build/am-orchestrator /usr/local/bin/
 
+COPY scripts/container-entrypoint.py /usr/local/bin/agent-manager-entrypoint.py
+
 # --- Switch to non-root user ----------------------------------------------
 USER agent
 WORKDIR /app
@@ -105,4 +108,5 @@ EXPOSE 8787
 ENV AGENT_MANAGER_HOST=0.0.0.0 \
     PYTHONUNBUFFERED=1
 
+ENTRYPOINT ["python", "/usr/local/bin/agent-manager-entrypoint.py"]
 CMD ["agent-manager"]

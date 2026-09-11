@@ -11,6 +11,7 @@ class AmTeamPanel extends HTMLElement {
         super();
         this._instance = null;
         this._children = [];
+        this._controller = { running: false, state: "stopped" };
         this._pollInterval = null;
         this._streamUnsubscribers = [];
     }
@@ -30,6 +31,11 @@ class AmTeamPanel extends HTMLElement {
 
     set instance(inst) {
         this.cleanup();
+        if (this._instance?.title !== inst?.title) {
+            this._controller = {running: false, state: 'stopped'};
+            this._children = [];
+            this.innerHTML = '';
+        }
         this._instance = inst;
 
         if (inst && inst.instance_type === 'loop') {
@@ -62,10 +68,14 @@ class AmTeamPanel extends HTMLElement {
     async loadChildren() {
         if (!this._instance) return;
 
+        const title = this._instance.title;
         try {
-            const resp = await fetch(`/api/instances/${encodeURIComponent(this._instance.title)}/children`);
+            const resp = await fetch(`/api/instances/${encodeURIComponent(title)}/children`);
+            if (this._instance?.title !== title) return;
             if (resp.ok) {
                 this._children = await resp.json();
+                const status = await fetch(`/api/instances/${encodeURIComponent(this._instance.title)}/orchestrator/status`);
+                if (status.ok) this._controller = await status.json();
                 this.render();
                 this.subscribeToStreams();
             }
@@ -119,7 +129,9 @@ class AmTeamPanel extends HTMLElement {
             return;
         }
 
-        const task = this._instance.task || '';
+        const task = this.querySelector('#task-input')?.value ?? this._instance.task ?? '';
+        const state = this._controller.state || 'stopped';
+        const active = this._controller.running;
         const childrenHtml = this._children.map(child => this.renderMemberCard(child)).join('');
 
         this.innerHTML = `
@@ -145,9 +157,12 @@ class AmTeamPanel extends HTMLElement {
             <div class="team-section">
                 <label class="section-label">Orchestration</label>
                 <div class="orchestration-controls">
-                    <button id="btn-start" class="btn-primary" type="button">Start</button>
-                    <button id="btn-pause" class="btn-secondary" type="button">Pause</button>
+                    <span>Controller: ${this.escapeHtml(state)}</span>
+                    <button id="btn-start" class="btn-primary" type="button" ${active && state !== 'done' ? 'disabled' : ''}>${active && state === 'done' ? 'Restart' : 'Start'}</button>
+                    <button id="btn-pause" class="btn-secondary" type="button" ${!active || !['running', 'paused'].includes(state) ? 'disabled' : ''}>${state === 'paused' ? 'Resume' : 'Pause'}</button>
+                    <button id="btn-stop" class="btn-secondary" type="button" ${!active ? 'disabled' : ''}>Stop</button>
                 </div>
+                <p class="control-description">Pause suspends automatic leader updates. Stop ends the controller. Agents already working continue until their turn finishes.</p>
             </div>
         `;
 
@@ -177,6 +192,7 @@ class AmTeamPanel extends HTMLElement {
     }
 
     setupEventListeners() {
+        this.querySelector('#btn-stop')?.addEventListener('click', () => this.controlOrchestration('stop'));
         // Save task
         const saveTaskBtn = this.querySelector('#btn-save-task');
         if (saveTaskBtn) {
@@ -307,7 +323,8 @@ class AmTeamPanel extends HTMLElement {
         btn.textContent = 'Starting...';
 
         try {
-            const resp = await fetch(`/api/instances/${encodeURIComponent(this._instance.title)}/orchestrator/start`, {
+            const action = this._controller.running ? 'restart' : 'start';
+            const resp = await fetch(`/api/instances/${encodeURIComponent(this._instance.title)}/orchestrator/${action}`, {
                 method: 'POST',
             });
             if (!resp.ok) {
@@ -316,7 +333,7 @@ class AmTeamPanel extends HTMLElement {
             }
             const data = await resp.json();
             console.log('Orchestrator started:', data);
-            btn.textContent = 'Running';
+            await this.loadChildren();
         } catch (e) {
             alert(`Failed to start orchestrator: ${e.message}`);
             btn.textContent = originalText;
@@ -326,26 +343,20 @@ class AmTeamPanel extends HTMLElement {
     }
 
     async pauseOrchestration() {
+        await this.controlOrchestration(this._controller.state === 'paused' ? 'resume' : 'pause');
+    }
+
+    async controlOrchestration(action) {
         if (!this._instance) return;
-
-        const btn = this.querySelector('#btn-pause');
-        btn.disabled = true;
-
         try {
-            const resp = await fetch(`/api/instances/${encodeURIComponent(this._instance.title)}/orchestrator/stop`, {
-                method: 'POST',
-            });
+            const resp = await fetch(`/api/instances/${encodeURIComponent(this._instance.title)}/orchestrator/${action}`, {method: 'POST'});
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({}));
                 throw new Error(err.detail || `HTTP ${resp.status}`);
             }
-            console.log('Orchestrator stopped');
-            const startBtn = this.querySelector('#btn-start');
-            if (startBtn) startBtn.textContent = 'Start';
+            await this.loadChildren();
         } catch (e) {
-            alert(`Failed to stop orchestrator: ${e.message}`);
-        } finally {
-            btn.disabled = false;
+            alert(`Failed to ${action} orchestrator: ${e.message}`);
         }
     }
 

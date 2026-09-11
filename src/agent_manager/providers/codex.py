@@ -79,9 +79,20 @@ class CodexRuntime(BaseRuntime):
 
     async def _run_query(self, message: AgentInput) -> None:
         """Drive one turn's event generator, pushing each event to the shared queue."""
+        result: AgentEvent | None = None
         try:
             async for event in self._produce_events(message):
-                await self._emit_event(event)
+                # stdout can finish before the transcript tail delivers tool
+                # outputs. Publish completion only after both have drained.
+                if event.get("type") == "result":
+                    if result is None:
+                        result = dict(event)
+                    else:
+                        result.update({k: v for k, v in event.items() if v is not None})
+                else:
+                    await self._emit_event(event)
+            if result is not None:
+                await self._emit_event({**result, "terminal": True})
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -95,6 +106,7 @@ class CodexRuntime(BaseRuntime):
                 "subtype": "error",
                 "is_error": True,
                 "session_id": self._session_id,
+                "terminal": True,
             })
 
     async def _produce_events(self, message: AgentInput) -> AsyncIterator[AgentEvent]:
@@ -120,6 +132,14 @@ class CodexRuntime(BaseRuntime):
             diagnostics: dict[str, Any] = self._latest_transcript_diagnostics() or {}
             log.info("instance %s: starting Codex command: %s", self.config.title, cmd[:4])
 
+            # Snapshot before launching: a fast resumed turn may write records
+            # before subprocess creation returns. Fresh sessions start at zero.
+            transcript_path = self._codex_session_path()
+            try:
+                transcript_offset = transcript_path.stat().st_size if transcript_path else 0
+            except OSError:
+                transcript_offset = 0
+
             try:
                 self._proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -139,16 +159,18 @@ class CodexRuntime(BaseRuntime):
 
             stderr_task = asyncio.create_task(self._read_stderr(stderr_chunks))
             transcript_queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
-            transcript_task = self._start_transcript_tail(transcript_queue, system_context, diagnostics)
+            transcript_task = self._start_transcript_tail(transcript_queue, system_context, diagnostics, transcript_offset)
             seen_assistant_texts: set[str] = set()
             seen_result = {"emitted": False}
             saw_result = False
+            stdout_task: asyncio.Task[bytes] | None = None
+            transcript_get: asyncio.Task[AgentEvent] | None = None
             try:
                 assert self._proc.stdout is not None
-                stdout_task: asyncio.Task[bytes] | None = asyncio.create_task(self._proc.stdout.readline())
+                stdout_task = asyncio.create_task(self._proc.stdout.readline())
                 while stdout_task is not None:
                     wait_tasks: set[asyncio.Task[Any]] = {stdout_task}
-                    transcript_get: asyncio.Task[AgentEvent] | None = None
+                    transcript_get = None
                     if transcript_task is not None:
                         transcript_get = asyncio.create_task(transcript_queue.get())
                         wait_tasks.add(transcript_get)
@@ -161,9 +183,6 @@ class CodexRuntime(BaseRuntime):
                             saw_result = True
                         if _should_emit_event(event, seen_assistant_texts, seen_result):
                             yield event
-                        if _is_terminal_result(event):
-                            await self._terminate()
-                            return
                         continue
                     if transcript_get is not None:
                         transcript_get.cancel()
@@ -200,6 +219,7 @@ class CodexRuntime(BaseRuntime):
                                 transcript_queue,
                                 system_context,
                                 diagnostics,
+                                transcript_offset,
                             )
                         self._record_event_diagnostics(event, diagnostics)
                         if event.get("type") == "result":
@@ -230,9 +250,6 @@ class CodexRuntime(BaseRuntime):
                         saw_result = True
                     if _should_emit_event(event, seen_assistant_texts, seen_result):
                         yield event
-                    if _is_terminal_result(event):
-                        await self._terminate()
-                        return
 
                 returncode = await self._proc.wait()
                 if transcript_task is not None and not transcript_task.done():
@@ -251,9 +268,6 @@ class CodexRuntime(BaseRuntime):
                         saw_result = True
                     if _should_emit_event(event, seen_assistant_texts, seen_result):
                         yield event
-                    if _is_terminal_result(event):
-                        await self._terminate()
-                        return
                 await stderr_task
                 if returncode != 0:
                     stderr = "".join(stderr_chunks).strip()
@@ -300,6 +314,14 @@ class CodexRuntime(BaseRuntime):
                     **_result_diagnostics(diagnostics, error_message=_stream_limit_message("stdout", e)),
                 }
             finally:
+                await self._terminate()
+                # A cancelled/error turn must not leave pending queue readers
+                # or stdout reads consuming events after its driver is gone.
+                for task in (stdout_task, transcript_get):
+                    if task is not None:
+                        if not task.done():
+                            task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
                 if transcript_task is not None:
                     transcript_task.cancel()
                     try:
@@ -337,6 +359,7 @@ class CodexRuntime(BaseRuntime):
 
         if self._session_id:
             cmd = ["codex", "exec", "resume", "--json", "--skip-git-repo-check"]
+            cmd.extend(self._team_mcp_args())
             if dev_instructions:
                 cmd.extend(["-c", dev_instructions])
             if self._bypass_sandbox():
@@ -357,6 +380,7 @@ class CodexRuntime(BaseRuntime):
             "--cd",
             self.config.cwd,
         ]
+        cmd.extend(self._team_mcp_args())
         if dev_instructions:
             cmd.extend(["-c", dev_instructions])
         if self._bypass_sandbox():
@@ -374,6 +398,14 @@ class CodexRuntime(BaseRuntime):
             cmd.append("--")
         cmd.append(prompt)
         return cmd
+
+    def _team_mcp_args(self) -> list[str]:
+        if not self.config.team_mcp:
+            return []
+        return [
+            "-c", "mcp_servers.team.command=" + json.dumps(self.config.team_mcp["command"]),
+            "-c", "mcp_servers.team.args=" + json.dumps(self.config.team_mcp["args"]),
+        ]
 
     def _developer_instructions(self) -> str | None:
         """Build the TOML config override for codex's developer_instructions.
@@ -548,13 +580,10 @@ class CodexRuntime(BaseRuntime):
         queue: asyncio.Queue[AgentEvent],
         system_context: dict[str, Any],
         diagnostics: dict[str, Any],
+        offset: int = 0,
     ) -> asyncio.Task[None] | None:
         path = self._codex_session_path()
         if path is None:
-            return None
-        try:
-            offset = path.stat().st_size
-        except OSError:
             return None
         return asyncio.create_task(
             self._tail_codex_session_transcript(path, offset, queue, system_context, diagnostics),
@@ -612,16 +641,21 @@ class CodexRuntime(BaseRuntime):
             try:
                 size = path.stat().st_size
                 if size > offset:
-                    with path.open("r", encoding="utf-8", errors="replace") as f:
+                    with path.open("rb") as f:
                         f.seek(offset)
                         chunk = f.read()
-                        offset = f.tell()
-                    for line in chunk.splitlines():
+                    # Retain incomplete records, including split UTF-8 bytes,
+                    # for the next poll instead of silently dropping them.
+                    complete_end = chunk.rfind(b"\n") + 1
+                    offset += complete_end
+                    for line in chunk[:complete_end].splitlines():
                         if not line.strip():
                             continue
                         try:
                             raw = json.loads(line)
                         except json.JSONDecodeError:
+                            continue
+                        if not isinstance(raw, dict):
                             continue
                         _update_diagnostics_from_transcript_raw(raw, diagnostics)
                         for event in translate_codex_transcript_event(raw, system_context=system_context):
@@ -777,8 +811,8 @@ def _should_emit_event(
     seen_result: dict[str, bool],
 ) -> bool:
     if event.get("type") == "result":
-        if seen_result.get("emitted"):
-            return False
+        # The query driver publishes one definitive result after process exit.
+        # Keep later usage/error records while background continuations drain.
         seen_result["emitted"] = True
         return True
 
