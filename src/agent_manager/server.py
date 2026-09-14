@@ -31,7 +31,7 @@ from .instance import Instance
 from .orchestrator import get_manager as get_orchestrator_manager
 from .persistence import Persistence
 from .providers.capabilities import list_provider_capabilities, provider_capabilities
-from .providers.codex_metadata import fetch_codex_models
+from .providers.codex_metadata import fetch_codex_models, fetch_codex_reasoning_options
 from .state import Registry, _UNSET
 
 log = logging.getLogger(__name__)
@@ -252,6 +252,7 @@ class FileWriteBody(BaseModel):
 
 
 class PermissionsBody(BaseModel):
+    reasoning_effort: str | None = None
     permission_mode: str | None = None
     model: str | None = None
     add_dirs: list[str] | None = None
@@ -296,6 +297,7 @@ def _summary(inst: Instance) -> dict[str, Any]:
         "queue_attempt": inst.queue_attempt,
         "permission_mode": inst.permission_mode,
         "model": inst.model or None,
+        "reasoning_effort": inst.reasoning_effort,
         "status": inst.status,
         "created_at": inst.created_at,
         "add_dirs": list(inst.add_dirs or []),
@@ -644,6 +646,10 @@ def build_app() -> FastAPI:
     async def list_provider_models(provider: str, refresh: bool = False) -> list[str]:
         return await _fetch_provider_models(provider, force_refresh=refresh)
 
+    @app.get("/api/providers/{provider}/reasoning-options")
+    async def reasoning_options(provider: str, refresh: bool = False) -> dict[str, Any]:
+        return await fetch_codex_reasoning_options(refresh) if provider == "codex" else {}
+
     @app.get("/api/models")
     async def list_models(provider: str = "claude", refresh: bool = False) -> list[str]:
         return await _fetch_provider_models(provider, force_refresh=refresh)
@@ -793,8 +799,20 @@ def build_app() -> FastAPI:
         existing = registry.get(title)
         if existing and (existing.queue_attempt or existing.controller_mode == "task_queue"):
             raise HTTPException(409, "Queue execution settings come from its deployment profile")
+        effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else (existing.reasoning_effort if existing else None)
+        model = body.model if "model" in body.model_fields_set else (existing.model if existing else None)
+        if effort:
+            if not existing or existing.provider != "codex":
+                raise HTTPException(422, "Reasoning effort is supported only for Codex")
+            options = await fetch_codex_reasoning_options()
+            supported = options.get(model, {}).get("levels", [])
+            if effort not in [level["effort"] for level in supported]:
+                raise HTTPException(422, "Select a supported reasoning effort for this model, or Default")
+        defer_runtime = bool(existing and existing.provider == "codex" and body.model_fields_set <= {"model", "reasoning_effort"})
         inst = await registry.update_permissions(
             title,
+            defer_runtime=defer_runtime,
+            reasoning_effort=body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET,
             permission_mode=body.permission_mode,
             model=body.model if "model" in body.model_fields_set else _UNSET,
             add_dirs=body.add_dirs,

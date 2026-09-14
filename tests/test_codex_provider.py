@@ -864,6 +864,7 @@ async def test_codex_runtime_reads_jsonl_from_subprocess(tmp_path: Path, monkeyp
                 "sandbox": "workspace-write",
                 "resume": False,
                 "command": "codex exec",
+                "reasoning_effort": "default",
                 "configured_model": "gpt-default",
                 "active_model_label": "gpt-default",
                 "auth_mode": "chatgpt",

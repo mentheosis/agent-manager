@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import datetime as dt
+from dataclasses import replace
 import os
 import json
 import logging
@@ -44,6 +45,10 @@ class CodexRuntime(BaseRuntime):
         # to the shared queue. Codex spawns a fresh subprocess per turn, so this
         # is not "persistent" like Claude's pump — it's the current turn's driver.
         self._query_task: asyncio.Task[None] | None = None
+
+    def set_model_options(self, model: str | None, reasoning_effort: str | None) -> None:
+        """Called between turns, leaving any active invocation unchanged."""
+        self.config = replace(self.config, model=model, reasoning_effort=reasoning_effort)
 
     async def start(self) -> None:
         if shutil.which("codex") is None:
@@ -358,6 +363,8 @@ class CodexRuntime(BaseRuntime):
         # Build the developer_instructions config override once; same value for
         # fresh + resume so the model sees a stable system block (better caching).
         dev_instructions = self._developer_instructions()
+        effort_args = (["-c", f'model_reasoning_effort={json.dumps(self.config.reasoning_effort)}']
+                       if self.config.reasoning_effort else [])
 
         if self._session_id:
             cmd = ["codex", "exec", "resume", "--json", "--skip-git-repo-check"]
@@ -373,7 +380,7 @@ class CodexRuntime(BaseRuntime):
             if image_paths:
                 cmd.append("--")
             cmd.extend([self._session_id, prompt])
-            return cmd
+            return cmd[:4] + effort_args + cmd[4:]
 
         cmd = [
             "codex",
@@ -399,7 +406,7 @@ class CodexRuntime(BaseRuntime):
         if image_paths:
             cmd.append("--")
         cmd.append(prompt)
-        return cmd
+        return cmd[:2] + effort_args + cmd[2:]
 
     def _team_mcp_args(self) -> list[str]:
         servers = dict(self.config.mcp_servers)
@@ -477,6 +484,7 @@ class CodexRuntime(BaseRuntime):
             "resume": bool(self._session_id),
             "command": "codex exec resume" if self._session_id else "codex exec",
         }
+        context["reasoning_effort"] = self.config.reasoning_effort or "default"
         if self.config.add_dirs:
             context["add_dirs"] = list(self.config.add_dirs)
         if self.config.model:

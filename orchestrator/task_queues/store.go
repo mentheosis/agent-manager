@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/go-sql-driver/mysql"
 	"regexp"
 	"strings"
 	"time"
@@ -84,9 +83,9 @@ func ID() string {
 	return hex.EncodeToString(b[:])
 }
 func Open(c Config) (*Store, error) {
-	cfg, e := mysql.ParseDSN(c.DSN)
+	cfg, e := parseDatabaseDSN(c.DSN)
 	if e != nil {
-		return nil, errors.New("invalid database DSN")
+		return nil, e
 	}
 	cfg.Timeout = 5 * time.Second
 	cfg.ReadTimeout = 30 * time.Second
@@ -405,7 +404,7 @@ func (s *Store) Finish(ctx context.Context, a Attempt, outcome, reason string) e
 	})
 }
 func (s *Store) Tasks(ctx context.Context, offset int) ([]Task, error) {
-	rows, e := s.DB.QueryContext(ctx, "SELECT id FROM am_tasks WHERE queue_id=? ORDER BY id DESC LIMIT 100 OFFSET ?", s.Config.QueueID, offset)
+	rows, e := s.DB.QueryContext(ctx, "SELECT id FROM am_tasks WHERE queue_id=? ORDER BY task_order,id LIMIT 100 OFFSET ?", s.Config.QueueID, offset)
 	if e != nil {
 		return nil, e
 	}

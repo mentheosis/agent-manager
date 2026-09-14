@@ -185,6 +185,36 @@ func QueueCommand(ctx context.Context, c Config, action string, input io.Reader,
 	if len(raw) > 1<<20 {
 		return errors.New("batch exceeds 1 MiB")
 	}
+	if action == "tasks" || action == "logs" {
+		var request struct {
+			Offset int   `json:"offset"`
+			After  int64 `json:"after"`
+		}
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return err
+		}
+		if request.Offset < 0 || request.After < 0 {
+			return errors.New("invalid read cursor")
+		}
+		store, err := Open(c)
+		if err != nil {
+			return err
+		}
+		defer store.DB.Close()
+		if err := store.Check(ctx); err != nil {
+			return err
+		}
+		var result any
+		if action == "tasks" {
+			result, err = store.Tasks(ctx, request.Offset)
+		} else {
+			result, err = store.Logs(ctx, request.After)
+		}
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(result)
+	}
 	var batch Batch
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
@@ -197,7 +227,7 @@ func QueueCommand(ctx context.Context, c Config, action string, input io.Reader,
 	if action == "render" {
 		result, err := RenderBatch(c, batch)
 		if err != nil {
-			return err
+			return json.NewEncoder(output).Encode(map[string]any{"tasks": result.Tasks, "error": err.Error()})
 		}
 		return json.NewEncoder(output).Encode(result)
 	}

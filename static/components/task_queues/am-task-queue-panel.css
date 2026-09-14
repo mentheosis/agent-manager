@@ -19,3 +19,46 @@ am-task-queue-create { font-size:var(--fs-md); }
 .controller-activity .loop-completed,.controller-activity .loop-approve { --event-color:var(--green); }
 .controller-activity .loop-progress,.controller-activity .loop-started { --event-color:var(--accent); }
 .controller-activity .loop-submitted,.controller-activity .loop-awaiting_review { --event-color:var(--purple); }
+.queue-heading nav { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.queue-heading [role=tablist] { display:flex; border-bottom:1px solid var(--border); }
+am-task-queue-tasks [role=tab] { background:transparent; border:0; border-bottom:2px solid transparent; border-radius:0; margin:0; padding:10px 16px; }
+am-task-queue-tasks [role=tab][aria-selected=true] { border-bottom-color:var(--accent); color:var(--accent); }
+.queue-table { width:100%; border-collapse:collapse; font-size:var(--fs-sm); }
+.queue-table th,.queue-table td { text-align:left; vertical-align:top; padding:10px; border-bottom:1px solid var(--border); }
+.queue-task-list .queue-table details { border:0; margin:0; padding:0; }
+.queue-table pre { max-width:600px; }
+am-task-queue-loader .preview-tasks { width:100%; padding:8px; background:var(--bg); color:var(--text); border:1px solid var(--border); }
+/* Keep the drag target outside the scrolling content. */
+am-task-queue-panel { position:relative; box-sizing:border-box; width:312px; min-width:260px; flex-shrink:0; padding:0; overflow:visible; }
+am-task-queue-panel.visible { display:flex; }
+.queue-panel-content { width:100%; min-width:0; overflow-y:auto; padding:16px; box-sizing:border-box; }
+.queue-panel-content section + section { margin-top:20px; padding-top:16px; border-top:1px solid var(--border); }
+.queue-panel-content h3 { margin:0 0 10px; font-size:var(--fs-md); font-weight:600; }
+.queue-controller-section .queue-state { font-weight:600; margin:0 0 12px; overflow-wrap:anywhere; }
+.queue-panel-content .queue-controls { gap:6px; }
+.queue-panel-content button { margin:0; }
+.queue-controller-section [data-action=start] { border-color:var(--accent); color:var(--accent); }
+.queue-panel-content .queue-help,.queue-panel-content .attempt-effective,.queue-panel-content .queue-effective { color:var(--text-muted); font-size:var(--fs-sm); line-height:1.5; }
+.queue-resize-handle { position:absolute; top:0; bottom:0; left:-4px; width:8px; cursor:col-resize; touch-action:none; z-index:5; }
+.queue-resize-handle:hover,.queue-resize-handle:focus-visible { background:var(--accent); opacity:.5; outline:none; }
+.queue-expand-row { cursor:pointer; }
+.queue-expand-row:hover { background:var(--bg-highlight); }
+.queue-table .queue-caret { border:0; background:transparent; padding:0 4px; margin:0; }
+.queue-table th:first-child,.queue-table td:first-child { width:24px; }
+.queue-table .queue-expanded-content > td { width:auto; padding:12px 16px; }
+.queue-expanded-content[hidden] { display:none; }
+.queue-expanded-content pre { max-width:none; }
+.queue-workflow-tasks { background:var(--bg-surface); }
+.queue-status-badge { --queue-status-color:var(--text-muted, #999); display:inline-flex; align-items:center; gap:7px; padding:5px 10px; border:1px solid var(--queue-status-color); border-radius:6px; color:var(--queue-status-color); background:color-mix(in srgb, var(--queue-status-color) 12%, transparent); font-size:var(--fs-sm); font-weight:600; }
+.queue-status-badge::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; flex-shrink:0; }
+.queue-status-badge[data-state=running] { --queue-status-color:var(--green, #48bb78); }
+.queue-status-badge[data-state=paused] { --queue-status-color:var(--yellow, #e6b450); }
+.queue-status-badge[data-state=draining] { --queue-status-color:var(--yellow, #e6b450); }
+.queue-status-badge[data-state=unavailable] { --queue-status-color:var(--red, #f87171); }
+.queue-heading .queue-status-badge { margin-bottom:8px; }
+.queue-workflow-status { --workflow-color:var(--text-muted, #999); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; padding:3px 8px; border-radius:5px; border:1px solid var(--workflow-color); color:var(--workflow-color); background:color-mix(in srgb, var(--workflow-color) 12%, transparent); font-weight:600; }
+.queue-workflow-status::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+.queue-workflow-status[data-state=active] { --workflow-color:var(--accent, #60a5fa); }
+.queue-workflow-status[data-state=completed] { --workflow-color:var(--green, #48bb78); }
+.queue-workflow-status[data-state=blocked] { --workflow-color:var(--red, #f87171); }
+.queue-workflow-status[data-state=awaiting-human] { --workflow-color:var(--yellow, #e6b450); }

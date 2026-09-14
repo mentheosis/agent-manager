@@ -45,7 +45,13 @@ def test_profiles_and_launch_config_keep_secrets_server_side(queue_app):
     assert 'secret-password' in config['dsn']
     assert client.post('/api/instances', json={'name': 'bad', 'path': '.', 'kind': 'loop',
         'controller_mode': 'task_queue', 'queue_profile': 'test', 'queue_initial_max_workers': 0}).status_code == 400
-    assert client.get('/api/task-queues/queue/status').json() == {'state': 'stopped', 'queue': None}
+    stopped = client.get('/api/task-queues/queue/status').json()
+    assert stopped['state'] == 'stopped' and stopped['queue'] is None
+    assert stopped['settings'] == {'queue_id': 'test', 'max_workers': 2, 'limits': {
+        'lease_secs': 60, 'task_limit_secs': 3600, 'task_limit_tokens': 2000000}}
+    parent.queue_lease_secs = 120
+    assert client.get('/api/task-queues/queue/status').json()['settings']['limits']['lease_secs'] == 120
+    assert 'secret' not in json.dumps(stopped)
     assert client.post('/api/instances/queue/orchestrator/start').status_code == 400
 
 
@@ -269,3 +275,16 @@ def test_render_route_uses_real_go_renderer_without_database(queue_app, monkeypa
     assert response.status_code==200,response.text
     assert 'Inspect the local source' in response.json()['tasks'][0]['prompt']
     assert 'secret-password' not in response.text
+
+
+def test_stopped_queue_reads_without_dispatch(queue_app, monkeypatch):
+    from agent_manager.orchestration import task_loading
+    client, app, parent, manager = queue_app
+    command = AsyncMock(return_value=[])
+    monkeypatch.setattr(task_loading, 'queue_command', command)
+    monkeypatch.setattr(manager, 'find_binary', lambda: '/test/orchestrator')
+    for action, query, payload in [('tasks', 'offset=10', {'offset': 10}), ('logs', 'after=20', {'after': 20})]:
+        response = client.get(f'/api/task-queues/queue/{action}?{query}')
+        assert response.status_code == 200 and response.json() == []
+        assert command.call_args.args[2:] == (action, payload)
+    assert manager.get(parent.title) is None

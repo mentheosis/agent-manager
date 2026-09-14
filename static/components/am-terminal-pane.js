@@ -445,7 +445,7 @@ class AmTerminalPane extends HTMLElement {
         // Model chip
         const modelEl = this.querySelector('.status-model');
         if (stream?.activeModel) {
-            modelEl.textContent = stream.activeModel;
+            modelEl.textContent = stream.activeModel + (stream.activeReasoningEffort ? ` · ${stream.activeReasoningEffort}` : '');
             modelEl.hidden = false;
         } else {
             modelEl.hidden = true;

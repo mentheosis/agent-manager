@@ -13,7 +13,7 @@ function panelFixture(request) {
   const Panel=load('task_queues/am-task-queue-panel.js',{queueRequest:request,document:{dispatchEvent(){}},CustomEvent:class{}});
   const panel=new Panel();
   const nodes={};
-  panel.querySelector=key=>nodes[key]??=( {textContent:'',value:'2'} );
+  panel.querySelector=key=>nodes[key]??=( {textContent:'',value:'2',setAttribute(key,value){this[key]=value;}} );
   panel.querySelectorAll=()=>[];
   panel._instance={title:'queue'};
   return {panel,nodes};
@@ -47,4 +47,45 @@ test('late status response cannot overwrite a different selected queue',async()=
  const pending=panel.load();panel._instance={title:'different'};
  finish({state:'running',queue:{max_workers:8}});await pending;
  assert.equal(Object.keys(nodes).length,0);
+});
+
+test('stopped queue displays profile limits and queue identifier without overwriting edits', async()=>{
+ const {panel,nodes}=panelFixture(async()=>({state:'stopped',queue:null,settings:{queue_id:'audit',max_workers:2,limits:{lease_secs:90,task_limit_secs:7200,task_limit_tokens:300000}}}));
+ await panel.load();
+ assert.equal(nodes['[name=lease]'].value,90);
+ assert.equal(nodes['[name=seconds]'].value,7200);
+ assert.equal(nodes['[name=tokens]'].value,300000);
+ assert.equal(nodes['.queue-state'].textContent,'Controller stopped');
+ assert.equal(nodes['.queue-state']['data-state'],'stopped');
+ nodes['[name=lease]'].value='120';
+ await panel.load();
+ assert.equal(nodes['[name=lease]'].value,'120');
+});
+test('task activity counts the table snapshot while controller is stopped',async()=>{
+ const {panel,nodes}=panelFixture(async()=>({state:'stopped',settings:{max_workers:2},queue:null}));
+ panel._onTasks({detail:{title:'queue',tasks:[{status:'queued'},{status:'running'},{status:'claimed'},{status:'completed'},{status:'awaiting_review'}]}});
+ await panel.load();
+ assert.equal(nodes['[data-count=queued]'].textContent,1);
+ assert.equal(nodes['[data-count=active]'].textContent,2);
+ assert.equal(nodes['[data-count=completed]'].textContent,1);
+ assert.equal(nodes['[data-count=other]'].textContent,1);
+ panel._onTasks({detail:{title:'different',tasks:[]}});
+ assert.equal(nodes['[data-count=queued]'].textContent,1);
+ panel._onTasks({detail:{title:'queue',tasks:[]}});
+ assert.equal(nodes['[data-count=queued]'].textContent,0);
+});
+test('workflow badges distinguish completion, attention, activity and idle',()=>{
+ const Tasks=load('task_queues/am-task-queue-tasks.js');
+ const view=new Tasks();
+ const status=(...states)=>view.workflowStatus(states.map(status=>({status}))).state;
+ assert.equal(status('queued'),'idle');
+ assert.equal(status('completed','queued'),'idle');
+ assert.equal(status('running','queued'),'active');
+ assert.equal(status('submitted'),'active');
+ assert.equal(status('completed','completed'),'completed');
+ assert.equal(status('awaiting_review','running'),'awaiting-human');
+ assert.equal(status('failed','running'),'blocked');
+ assert.equal(status('blocked'),'blocked');
+ assert.equal(status('cancelled'),'blocked');
+ assert.equal(status(),'idle');
 });

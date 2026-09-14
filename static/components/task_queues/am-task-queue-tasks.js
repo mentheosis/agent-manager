@@ -10,6 +10,12 @@ class AmTaskQueueTasks extends HTMLElement {
     this._offset = 0;
     this._busy = false;
     this._filters = {};
+    this._onStatus = e => {
+      if (e.detail.title !== this._instance?.title) return;
+      const badge = this.querySelector(".queue-main-status");
+      badge.textContent = e.detail.label;
+      badge.setAttribute("data-state", e.detail.state);
+    };
     this._onFilters = (e) => {
       if (e.detail.scope !== "task_queue") return;
       this._filters = e.detail.filters;
@@ -20,9 +26,10 @@ class AmTaskQueueTasks extends HTMLElement {
   }
   connectedCallback() {
     this.classList.add("controller-activity");
-    this.innerHTML = `<header class="queue-heading"><h2>Task queue</h2><nav><button data-view="tasks">Tasks</button><button data-view="activity">Activity</button><button class="queue-load">Load tasks</button></nav><p class="queue-error" role="alert"></p></header><section class="queue-task-list"><div class="queue-task-rows"></div><button class="queue-prev">Previous</button><button class="queue-next">Next</button></section><section class="loop-events" hidden></section><am-task-queue-loader></am-task-queue-loader>`;
+    this.innerHTML = `<header class="queue-heading"><h2>Task queue</h2><span class="queue-main-status queue-status-badge" data-state="unknown">Checking controller…</span><p class="queue-identity"></p><nav><div role="tablist" aria-label="Queue views"><button role="tab" aria-selected="true" data-view="tasks">Tasks</button><button role="tab" aria-selected="false" data-view="activity">Activity</button></div><button class="queue-load">Load tasks</button></nav><p class="queue-error" role="alert"></p></header><section class="queue-task-list"><div class="queue-task-rows"></div><button class="queue-prev">Previous</button><button class="queue-next">Next</button></section><section class="loop-events" hidden></section><am-task-queue-loader></am-task-queue-loader>`;
     this.querySelectorAll("[data-view]").forEach((b) =>
       b.addEventListener("click", () => {
+        this.querySelectorAll("[data-view]").forEach(tab => tab.setAttribute("aria-selected", String(tab === b)));
         this.querySelector(".queue-task-list").hidden =
           b.dataset.view !== "tasks";
         this.querySelector(".loop-events").hidden =
@@ -39,6 +46,7 @@ class AmTaskQueueTasks extends HTMLElement {
       this.load();
     };
     document.addEventListener("filter-changed", this._onFilters);
+    document.addEventListener("queue-controller-status", this._onStatus);
   }
   set instance(inst) {
     if (this._instance?.title === inst?.title) return;
@@ -47,6 +55,8 @@ class AmTaskQueueTasks extends HTMLElement {
     loader?.querySelector("dialog")?.close();
     loader?.invalidate();
     this._instance = inst;
+    this._onStatus({ detail: { title: inst?.title, state: "unknown", label: "Checking controller…" } });
+    this.querySelector(".queue-identity").textContent = inst ? `queue_id: ${inst.queue_profile || inst.queue_id || ""}` : "";
     this._after = 0;
     this._offset = 0;
     this._signature = "";
@@ -60,6 +70,7 @@ class AmTaskQueueTasks extends HTMLElement {
   disconnectedCallback() {
     clearInterval(this._timer);
     document.removeEventListener("filter-changed", this._onFilters);
+    document.removeEventListener("queue-controller-status", this._onStatus);
   }
   async load() {
     const title = this._instance?.title;
@@ -67,10 +78,11 @@ class AmTaskQueueTasks extends HTMLElement {
     this._busy = true;
     try {
       const [tasks, logs] = await Promise.all([
-        queueRequest(title, `tasks?offset=${this._offset}`),
+        this.loadAllTasks(title),
         queueRequest(title, `logs?after=${this._after}`),
       ]);
       if (title !== this._instance?.title) return;
+      document.dispatchEvent(new CustomEvent("queue-tasks-updated", { detail: { title, tasks } }));
       const signature = JSON.stringify(tasks);
       if (signature !== this._signature) {
         this.renderTasks(tasks);
@@ -84,40 +96,96 @@ class AmTaskQueueTasks extends HTMLElement {
       );
       if (logs.length) this._after = logs[logs.length - 1].id;
       this.querySelector(".queue-error").textContent = "";
-      this.querySelector(".queue-prev").disabled = this._offset === 0;
-      this.querySelector(".queue-next").disabled = tasks.length < 100;
+      this.querySelector(".queue-prev").hidden = true;
+      this.querySelector(".queue-next").hidden = true;
     } catch (error) {
-      if (title === this._instance?.title)
+      if (title === this._instance?.title) {
+        document.dispatchEvent(new CustomEvent("queue-tasks-updated", { detail: { title, tasks: null } }));
         this.querySelector(".queue-error").textContent = error.message;
+      }
     } finally {
       this._busy = false;
     }
   }
+  async loadAllTasks(title) {
+    const tasks = [];
+    for (let offset = 0; ; offset += 100) {
+      const page = await queueRequest(title, `tasks?offset=${offset}`);
+      if (title !== this._instance?.title) return [];
+      tasks.push(...page);
+      if (page.length < 100) return tasks;
+    }
+  }
+  expandableRow(body, values, key, open) {
+    const header = document.createElement("tr");
+    header.className = "queue-expand-row";
+    header.dataset.expansion = key;
+    const caretCell = document.createElement("td");
+    const caret = textElement("button", "▸");
+    caret.className = "queue-caret";
+    caret.setAttribute("aria-label", `Expand ${values[0]}`);
+    caretCell.append(caret); header.append(caretCell);
+    values.forEach(value => header.append(textElement("td", value)));
+    const detail = document.createElement("tr");
+    detail.className = "queue-expanded-content";
+    const cell = document.createElement("td"); cell.colSpan = values.length + 1;
+    detail.append(cell); body.append(header, detail);
+    const toggle = expanded => {
+      detail.hidden = !expanded;
+      header.dataset.open = String(expanded);
+      caret.textContent = expanded ? "▾" : "▸";
+      caret.setAttribute("aria-expanded", String(expanded));
+      caret.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${values[0]}`);
+    };
+    toggle(open.has(key));
+    header.onclick = () => toggle(detail.hidden);
+    return cell;
+  }
+  workflowStatus(tasks) {
+    const statuses = tasks.map(task => task.status);
+    if (statuses.length && statuses.every(status => status === "completed"))
+      return { state: "completed", label: "Completed" };
+    if (statuses.some(status => ["blocked", "failed", "cancelled"].includes(status)))
+      return { state: "blocked", label: "Blocked", reason: "One or more tasks are blocked, failed, or cancelled." };
+    if (statuses.includes("awaiting_review"))
+      return { state: "awaiting-human", label: "Awaiting human", reason: "A task needs human approval. Other tasks may still be active." };
+    if (statuses.some(status => ["claimed", "running", "submitted"].includes(status)))
+      return { state: "active", label: "Active" };
+    return { state: "idle", label: "Idle" };
+  }
   renderTasks(tasks) {
     const rows = this.querySelector(".queue-task-rows");
-    const open = new Set(
-      [...rows.querySelectorAll("details[open]")].map((el) => el.dataset.task),
-    );
+    const open = new Set([...rows.querySelectorAll('[data-open="true"]')].map(el => el.dataset.expansion));
     rows.replaceChildren();
     if (!tasks.length) {
-      rows.append(
-        textElement(
-          "p",
-          "No tasks on this page. Use Load tasks to preview and insert a task batch.",
-        ),
-      );
+      rows.append(textElement("p", "No tasks. Use Load tasks to preview and insert a task batch."));
       return;
     }
+    const workflows = new Map();
     for (const task of tasks) {
-      const row = document.createElement("details");
-      row.dataset.task = String(task.id);
-      row.open = open.has(String(task.id));
-      row.append(
-        textElement(
-          "summary",
-          `#${task.id} · ${task.task_type} · ${task.status} · attempt ${task.attempt_count}/${task.max_attempts}`,
-        ),
-      );
+      if (!workflows.has(task.workflow_id)) workflows.set(task.workflow_id, []);
+      workflows.get(task.workflow_id).push(task);
+    }
+    const table = document.createElement("table"); table.className = "queue-table queue-workflows";
+    table.innerHTML = "<thead><tr><th></th><th>Workflow</th><th>Status</th><th>Queued</th><th>Active</th><th>Completed</th><th>Other</th></tr></thead>";
+    const body = document.createElement("tbody"); table.append(body); rows.append(table);
+    for (const [workflow, members] of workflows) {
+      const queued = members.filter(t => t.status === "queued").length;
+      const active = members.filter(t => ["claimed", "running", "submitted"].includes(t.status)).length;
+      const completed = members.filter(t => t.status === "completed").length;
+      const other = members.length - queued - active - completed;
+      const status = this.workflowStatus(members);
+      const workflowCell = this.expandableRow(body, [workflow, status.label, queued, active, completed, other], `workflow:${workflow}`, open);
+      const statusCell = workflowCell.parentElement.previousElementSibling.children[2];
+      const badge = textElement("span", status.label, "queue-workflow-status");
+      badge.dataset.state = status.state;
+      if (status.reason) badge.title = status.reason;
+      statusCell.replaceChildren(badge);
+      const taskTable = document.createElement("table"); taskTable.className = "queue-table queue-workflow-tasks";
+      taskTable.innerHTML = "<thead><tr><th></th><th>Task #</th><th>Name</th><th>Status</th><th>Attempts</th></tr></thead>";
+      const taskBody = document.createElement("tbody"); taskTable.append(taskBody); workflowCell.append(taskTable);
+      for (const task of members) {
+      const row = this.expandableRow(taskBody, [`#${task.id}`, task.task_type, task.status, `${task.attempt_count}/${task.max_attempts}`], `task:${task.id}`, open);
       row.append(
         textElement(
           "pre",
@@ -170,7 +238,7 @@ class AmTaskQueueTasks extends HTMLElement {
         link.rel = "noopener";
         row.append(link);
       }
-      rows.append(row);
+      }
     }
   }
 }

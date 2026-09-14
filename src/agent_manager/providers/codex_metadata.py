@@ -32,6 +32,28 @@ async def fetch_codex_models(timeout: float = 10) -> list[str]:
     return models
 
 
+_effort_cache: tuple[float, dict[str, Any]] | None = None
+
+async def fetch_codex_reasoning_options(refresh: bool = False) -> dict[str, Any]:
+    global _effort_cache
+    if not refresh and _effort_cache and time.monotonic() - _effort_cache[0] < _MODELS_CACHE_TTL_SECONDS:
+        return _effort_cache[1]
+    raw = await _run_json(["codex", "debug", "models"], timeout=10)
+    visible = _parse_codex_model_catalog(raw)
+    options = {}
+    for model in raw.get("models", []) or []:
+        if not isinstance(model, dict) or model.get("slug") not in visible:
+            continue
+        levels = model.get("supported_reasoning_levels") or []
+        options[model["slug"]] = {
+            "default": model.get("default_reasoning_level"),
+            "levels": [level for level in levels if isinstance(level, dict) and isinstance(level.get("effort"), str)],
+        }
+    if options:
+        _effort_cache = (time.monotonic(), options)
+    return options
+
+
 async def fetch_codex_runtime_metadata(cwd: str | None = None, timeout: float = 3) -> dict[str, Any]:
     """Return non-secret Codex CLI metadata suitable for system_init events."""
     global _doctor_cache

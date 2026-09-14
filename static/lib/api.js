@@ -232,3 +232,9 @@ export async function fetchFolders() {
     if (!r.ok) return [];
     return r.json();
 }
+
+export async function fetchReasoningOptions(provider, refresh = false) {
+    const r = await fetch(`${BASE}/providers/${encodeURIComponent(provider)}/reasoning-options?refresh=${refresh}`);
+    if (!r.ok) throw new Error('Could not load reasoning options');
+    return r.json();
+}

@@ -82,6 +82,7 @@ class Registry:
                 queue_attempt=rec.queue_attempt,
                 permission_mode=rec.permission_mode,
                 model=rec.model or None,
+                reasoning_effort=rec.reasoning_effort,
                 display_title=rec.display_title,
                 session_id=rec.session_id,
                 created_at=rec.created_at,
@@ -276,6 +277,8 @@ class Registry:
         title: str,
         permission_mode: str | None = None,
         model: str | None | object = _UNSET,
+        reasoning_effort: str | None | object = _UNSET,
+        defer_runtime: bool = False,
         add_dirs: list[str] | None = None,
         memory_file: str | None | object = _UNSET,
         path: str | None = None,
@@ -289,6 +292,8 @@ class Registry:
                 inst.permission_mode = _normalize_permission_mode(inst.provider, permission_mode)
             if model is not _UNSET:
                 inst.model = model if isinstance(model, str) and model else None
+            if reasoning_effort is not _UNSET:
+                inst.reasoning_effort = reasoning_effort or None
             if add_dirs is not None:
                 inst.add_dirs = _normalize_dirs(add_dirs)
             if memory_file is not _UNSET:
@@ -300,7 +305,8 @@ class Registry:
                     raise ValueError(f"path does not exist: {expanded}")
                 inst.path = expanded
         await self._save_records()
-        await inst.reload_options()
+        if not defer_runtime:
+            await inst.reload_options()
         return inst
 
     def _unique_title_locked(self, base: str) -> str:
@@ -552,6 +558,7 @@ class Registry:
                     queue_attempt=i.queue_attempt,
                     permission_mode=i.permission_mode,
                     model=i.model or None,
+                    reasoning_effort=i.reasoning_effort,
                     display_title=i.display_title,
                     session_id=i.session_id,
                     created_at=i.created_at,

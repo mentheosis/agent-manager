@@ -28,6 +28,7 @@ class AgentConfig:
     cwd: str
     permission_mode: str = "acceptEdits"
     model: str | None = None
+    reasoning_effort: str | None = None
     session_id: str | None = None
     add_dirs: list[str] = field(default_factory=list)
     memory_file: str | None = None

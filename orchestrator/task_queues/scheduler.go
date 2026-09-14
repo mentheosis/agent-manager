@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/go-sql-driver/mysql"
 	"net/http"
 	"net/url"
 	"strings"
@@ -67,7 +66,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		if e := s.Tick(ctx); e != nil && ctx.Err() == nil {
 			message := e.Error()
 			secrets := []string{s.Store.Config.DSN, s.Store.Config.InternalToken}
-			if dsn, err := mysql.ParseDSN(s.Store.Config.DSN); err == nil {
+			if dsn, err := parseDatabaseDSN(s.Store.Config.DSN); err == nil {
 				secrets = append(secrets, dsn.Passwd)
 			}
 			for _, secret := range secrets {

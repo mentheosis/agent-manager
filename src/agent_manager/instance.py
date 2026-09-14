@@ -38,6 +38,7 @@ class Instance:
     kind: str = "agent"  # "agent" | "loop"
     permission_mode: str = "acceptEdits"
     model: str | None = None
+    reasoning_effort: str | None = None
     status: str = "creating"
     created_at: str = ""
     display_title: str | None = None
@@ -279,6 +280,8 @@ class Instance:
                     )
                 turn_complete.clear()
                 await self._set_status("running")
+                if self.provider == "codex" and hasattr(runtime, "set_model_options"):
+                    runtime.set_model_options(self.model, self.reasoning_effort)
                 await runtime.query(agent_input)
                 # Loop back; pump will set turn_complete when it sees "result".
         except asyncio.CancelledError:
@@ -337,6 +340,7 @@ class Instance:
             cwd=self.path,
             permission_mode=self.permission_mode,
             model=self.model,
+            reasoning_effort=self.reasoning_effort,
             session_id=self.session_id,
             add_dirs=list(self.add_dirs or []),
             memory_file=self.memory_file,

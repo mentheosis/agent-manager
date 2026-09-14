@@ -52,3 +52,9 @@ Completion requires every declared output to exist as a contained regular file a
 be created or rewritten during the attempt. The controller archives those files even
 if the worker omits them from artifact_paths. These checks verify files, not correctness;
 human review remains necessary. Blocked/failed results may submit partial evidence.
+
+Database connection variables accept either a MySQL URL
+(`mysql://USER:PASSWORD@HOST:3306/DATABASE`) or a native MySQL DSN
+(`USER:PASSWORD@tcp(HOST:3306)/DATABASE`). Percent-encode special characters in URL
+credentials. A missing engine prefix means MySQL; other explicit engine prefixes
+are rejected until supported. URL query parameters use Go MySQL driver option names.

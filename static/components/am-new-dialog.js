@@ -32,7 +32,7 @@ class AmNewDialog extends HTMLElement {
                             <span class="mode-label">Team</span>
                             <span class="mode-desc">Orchestrated group</span>
                         </button>
-                        <button type="button" class="mode-btn" data-mode="task_queue"><span class="mode-label">Task Queue</span><span class="mode-desc">SQL task scheduler</span></button>
+                        <button type="button" class="mode-btn" data-mode="task_queue"><span class="mode-icon">📋</span><span class="mode-label">Task Queue</span><span class="mode-desc">SQL task scheduler</span></button>
                         <button type="button" class="mode-btn" data-mode="batch">
                             <span class="mode-icon">📁</span>
                             <span class="mode-label">Batch</span>

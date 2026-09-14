@@ -38,6 +38,7 @@ class InstanceRecord:
     kind: str = "agent"
     permission_mode: str = "acceptEdits"
     model: str | None = None
+    reasoning_effort: str | None = None
     display_title: str | None = None
     session_id: str | None = None
     created_at: str = ""
@@ -76,6 +77,7 @@ class InstanceRecord:
             "queue_attempt": self.queue_attempt,
             "permission_mode": self.permission_mode,
             "model": self.model,
+            "reasoning_effort": self.reasoning_effort,
             "display_title": self.display_title,
             "session_id": self.session_id,
             "created_at": self.created_at,
@@ -125,6 +127,7 @@ class InstanceRecord:
             queue_attempt=d.get("queue_attempt"),
             permission_mode=d.get("permission_mode") or "acceptEdits",
             model=d.get("model") or None,
+            reasoning_effort=d.get("reasoning_effort") or None,
             display_title=d.get("display_title"),
             session_id=d.get("session_id"),
             created_at=d.get("created_at") or "",

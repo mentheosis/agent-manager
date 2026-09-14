@@ -210,7 +210,7 @@ class AmFileEditor extends HTMLElement {
             // Pass active model from stream
             const stream = streamManager.get(this._title);
             if (stream?.activeModel) {
-                permPanel.setActiveModel(stream.activeModel);
+                permPanel.setActiveModel(stream.activeModel, stream.activeReasoningEffort);
             }
         }
     }

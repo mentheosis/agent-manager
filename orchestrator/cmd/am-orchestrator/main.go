@@ -22,7 +22,7 @@ func main() {
 	managed := flag.Bool("managed", false, "forward MCP completion to the managed team controller")
 	attempt := flag.String("attempt", "", "queue worker attempt ID")
 	initSchema := flag.Bool("init-schema", false, "explicitly initialize generic queue schema")
-	queueAction := flag.String("queue-action", "", "render or enqueue a task batch from stdin")
+	queueAction := flag.String("queue-action", "", "render/enqueue a task batch or read tasks/logs from stdin")
 	flag.Parse()
 	if *mode == "queue-worker" {
 		if err := taskqueues.Worker(*baseURL, *group, *attempt); err != nil {

@@ -9,10 +9,14 @@ class AmPermissionsPanel extends HTMLElement {
         super();
         this._title = null;
         this._activeModel = null;  // Model from current running session
+        this._activeEffort = null;
         this.provider = 'claude';
         this.workingDir = '';  // The instance's working directory
         this.permission_mode = 'acceptEdits';
         this.model = '';
+        this.reasoningEffort = '';
+        this.savedEffort = '';
+        this.reasoningOptions = {};
         this.dirs = [];
         this.memoryFile = '';  // Path to memory file
         this.savedMode = 'acceptEdits';
@@ -38,6 +42,12 @@ class AmPermissionsPanel extends HTMLElement {
                 </div>
             </div>
 
+            <div class="perm-section perm-effort-section" hidden>
+                <label class="perm-label" for="perm-effort">Reasoning effort</label>
+                <select id="perm-effort" class="perm-effort" aria-describedby="perm-effort-hint"></select>
+                <small id="perm-effort-hint" class="hint perm-effort-hint"></small>
+                <small class="hint">Higher effort allows deeper reasoning and may take longer. Model and effort changes apply to the next turn.</small>
+            </div>
             <div class="perm-section">
                 <label class="perm-label perm-mode-label">Permission mode</label>
                 <select class="perm-mode">
@@ -81,7 +91,7 @@ class AmPermissionsPanel extends HTMLElement {
                 <span class="perm-apply-status"></span>
             </div>
 
-            <small class="hint">Applying restarts the provider session. Conversation history is preserved via session resume; any in-flight turn will be cancelled.</small>
+            <small class="hint">Codex model and effort changes apply to the next turn. Other settings require a restart, cancelling any in-flight turn while preserving conversation history.</small>
         `;
 
         this.setupEventListeners();
@@ -99,6 +109,14 @@ class AmPermissionsPanel extends HTMLElement {
 
         modelEl.addEventListener('change', () => {
             this.model = modelEl.value;
+            this.populateReasoningOptions();
+            this.refreshDirty();
+            this.updateModelInfo();
+        });
+
+        this.querySelector('.perm-effort').addEventListener('change', (e) => {
+            this.reasoningEffort = e.target.value;
+            this.populateReasoningOptions();
             this.refreshDirty();
             this.updateModelInfo();
         });
@@ -152,16 +170,20 @@ class AmPermissionsPanel extends HTMLElement {
         try {
             const inst = await api.fetchInstance(title);
             const providerName = inst.provider || 'claude';
-            const [provider, models] = await Promise.all([
+            const [provider, models, reasoningOptions] = await Promise.all([
                 api.fetchProvider(providerName).catch(() => null),
                 api.fetchModels(providerName),
+                api.fetchReasoningOptions(providerName).catch(() => ({})),
             ]);
             const defaultMode = provider?.runtime_options?.default_permission_mode || this.defaultModeForProvider(providerName);
 
             this.provider = providerName;
+            this.reasoningOptions = reasoningOptions;
             this.workingDir = inst.path || '';
             this.permission_mode = this.resolvePermissionMode(provider, inst.permission_mode || defaultMode);
             this.model = inst.model || '';
+            this.reasoningEffort = inst.reasoning_effort || '';
+            this.savedEffort = this.reasoningEffort;
             this.dirs = (inst.add_dirs || []).slice();
             this.memoryFile = inst.memory_file || '';
             this.savedMode = this.permission_mode;
@@ -172,6 +194,7 @@ class AmPermissionsPanel extends HTMLElement {
             this.populatePermissionModes(provider, this.permission_mode);
             this.updateProviderLabels(provider);
             this.populateModelDropdown(models, this.model);
+            this.populateReasoningOptions();
             this.renderDirs();
             this.querySelector('.memory-file-input').value = this.memoryFile;
             this.updateModelInfo();
@@ -278,6 +301,36 @@ class AmPermissionsPanel extends HTMLElement {
         el.value = currentModel;
     }
 
+    populateReasoningOptions() {
+        const section = this.querySelector('.perm-effort-section');
+        section.hidden = this.provider !== 'codex';
+        const el = this.querySelector('.perm-effort');
+        const info = this.reasoningOptions[this.model];
+        const levels = info?.levels || [];
+        el.replaceChildren();
+        const add = (value, label) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            el.appendChild(option);
+        };
+        add('', 'Default (inherit configuration)');
+        for (const level of levels) add(level.effort, level.effort === 'xhigh' ? 'Extra high' : level.effort[0].toUpperCase() + level.effort.slice(1));
+        this.invalidEffort = this.provider === 'codex' && !!this.reasoningEffort && !levels.some(level => level.effort === this.reasoningEffort);
+        if (this.invalidEffort) add(this.reasoningEffort, `${this.reasoningEffort} (unsupported — choose another)`);
+        el.value = this.reasoningEffort;
+        el.setAttribute('aria-invalid', String(this.invalidEffort));
+        this.querySelector('.perm-effort-hint').textContent = this.invalidEffort
+            ? 'Select a supported effort or Default before saving.'
+            : levels.find(level => level.effort === this.reasoningEffort)?.description
+                || (info?.default ? `Model default: ${info.default}; inherited configuration may override this.` : 'Choose a model to see its supported efforts.');
+    }
+
+    modelSettingsOnly() {
+        return this.provider === 'codex' && this.permission_mode === this.savedMode
+            && this.sameStringList(this.dirs, this.savedDirs) && this.memoryFile === this.savedMemoryFile;
+    }
+
     async refreshModels() {
         const btn = this.querySelector('.perm-model-refresh-btn');
         const statusEl = this.querySelector('.perm-apply-status');
@@ -287,8 +340,11 @@ class AmPermissionsPanel extends HTMLElement {
         const priorStatus = statusEl.textContent;
         statusEl.textContent = 'refreshing model list…';
         try {
-            const models = await api.fetchModels(this.provider, { refresh: true });
+            const [models, options] = await Promise.all([api.fetchModels(this.provider, { refresh: true }), api.fetchReasoningOptions(this.provider, true)]);
+            this.reasoningOptions = options;
             this.populateModelDropdown(models, this.model);
+            this.populateReasoningOptions();
+            this.refreshDirty();
             statusEl.textContent = `refreshed · ${models.length} model(s)`;
         } catch (e) {
             statusEl.textContent = `refresh failed: ${e.message}`;
@@ -373,6 +429,7 @@ class AmPermissionsPanel extends HTMLElement {
     refreshDirty() {
         const dirty = this.permission_mode !== this.savedMode
             || this.model !== this.savedModel
+            || this.reasoningEffort !== this.savedEffort
             || !this.sameStringList(this.dirs, this.savedDirs)
             || this.memoryFile !== this.savedMemoryFile;
 
@@ -380,9 +437,9 @@ class AmPermissionsPanel extends HTMLElement {
         const statusEl = this.querySelector('.perm-apply-status');
 
         // Button always enabled - allows restart even without changes
-        applyBtn.disabled = false;
+        applyBtn.disabled = !!this.invalidEffort;
         applyBtn.classList.toggle('dirty', dirty);
-        applyBtn.textContent = dirty ? 'Restart and apply' : 'Restart session';
+        applyBtn.textContent = dirty && this.modelSettingsOnly() ? 'Apply to next turn' : dirty ? 'Restart and apply' : 'Restart session';
         if (dirty) statusEl.textContent = 'unsaved';
     }
 
@@ -394,8 +451,9 @@ class AmPermissionsPanel extends HTMLElement {
         return true;
     }
 
-    setActiveModel(model) {
+    setActiveModel(model, effort = null) {
         this._activeModel = model || null;
+        this._activeEffort = effort;
         this.updateModelInfo();
     }
 
@@ -409,7 +467,7 @@ class AmPermissionsPanel extends HTMLElement {
 
         // Show current session model
         if (activeModel) {
-            currentValueEl.textContent = activeModel;
+            currentValueEl.textContent = activeModel + (this._activeEffort ? ` · ${this._activeEffort}` : "");
             currentEl.hidden = false;
         } else {
             currentEl.hidden = true;
@@ -423,24 +481,26 @@ class AmPermissionsPanel extends HTMLElement {
         const defaultChanged = activeModel && !configuredModel;  // Configured is "default" but we have an active model
 
         // Only show pending if user explicitly changed to a different model
-        pendingEl.hidden = !modelsDiffer;
+        const effortDiffers = this.provider === "codex" && this._activeEffort && (this.reasoningEffort || "default") !== this._activeEffort;
+        pendingEl.hidden = !(modelsDiffer || effortDiffers);
+        pendingEl.textContent = this.provider === "codex" ? "Applies to next turn" : "Pending restart";
     }
 
     async apply() {
-        if (!this._title) return;
+        if (!this._title || this.invalidEffort) return;
 
         const applyBtn = this.querySelector('.perm-apply-btn');
         const statusEl = this.querySelector('.perm-apply-status');
 
         applyBtn.disabled = true;
-        statusEl.textContent = 'restarting session…';
+        const defer = this.modelSettingsOnly() && (this.model !== this.savedModel || this.reasoningEffort !== this.savedEffort);
+        statusEl.textContent = defer ? 'saving for next turn…' : 'restarting session…';
 
         try {
             const inst = await api.updatePermissions(this._title, {
-                permission_mode: this.permission_mode,
                 model: this.model || null,
-                add_dirs: this.dirs,
-                memory_file: this.memoryFile || null,
+                ...(this.provider === "codex" ? { reasoning_effort: this.reasoningEffort || null } : {}),
+                ...(defer ? {} : { permission_mode: this.permission_mode, add_dirs: this.dirs, memory_file: this.memoryFile || null }),
             });
 
             this.permission_mode = this.resolvePermissionMode(
@@ -448,6 +508,8 @@ class AmPermissionsPanel extends HTMLElement {
                 inst.permission_mode || this.defaultModeForProvider(this.provider),
             );
             this.model = inst.model || '';
+            this.reasoningEffort = inst.reasoning_effort || '';
+            this.savedEffort = this.reasoningEffort;
             this.dirs = (inst.add_dirs || []).slice();
             this.memoryFile = inst.memory_file || '';
             this.savedMode = this.permission_mode;
@@ -460,10 +522,11 @@ class AmPermissionsPanel extends HTMLElement {
             this.querySelector('.memory-file-input').value = this.memoryFile;
             this.renderDirs();
 
-            statusEl.textContent = 'applied · session restarted';
+            this.populateReasoningOptions();
+            statusEl.textContent = defer ? 'saved · applies to next turn' : 'applied · session restarted';
 
             // Clear active model since session restarted - will be updated on next stream event
-            this._activeModel = null;
+            if (!defer) this._activeModel = null;
             this.updateModelInfo();
             this.refreshDirty();
         } catch (e) {

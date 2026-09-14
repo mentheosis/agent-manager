@@ -144,19 +144,45 @@ def mount_routes(app, registry, manager):
 
     @app.get('/api/task-queues/{title}/status')
     async def status(title: str):
-        parent(title)
+        inst = parent(title)
         proc = manager.get(title)
         if not proc or not proc.is_running:
-            return {'state': 'stopped', 'queue': None}
+            profile = profiles()[inst.queue_profile or inst.queue_id]
+            def setting(field, key, default):
+                value = getattr(inst, field, None)
+                return value if value is not None else profile.get(key, default)
+            return {'state': 'stopped', 'queue': None, 'settings': {
+                'queue_id': inst.queue_profile or inst.queue_id,
+                'max_workers': setting('queue_initial_max_workers', 'default_max_workers', 1),
+                'limits': {
+                    'lease_secs': setting('queue_lease_secs', 'default_lease_secs', 60),
+                    'task_limit_secs': setting('queue_task_limit_secs', 'default_task_limit_secs', 3600),
+                    'task_limit_tokens': setting('queue_task_limit_tokens', 'default_task_limit_tokens', 2000000)}}}
         result = await proxy(title, 'status')
         return {**result, 'draining': title in drains}
 
+    async def read_queue(title, action, payload):
+        from .task_loading import queue_command
+        inst = parent(title)
+        try:
+            return await queue_command(instance_queue_config(inst), manager.find_binary(), action, payload)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc))
+        except asyncio.TimeoutError:
+            raise HTTPException(504, 'Queue read timed out')
+
     @app.get('/api/task-queues/{title}/tasks')
     async def tasks(title: str, offset: int = 0):
+        proc = manager.get(title)
+        if not proc or not proc.is_running:
+            return await read_queue(title, 'tasks', {'offset': max(0, offset)})
         return await proxy(title, f'tasks?offset={max(0, offset)}')
 
     @app.get('/api/task-queues/{title}/logs')
     async def logs(title: str, after: int = 0):
+        proc = manager.get(title)
+        if not proc or not proc.is_running:
+            return await read_queue(title, 'logs', {'after': max(0, after)})
         return await proxy(title, f'logs?after={max(0, after)}')
 
     @app.post('/api/task-queues/{title}/control')

@@ -29,6 +29,7 @@
 }
 
 .permissions-panel .perm-mode,
+.permissions-panel .perm-effort,
 .permissions-panel .perm-model {
     background: var(--bg-surface);
     color: var(--text);
@@ -103,6 +104,7 @@
 }
 
 .permissions-panel .perm-mode:focus,
+.permissions-panel .perm-effort:focus,
 .permissions-panel .perm-model:focus {
     outline: none;
     border-color: var(--accent);

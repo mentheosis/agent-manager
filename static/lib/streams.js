@@ -27,6 +27,7 @@ class Stream {
         this.ws = null;
         this.status = null;
         this.activeModel = null;
+        this.activeReasoningEffort = null;
         this.evicting = false;
         this.totals = {
             cost: 0,
@@ -191,6 +192,7 @@ class Stream {
         // Track active model from system_init. Providers may report an exact
         // model id or only a display-safe label for their configured default.
         if (event.type === 'system_init') {
+            this.activeReasoningEffort = event.data?.reasoning_effort || null;
             const model = event.data && (event.data.model || event.data.active_model_label);
             if (model) {
                 this.activeModel = model;
