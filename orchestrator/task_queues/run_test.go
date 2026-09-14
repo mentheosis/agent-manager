@@ -23,10 +23,11 @@ func TestHTTPQueueControllerNeutralTask(t *testing.T) {
 	defer cancel()
 	cfg, task := definitionFixture(t)
 	s.Config.Repositories = cfg.Repositories
+	s.Config.Tasks = cfg.Tasks
 	s.Config.ControllerID = "test-controller"
 	s.Config.Parent = "queue"
 	id := enqueue(t, s, true, nil)
-	if _, err := s.DB.ExecContext(ctx, "UPDATE am_tasks SET definition_ref=?,parameters=? WHERE id=?", string(task.Definition), string(task.Parameters), id); err != nil {
+	if _, err := s.DB.ExecContext(ctx, "UPDATE am_tasks SET parameters=? WHERE id=?", string(task.Parameters), id); err != nil {
 		t.Fatal(err)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -68,7 +69,7 @@ func TestHTTPQueueControllerNeutralTask(t *testing.T) {
 				http.Error(w, "bad request", 400)
 				return
 			}
-			if !strings.Contains(body.Prompt, "Task parameters") {
+			if !strings.Contains(body.Prompt, "report about example") {
 				t.Error("worker did not receive resolved instructions")
 			}
 			if err := os.WriteFile(body.Workspace+"/report.md", []byte("Neutral HTTP proof"), 0600); err != nil {

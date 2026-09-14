@@ -30,7 +30,10 @@ class InstanceRecord:
     controller_mode: str | None = None
     queue_profile: str | None = None
     queue_id: str | None = None
-    queue_initial_max_workers: int = 1
+    queue_initial_max_workers: int | None = None
+    queue_lease_secs: int | None = None
+    queue_task_limit_secs: int | None = None
+    queue_task_limit_tokens: int | None = None
     queue_attempt: dict | None = None
     kind: str = "agent"
     permission_mode: str = "acceptEdits"
@@ -67,6 +70,9 @@ class InstanceRecord:
             "queue_profile": self.queue_profile,
             "queue_id": self.queue_id,
             "queue_initial_max_workers": self.queue_initial_max_workers,
+            "queue_lease_secs": self.queue_lease_secs,
+            "queue_task_limit_secs": self.queue_task_limit_secs,
+            "queue_task_limit_tokens": self.queue_task_limit_tokens,
             "queue_attempt": self.queue_attempt,
             "permission_mode": self.permission_mode,
             "model": self.model,
@@ -112,7 +118,10 @@ class InstanceRecord:
             controller_mode=d.get("controller_mode") or ("team" if kind == "loop" else None),
             queue_profile=d.get("queue_profile"),
             queue_id=d.get("queue_id"),
-            queue_initial_max_workers=d.get("queue_initial_max_workers", 1),
+            queue_initial_max_workers=d.get("queue_initial_max_workers"),
+            queue_lease_secs=d.get("queue_lease_secs"),
+            queue_task_limit_secs=d.get("queue_task_limit_secs"),
+            queue_task_limit_tokens=d.get("queue_task_limit_tokens"),
             queue_attempt=d.get("queue_attempt"),
             permission_mode=d.get("permission_mode") or "acceptEdits",
             model=d.get("model") or None,

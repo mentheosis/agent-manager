@@ -37,7 +37,12 @@ func (w *APIWorkers) path(id string) string {
 	return "/api/task-queues/" + url.PathEscape(w.Config.Parent) + "/attempts/" + url.PathEscape(id)
 }
 func (w *APIWorkers) Launch(ctx context.Context, a Attempt, t Task, workspace, prompt string) (out WorkerState, err error) {
-	err = w.Client.Request(ctx, http.MethodPost, w.path(a.ID), map[string]any{"task_id": t.ID, "workspace": workspace, "prompt": prompt}, &out, w.Config.InternalToken)
+	var snap Snapshot
+	if err = json.Unmarshal(a.Snapshot, &snap); err != nil {
+		return
+	}
+	execution := snap.Task
+	err = w.Client.Request(ctx, http.MethodPost, w.path(a.ID), map[string]any{"task_id": t.ID, "workspace": workspace, "prompt": prompt, "execution": execution, "use_isolated_workspace": isolated(snap.UseIsolatedWorkspace), "repository": snap.Repository}, &out, w.Config.InternalToken)
 	return
 }
 func (w *APIWorkers) State(ctx context.Context, id string) (out WorkerState, err error) {
@@ -86,7 +91,12 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	}
 	for _, a := range attempts {
 		expired := !a.Lease.After(time.Now().UTC())
-		timedOut := time.Since(a.Started) > time.Duration(s.Store.Config.MaxAttemptSeconds)*time.Second
+		limits := s.Store.Config.limits()
+		var input Snapshot
+		if json.Unmarshal(a.Snapshot, &input) == nil && input.Limits.TaskSeconds > 0 {
+			limits = input.Limits
+		}
+		timedOut := time.Since(a.Started) > time.Duration(limits.TaskSeconds)*time.Second
 		if a.Owner != s.Owner && !expired {
 			continue
 		}
@@ -110,12 +120,11 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			if _, e = s.Store.DB.ExecContext(ctx, "UPDATE am_task_attempts SET resource_usage=? WHERE id=? AND owner=? AND status IN "+active, string(usage), a.ID, s.Owner); e != nil {
 				return e
 			}
-			c := s.Store.Config
-			if (c.MaxAttemptTokens > 0 && state.Tokens >= c.MaxAttemptTokens) || (c.MaxAttemptCostUSD > 0 && state.CostUSD >= c.MaxAttemptCostUSD) {
+			if limits.TaskTokens > 0 && state.Tokens >= limits.TaskTokens {
 				if e = s.Workers.Cancel(ctx, a.ID); e != nil {
 					continue
 				}
-				if e = s.Store.Finish(ctx, a, "blocked", "Reported token or spending allowance reached"); e != nil {
+				if e = s.Store.Finish(ctx, a, "blocked", "Reported token allowance reached"); e != nil {
 					return e
 				}
 				continue
@@ -186,7 +195,7 @@ func (s *Scheduler) launch(ctx context.Context, a Attempt) error {
 		// Resolving/exporting also obeys the lease deadline. A slow export must not
 		// launch after a different controller has fenced this attempt.
 		resolveCtx, cancel := context.WithTimeout(ctx, time.Duration(s.Store.Config.LeaseSeconds/2)*time.Second)
-		workspace, snapshot, e = Resolve(resolveCtx, s.Store.Config, t, a.ID, upstream)
+		workspace, snapshot, e = resolveSnapshot(resolveCtx, s.Store.Config, t, a.ID, upstream, a.Snapshot)
 		cancel()
 		if e != nil {
 			return s.Store.Finish(ctx, a, "blocked", "Definition or workspace could not be prepared: "+e.Error())
@@ -202,6 +211,7 @@ func (s *Scheduler) launch(ctx context.Context, a Attempt) error {
 	if e = s.Store.Renew(ctx, a); e != nil {
 		return e
 	}
+	a.Snapshot = snapshot
 	state, e := s.Workers.Launch(ctx, a, t, workspace, snap.Prompt)
 	if e != nil {
 		return fmt.Errorf("worker launch pending reconciliation: %w", e)

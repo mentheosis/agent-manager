@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-// A validated namespace lets consumers host independent protocols in one database.
+// Production uses the static am_ tables. Prefix substitution is internal test
+// isolation only; the deployment profile cannot configure it.
 type Database struct {
 	*sql.DB
 	Prefix string

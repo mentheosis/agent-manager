@@ -30,7 +30,10 @@ class Instance:
     controller_mode: str | None = None
     queue_profile: str | None = None
     queue_id: str | None = None
-    queue_initial_max_workers: int = 1
+    queue_initial_max_workers: int | None = None
+    queue_lease_secs: int | None = None
+    queue_task_limit_secs: int | None = None
+    queue_task_limit_tokens: int | None = None
     queue_attempt: dict | None = None
     kind: str = "agent"  # "agent" | "loop"
     permission_mode: str = "acceptEdits"

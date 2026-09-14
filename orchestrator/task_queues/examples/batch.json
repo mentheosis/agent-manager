@@ -1,0 +1,12 @@
+{
+  "batch_key": "sample-pilot-001",
+  "workflow_id": "pilot-001",
+  "tasks": [
+    {
+      "key": "report",
+      "task_type": "report",
+      "parameters": {"topic": "README"},
+      "human_review_required": true
+    }
+  ]
+}

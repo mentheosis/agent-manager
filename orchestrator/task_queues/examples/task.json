@@ -1,9 +1,0 @@
-{
-  "instructions": "task.md",
-  "parameters_schema": {
-    "type": "object",
-    "properties": {"topic": {"type": "string", "minLength": 1}},
-    "required": ["topic"],
-    "additionalProperties": false
-  }
-}

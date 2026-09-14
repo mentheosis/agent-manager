@@ -26,3 +26,8 @@
 
 @import url('components/am-controller-activity.css');
 @import url('components/task_queues/am-task-queue-panel.css');
+
+am-task-queue-loader dialog { width: min(900px, 90vw); max-height: 85vh; overflow: auto; background: var(--bg-primary, #181818); color: inherit; border: 1px solid #555; border-radius: 8px; padding: 20px; }
+am-task-queue-loader textarea { display: block; box-sizing: border-box; width: 100%; margin: 12px 0; overflow: auto; font: inherit; font-family: monospace; }
+am-task-queue-loader pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+am-task-queue-loader .close { float: right; }

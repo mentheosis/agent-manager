@@ -31,7 +31,8 @@ func (s *Store) Submit(ctx context.Context, id, token, kind string, payload json
 		var status, workspace string
 		var previous sql.NullString
 		var alive bool
-		if e := tx.QueryRowContext(ctx, "SELECT task_id,status,COALESCE(workspace,''),submission_hash,lease_expires>UTC_TIMESTAMP(6) FROM am_task_attempts WHERE id=? AND queue_id=? FOR UPDATE", id, s.Config.QueueID).Scan(&task, &status, &workspace, &previous, &alive); e != nil {
+		var snapshot json.RawMessage
+		if e := tx.QueryRowContext(ctx, "SELECT task_id,status,COALESCE(workspace,''),submission_hash,lease_expires>UTC_TIMESTAMP(6),COALESCE(input_snapshot,'null') FROM am_task_attempts WHERE id=? AND queue_id=? FOR UPDATE", id, s.Config.QueueID).Scan(&task, &status, &workspace, &previous, &alive, &snapshot); e != nil {
 			return ErrConflict
 		}
 		hash := sha256.Sum256(payload)
@@ -72,6 +73,17 @@ func (s *Store) Submit(ctx context.Context, id, token, kind string, payload json
 		}
 		if workspace == "" {
 			return ErrConflict
+		}
+		var snap Snapshot
+		if e := json.Unmarshal(snapshot, &snap); e != nil {
+			return e
+		}
+		if p.Outcome == "completed" {
+			if e := requiredOutputs(workspace, snap); e != nil {
+				return e
+			}
+			// Always collect declared outputs, even when omitted by the worker.
+			p.ArtifactPaths = append(p.ArtifactPaths, snap.Outputs...)
 		}
 		artifacts, e := archiveArtifacts(s.Config, workspace, p.ArtifactPaths)
 		if e != nil {

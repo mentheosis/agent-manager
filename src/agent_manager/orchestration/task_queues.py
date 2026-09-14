@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 
 from ..instance import Instance
-from .controllers import internal_token, profiles, instance_queue_config
+from .controllers import internal_token, profiles, instance_queue_config, normalize_worker
 
 
 def mount_routes(app, registry, manager):
@@ -93,12 +93,42 @@ def mount_routes(app, registry, manager):
     @app.get('/api/task-queue-profiles')
     async def list_profiles():
         try:
-            return [{'name': name, 'queue_id': p.get('queue_id'),
-                     'provider': p.get('provider', 'codex'), 'model': p.get('model'),
-                     'max_workers_ceiling': p.get('max_workers_ceiling', 8)}
+            return [{'name': name,
+                     'default_max_workers': p.get('default_max_workers', 1),
+                     'default_lease_secs': p.get('default_lease_secs', 60),
+                     'default_task_limit_secs': p.get('default_task_limit_secs', 3600),
+                     'default_task_limit_tokens': p.get('default_task_limit_tokens', 2000000),
+                     'tasks': list(p.get('tasks', {}))}
                     for name, p in profiles().items()]
         except (ValueError, OSError):
             raise HTTPException(500, 'Task queue profiles are invalid or unavailable')
+
+    @app.post('/api/task-queues/{title}/render')
+    async def render_batch(title: str, request: Request):
+        return await load_batch(title, request, 'render')
+
+    @app.post('/api/task-queues/{title}/enqueue')
+    async def enqueue_batch(title: str, request: Request):
+        return await load_batch(title, request, 'enqueue')
+
+    async def load_batch(title, request, action):
+        import json
+        from .task_loading import queue_command
+        inst = parent(title)
+        raw = await request.body()
+        if len(raw) > 1 << 20:
+            raise HTTPException(413, 'Batch exceeds 1 MiB')
+        try:
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                raise ValueError('Batch must be an object')
+            if action == 'enqueue' and not body.get('preview_hash'):
+                raise ValueError('Preview the batch before loading')
+            return await queue_command(instance_queue_config(inst), manager.find_binary(), action, body)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc))
+        except asyncio.TimeoutError:
+            raise HTTPException(504, 'Queue command timed out; retry the same batch key to reconcile')
 
     @app.post('/api/task-queues/{title}/start')
     async def start(title: str):
@@ -180,7 +210,7 @@ def mount_routes(app, registry, manager):
             if inst.queue_attempt and inst.queue_attempt['id'] == attempt:
                 expected = instance_queue_config(parent(title))
                 actual = instance_queue_config(inst)
-                if any(expected.get(k) != actual.get(k) for k in ('dsn', 'queue_id', 'table_prefix', 'workspace_root')):
+                if any(expected.get(k) != actual.get(k) for k in ('dsn', 'queue_id', 'workspace_root')):
                     raise HTTPException(409, 'Attempt belongs to a different queue')
                 return inst
         return None
@@ -230,22 +260,48 @@ def mount_routes(app, registry, manager):
             if tombstone.exists():
                 raise HTTPException(409, 'Attempt was cancelled')
             existing = worker(title, attempt)
-            digest = hashlib.sha256(prompt.encode()).hexdigest()
+            execution = body.get('execution')
+            if not isinstance(execution, dict):
+                raise HTTPException(400, 'Resolved execution settings are required')
+            try:
+                execution = normalize_worker(execution)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            use_isolated = body.get('use_isolated_workspace', True)
+            if type(use_isolated) is not bool:
+                raise HTTPException(400, 'Workspace mode must be boolean')
+            workspace = Path(body.get('workspace', '')).resolve()
+            digest = hashlib.sha256(json.dumps({'prompt': prompt, 'execution': execution,
+                'workspace': str(workspace), 'use_isolated_workspace': use_isolated,
+                'repository': body.get('repository')}, sort_keys=True).encode()).hexdigest()
             if existing:
                 if existing.queue_attempt.get('prompt_hash') != digest:
                     raise HTTPException(409, 'Attempt launch input changed')
                 return summary(existing)
             cfg = instance_queue_config(inst)
-            expected = Path(cfg['workspace_root']).resolve() / 'attempts' / attempt
-            workspace = Path(body.get('workspace', '')).resolve()
+            attempt_root = Path(cfg['workspace_root']).resolve() / 'attempts' / attempt
+            add_dirs = []
+            if use_isolated:
+                expected = attempt_root
+            else:
+                # The authenticated scheduler supplies the saved mode/repository.
+                # A retry may retain shared mode after the profile default changes.
+                source = cfg.get('repositories', {}).get(body.get('repository'))
+                if not source or not Path(source).is_absolute():
+                    raise HTTPException(400, 'Shared workspace must name an approved repository')
+                expected = Path(source).resolve()
+                inputs = attempt_root / '.queue-inputs'
+                if not inputs.is_dir() or inputs.resolve() != inputs or attempt_root.is_relative_to(expected):
+                    raise HTTPException(400, 'Invalid attempt evidence directory')
+                add_dirs = [str(inputs)]
             if workspace != expected or not workspace.is_dir():
                 raise HTTPException(400, 'Workspace does not match attempt')
             name = 'queue_' + attempt
             if registry.get(name):
                 raise HTTPException(409, 'Conversation name collision')
             child = Instance(title=name, display_title=f"Task {body['task_id']} · {attempt[:8]}",
-                path=str(workspace), provider=cfg.get('provider', 'codex'), model=cfg.get('model'),
-                permission_mode=cfg.get('permission_mode') or ('acceptEdits' if cfg.get('provider') == 'claude' else 'workspace-write'),
+                path=str(workspace), provider=execution['provider'], model=execution['model'],
+                permission_mode=execution['permission_mode'], add_dirs=add_dirs,
                 parent=title, queue_profile=inst.queue_profile, queue_id=cfg['queue_id'],
                 queue_attempt={'id': attempt, 'task_id': body['task_id'], 'launch_state': 'reserved', 'prompt_hash': digest})
             registry._wire_hooks(child)

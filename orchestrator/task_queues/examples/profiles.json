@@ -1,15 +1,34 @@
 {
   "sample": {
-    "dsn_env": "AM_SAMPLE_QUEUE_DSN",
-    "table_prefix": "am_",
-    "repositories": {"sample": "/workspace/sample"},
-    "workspace_root": "/var/lib/agent-manager/queue-work/sample",
-    "provider": "codex",
-    "permission_mode": "workspace-write",
-    "max_workers_ceiling": 8,
-    "lease_seconds": 60,
-    "max_attempt_seconds": 3600,
-    "max_attempt_tokens": 200000,
-    "max_attempt_cost_usd": 20
+    "database_env": "AM_SAMPLE_QUEUE_DATABASE",
+    "repositories": {
+      "sample": "/workspace/sample"
+    },
+    "default_max_workers": 2,
+    "default_lease_secs": 60,
+    "default_task_limit_secs": 3600,
+    "default_task_limit_tokens": 2000000,
+    "tasks": {
+      "report": {
+        "instructions": "/workspace/sample/tasks/report.md",
+        "provider": "codex",
+        "model": "gpt-6-astra",
+        "permission": "dangerFullAccess",
+        "parameters": {
+          "topic": {
+            "type": "string",
+            "required": true,
+            "minLength": 1
+          }
+        },
+        "inputs": [
+          "README.md"
+        ],
+        "outputs": [
+          "reports/{{topic}}.md"
+        ]
+      }
+    },
+    "use_isolated_workspace": true
   }
 }

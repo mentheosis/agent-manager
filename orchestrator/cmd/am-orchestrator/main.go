@@ -22,6 +22,7 @@ func main() {
 	managed := flag.Bool("managed", false, "forward MCP completion to the managed team controller")
 	attempt := flag.String("attempt", "", "queue worker attempt ID")
 	initSchema := flag.Bool("init-schema", false, "explicitly initialize generic queue schema")
+	queueAction := flag.String("queue-action", "", "render or enqueue a task batch from stdin")
 	flag.Parse()
 	if *mode == "queue-worker" {
 		if err := taskqueues.Worker(*baseURL, *group, *attempt); err != nil {
@@ -40,7 +41,9 @@ func main() {
 		cfg.Parent = *group
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		if *initSchema {
+		if *queueAction != "" {
+			err = taskqueues.QueueCommand(ctx, cfg, *queueAction, os.Stdin, os.Stdout)
+		} else if *initSchema {
 			var store *taskqueues.Store
 			store, err = taskqueues.Open(cfg)
 			if err == nil {

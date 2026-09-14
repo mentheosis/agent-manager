@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-//go:embed schema/002.sql
+//go:embed schema/001.sql
 var Schema string
 var ErrConflict = errors.New("state changed, ownership expired, or command is not valid")
 
@@ -32,11 +32,10 @@ type Task struct {
 	Workflow     string          `json:"workflow_id"`
 	Type         string          `json:"task_type"`
 	Status       string          `json:"status"`
-	Definition   json.RawMessage `json:"definition_ref"`
 	Parameters   json.RawMessage `json:"parameters"`
 	AttemptCount int             `json:"attempt_count"`
 	MaxAttempts  int             `json:"max_attempts"`
-	Review       bool            `json:"review_required"`
+	Review       bool            `json:"human_review_required"`
 	Latest       string          `json:"latest_attempt"`
 	Depends      sql.NullInt64   `json:"-"`
 	Result       json.RawMessage `json:"accepted_result,omitempty"`
@@ -57,6 +56,7 @@ type Attempt struct {
 	Lease        time.Time       `json:"lease_expires"`
 }
 type Status struct {
+	Limits     Limits `json:"limits"`
 	QueueID    string `json:"queue_id"`
 	MaxWorkers int    `json:"max_workers"`
 	Paused     bool   `json:"paused"`
@@ -123,8 +123,8 @@ func Open(c Config) (*Store, error) {
 
 func (s *Store) Init(ctx context.Context) error {
 	var existing int
-	if e := s.DB.QueryRowContext(ctx, "SELECT MAX(version) FROM am_schema_version").Scan(&existing); e == nil && existing != 2 {
-		return errors.New("existing schema needs explicit migration; see schema/migrate_v1_to_v2.md")
+	if e := s.DB.QueryRowContext(ctx, "SELECT MAX(version) FROM am_schema_version").Scan(&existing); e == nil && existing != 1 {
+		return errors.New("unsupported queue schema version; initialize a compatible schema explicitly")
 	}
 	for _, q := range strings.Split(Schema, ";") {
 		if strings.TrimSpace(q) == "" {
@@ -141,7 +141,7 @@ func (s *Store) Check(ctx context.Context) error {
 	if err := s.DB.QueryRowContext(ctx, "SELECT MAX(version) FROM am_schema_version").Scan(&version); err != nil {
 		return errors.New("queue schema missing or inaccessible; apply schema explicitly")
 	}
-	if version != 2 {
+	if version != 1 {
 		return errors.New("unsupported queue schema version")
 	}
 	return nil
@@ -188,21 +188,34 @@ func (s *Store) Claim(ctx context.Context, owner string) (*Attempt, *Task, error
 		if e := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM am_task_attempts WHERE queue_id=? AND owner=? AND backend_id=? AND status IN "+active, s.Config.QueueID, owner, s.backendID()).Scan(&n); e != nil {
 			return e
 		}
-		if n >= s.controls.MaxWorkers || n >= s.Config.MaxWorkersCeiling {
+		if n >= s.controls.MaxWorkers {
 			return nil
 		}
 		t := Task{}
 		var latest sql.NullString
-		e := tx.QueryRowContext(ctx, `SELECT t.id,t.workflow_id,t.task_type,t.status,t.definition_ref,t.parameters,t.attempt_count,t.max_attempts,t.review_required,t.latest_attempt,t.depends_on FROM am_tasks t WHERE `+eligible+` ORDER BY t.priority DESC,t.task_order,t.id LIMIT 1 FOR UPDATE SKIP LOCKED`, s.Config.QueueID).Scan(&t.ID, &t.Workflow, &t.Type, &t.Status, &t.Definition, &t.Parameters, &t.AttemptCount, &t.MaxAttempts, &t.Review, &latest, &t.Depends)
+		e := tx.QueryRowContext(ctx, `SELECT t.id,t.workflow_id,t.task_type,t.status,t.parameters,t.attempt_count,t.max_attempts,t.human_review_required,t.latest_attempt,t.depends_on FROM am_tasks t WHERE `+eligible+` ORDER BY t.priority DESC,t.task_order,t.id LIMIT 1 FOR UPDATE SKIP LOCKED`, s.Config.QueueID).Scan(&t.ID, &t.Workflow, &t.Type, &t.Status, &t.Parameters, &t.AttemptCount, &t.MaxAttempts, &t.Review, &latest, &t.Depends)
 		if e == sql.ErrNoRows {
 			return nil
 		}
 		if e != nil {
 			return e
 		}
-		a = &Attempt{ID: ID(), TaskID: t.ID, Owner: owner, Status: "claimed"}
+		initial, _ := json.Marshal(Snapshot{Limits: s.controls.Limits})
+		var previous json.RawMessage
+		err := tx.QueryRowContext(ctx, "SELECT input_snapshot FROM am_task_attempts WHERE task_id=? AND input_snapshot IS NOT NULL ORDER BY started_at DESC,id DESC LIMIT 1", t.ID).Scan(&previous)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if len(previous) > 0 && string(previous) != "null" {
+			initial = previous
+		}
+		var snap Snapshot
+		if err = json.Unmarshal(initial, &snap); err != nil {
+			return err
+		}
+		a = &Attempt{ID: ID(), TaskID: t.ID, Owner: owner, Status: "claimed", Snapshot: initial}
 		task = &t
-		if _, e = tx.ExecContext(ctx, `INSERT INTO am_task_attempts(id,task_id,queue_id,owner,backend_id,lease_expires) VALUES (?,?,?,?,?,TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)))`, a.ID, t.ID, s.Config.QueueID, owner, s.backendID(), s.Config.LeaseSeconds); e != nil {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO am_task_attempts(id,task_id,queue_id,owner,backend_id,lease_expires,input_snapshot) VALUES (?,?,?,?,?,TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)),?)`, a.ID, t.ID, s.Config.QueueID, owner, s.backendID(), snap.Limits.LeaseSeconds, string(initial)); e != nil {
 			return e
 		}
 		if _, e = tx.ExecContext(ctx, `UPDATE am_tasks SET status='running',latest_attempt=?,attempt_count=attempt_count+1,updated_at=UTC_TIMESTAMP(6) WHERE id=?`, a.ID, t.ID); e != nil {
@@ -215,6 +228,7 @@ func (s *Store) Claim(ctx context.Context, owner string) (*Attempt, *Task, error
 func (s *Store) Status(ctx context.Context) (out Status, err error) {
 	s.controls.mu.Lock()
 	defer s.controls.mu.Unlock()
+	out.Limits = s.controls.Limits
 	out.QueueID = s.Config.QueueID
 	out.MaxWorkers = s.controls.MaxWorkers
 	out.Paused = s.controls.Paused
@@ -226,7 +240,7 @@ func (s *Store) Status(ctx context.Context) (out Status, err error) {
 	return
 }
 func (s *Store) Configure(ctx context.Context, limit *int, paused *bool, actor string) error {
-	if limit != nil && (*limit < 1 || *limit > s.Config.MaxWorkersCeiling) {
+	if limit != nil && (*limit < 1) {
 		return errors.New("max_workers outside configured range")
 	}
 	s.controls.mu.Lock()
@@ -278,7 +292,7 @@ func (s *Store) Attempts(ctx context.Context) ([]Attempt, error) {
 func (s *Store) Task(ctx context.Context, id int64) (Task, error) {
 	var t Task
 	var latest sql.NullString
-	e := s.DB.QueryRowContext(ctx, "SELECT id,queue_id,workflow_id,task_type,status,definition_ref,parameters,attempt_count,max_attempts,review_required,latest_attempt,depends_on,COALESCE(accepted_result,'null') FROM am_tasks WHERE id=? AND queue_id=?", id, s.Config.QueueID).Scan(&t.ID, &t.QueueID, &t.Workflow, &t.Type, &t.Status, &t.Definition, &t.Parameters, &t.AttemptCount, &t.MaxAttempts, &t.Review, &latest, &t.Depends, &t.Result)
+	e := s.DB.QueryRowContext(ctx, "SELECT id,queue_id,workflow_id,task_type,status,parameters,attempt_count,max_attempts,human_review_required,latest_attempt,depends_on,COALESCE(accepted_result,'null') FROM am_tasks WHERE id=? AND queue_id=?", id, s.Config.QueueID).Scan(&t.ID, &t.QueueID, &t.Workflow, &t.Type, &t.Status, &t.Parameters, &t.AttemptCount, &t.MaxAttempts, &t.Review, &latest, &t.Depends, &t.Result)
 	if string(t.Result) == "null" {
 		t.Result = nil
 	}
@@ -315,7 +329,7 @@ func (s *Store) Launched(ctx context.Context, a Attempt, conversation string) er
 	})
 }
 func (s *Store) Renew(ctx context.Context, a Attempt) error {
-	r, e := s.DB.ExecContext(ctx, "UPDATE am_task_attempts SET lease_expires=TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)),heartbeat_at=UTC_TIMESTAMP(6) WHERE id=? AND queue_id=? AND owner=? AND status IN "+active+" AND lease_expires>UTC_TIMESTAMP(6)", s.Config.LeaseSeconds, a.ID, s.Config.QueueID, a.Owner)
+	r, e := s.DB.ExecContext(ctx, "UPDATE am_task_attempts SET lease_expires=TIMESTAMPADD(SECOND,COALESCE(JSON_EXTRACT(input_snapshot,'$.limits.lease_secs'),?),UTC_TIMESTAMP(6)),heartbeat_at=UTC_TIMESTAMP(6) WHERE id=? AND queue_id=? AND owner=? AND status IN "+active+" AND lease_expires>UTC_TIMESTAMP(6)", s.Config.LeaseSeconds, a.ID, s.Config.QueueID, a.Owner)
 	if e != nil {
 		return e
 	}
@@ -332,7 +346,7 @@ func (s *Store) Finish(ctx context.Context, a Attempt, outcome, reason string) e
 		var review bool
 		var count, budget int
 		var latest string
-		if e := tx.QueryRowContext(ctx, "SELECT review_required,attempt_count,max_attempts,COALESCE(latest_attempt,'') FROM am_tasks WHERE id=? AND queue_id=? FOR UPDATE", a.TaskID, s.Config.QueueID).Scan(&review, &count, &budget, &latest); e != nil {
+		if e := tx.QueryRowContext(ctx, "SELECT human_review_required,attempt_count,max_attempts,COALESCE(latest_attempt,'') FROM am_tasks WHERE id=? AND queue_id=? FOR UPDATE", a.TaskID, s.Config.QueueID).Scan(&review, &count, &budget, &latest); e != nil {
 			return e
 		}
 		if latest != a.ID {
@@ -545,4 +559,18 @@ func (s *Store) ValidateDependencies(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) ConfigureLimits(ctx context.Context, limits Limits, actor string) error {
+	if err := limits.validate(); err != nil {
+		return err
+	}
+	s.controls.mu.Lock()
+	defer s.controls.mu.Unlock()
+	if err := s.transaction(ctx, func(tx *Tx) error {
+		return s.log(ctx, tx, nil, nil, actor, "configuration", "Controller attempt limits requested", map[string]any{"controller_id": s.Config.ControllerID, "limits": limits})
+	}); err != nil {
+		return err
+	}
+	return s.controls.save(s.controls.MaxWorkers, s.controls.Paused, limits)
 }

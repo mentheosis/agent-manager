@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ func testStore(t *testing.T) *Store {
 	if dsn == "" {
 		t.Skip("AM_TEST_MYSQL_DSN is required for MySQL integration tests")
 	}
-	c := Config{DSN: dsn, QueueID: "test", TablePrefix: "test_" + ID()[:10] + "_", MaxWorkersCeiling: 8, LeaseSeconds: 30, MaxAttemptSeconds: 60, WorkspaceRoot: t.TempDir(), InternalToken: strings.Repeat("s", 64)}
+	c := Config{DSN: dsn, QueueID: "test", TablePrefix: "test_" + ID()[:10] + "_", LeaseSeconds: 30, MaxAttemptSeconds: 60, MaxAttemptTokens: 2000000, WorkspaceRoot: t.TempDir(), InternalToken: strings.Repeat("s", 64)}
 	s, e := Open(c)
 	if e != nil {
 		t.Fatal(e)
@@ -38,7 +39,7 @@ func testStore(t *testing.T) *Store {
 }
 func enqueue(t *testing.T, s *Store, review bool, dep any) int64 {
 	t.Helper()
-	r, e := s.DB.ExecContext(context.Background(), "INSERT INTO am_tasks(queue_id,workflow_id,task_type,definition_ref,parameters,review_required,depends_on) VALUES (?,'workflow','neutral',JSON_OBJECT(),JSON_OBJECT(),?,?)", s.Config.QueueID, review, dep)
+	r, e := s.DB.ExecContext(context.Background(), "INSERT INTO am_tasks(queue_id,workflow_id,task_type,parameters,human_review_required,depends_on) VALUES (?,'workflow','neutral',JSON_OBJECT(),?,?)", s.Config.QueueID, review, dep)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -281,8 +282,9 @@ func TestNeutralTaskReplayAndArtifactReview(t *testing.T) {
 	ctx := context.Background()
 	c, task := definitionFixture(t)
 	s.Config.Repositories = c.Repositories
+	s.Config.Tasks = c.Tasks
 	id := enqueue(t, s, true, nil)
-	if _, e := s.DB.ExecContext(ctx, "UPDATE am_tasks SET definition_ref=?,parameters=? WHERE id=?", string(task.Definition), string(task.Parameters), id); e != nil {
+	if _, e := s.DB.ExecContext(ctx, "UPDATE am_tasks SET parameters=? WHERE id=?", string(task.Parameters), id); e != nil {
 		t.Fatal(e)
 	}
 	resume(t, s, 1)
@@ -328,12 +330,52 @@ func TestNeutralTaskReplayAndArtifactReview(t *testing.T) {
 	if e = s.Action(ctx, id, "retry", "", "reviewer"); e != nil {
 		t.Fatal(e)
 	}
+	// Profile edits and per-controller limits do not alter an executed task's retry.
+	definition := s.Config.Tasks["neutral"]
+	definition.Model = "new-model"
+	s.Config.Tasks["neutral"] = definition
+	if e = s.ConfigureLimits(ctx, Limits{45, 120, 5000}, "operator"); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(definition.Instructions, []byte("New instruction text"), 0600); e != nil {
+		t.Fatal(e)
+	}
 	if e = restarted.Tick(ctx); e != nil {
 		t.Fatal(e)
 	}
 	attempts, e = s.Attempts(ctx)
 	if e != nil || len(attempts) != 1 || attempts[0].ID == a.ID || attempts[0].Workspace == a.Workspace {
 		t.Fatal("retry reused prior attempt", attempts, e)
+	}
+	var first, retry Snapshot
+	if e = json.Unmarshal(a.Snapshot, &first); e != nil {
+		t.Fatal(e)
+	}
+	if e = json.Unmarshal(attempts[0].Snapshot, &retry); e != nil {
+		t.Fatal(e)
+	}
+	if !reflect.DeepEqual(first, retry) {
+		t.Fatal("retry inputs changed")
+	}
+	nextID := enqueue(t, s, false, nil)
+	if _, e = s.DB.ExecContext(ctx, "UPDATE am_tasks SET parameters=? WHERE id=?", string(task.Parameters), nextID); e != nil {
+		t.Fatal(e)
+	}
+	// Finish the retry before assigning a fresh row under the new settings.
+	w.states[attempts[0].ID] = WorkerState{Exists: true, Alive: false, Launched: true}
+	if e = restarted.Tick(ctx); e != nil {
+		t.Fatal(e)
+	}
+	latest, e := s.Attempts(ctx)
+	if e != nil || len(latest) != 1 || latest[0].TaskID != nextID {
+		t.Fatal(latest, e)
+	}
+	var fresh Snapshot
+	if e = json.Unmarshal(latest[0].Snapshot, &fresh); e != nil {
+		t.Fatal(e)
+	}
+	if fresh.Task.Model != "new-model" || fresh.Instructions != "New instruction text" || fresh.Limits.TaskTokens != 5000 {
+		t.Fatal("fresh task ignored new configuration", fresh)
 	}
 	if e = s.Submit(ctx, a.ID, token, "progress", json.RawMessage(`{"summary":"stale write"}`)); e == nil {
 		t.Fatal("stale attempt wrote after retry")
@@ -345,8 +387,13 @@ func TestResourceBudgetStopsWorkerAndBlocksTask(t *testing.T) {
 	ctx := context.Background()
 	enqueue(t, s, false, nil)
 	resume(t, s, 1)
+	if err := s.ConfigureLimits(ctx, Limits{30, 60, 100}, "test"); err != nil {
+		t.Fatal(err)
+	}
 	a := claim(t, s)
-	s.Config.MaxAttemptTokens = 100
+	if err := s.ConfigureLimits(ctx, Limits{30, 60, 1000}, "test"); err != nil {
+		t.Fatal(err)
+	}
 	w := &fakeWorkers{states: map[string]WorkerState{a.ID: {Exists: true, Alive: true, Busy: true, Tokens: 101}}}
 	scheduler := Scheduler{s, w, "owner", func(string) {}}
 	if e := scheduler.Tick(ctx); e != nil {
@@ -407,6 +454,15 @@ func TestIndependentControllersSharePoolWithoutDuplicateClaims(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	// A concurrent index scan may temporarily skip locked candidates. Subsequent
+	// scheduler polls must fill the remaining slots, without exceeding either cap.
+	for i := 0; i < 2; i++ {
+		for _, store := range []*Store{s, other} {
+			if _, _, err := store.Claim(ctx, store.Config.ControllerID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	a, _ := s.Status(ctx)
 	b, _ := other.Status(ctx)
 	if a.Workers != 2 || b.Workers != 2 || a.Available != 8 || b.Available != 8 {
@@ -442,5 +498,54 @@ func TestIndependentControllersSharePoolWithoutDuplicateClaims(t *testing.T) {
 	c, _ := fresh.Status(ctx)
 	if !c.Paused || c.MaxWorkers != 1 || c.Workers != 0 {
 		t.Fatal(c)
+	}
+}
+
+func TestSharedSchedulerSnapshotsAndArchivesLiveCheckout(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	c, task := definitionFixture(t)
+	shared := false
+	s.Config.UseIsolatedWorkspace = &shared
+	s.Config.Repositories = c.Repositories
+	s.Config.Tasks = c.Tasks
+	id := enqueue(t, s, false, nil)
+	if _, err := s.DB.ExecContext(ctx, "UPDATE am_tasks SET parameters=? WHERE id=?", string(task.Parameters), id); err != nil {
+		t.Fatal(err)
+	}
+	resume(t, s, 1)
+	workers := &fakeWorkers{states: map[string]WorkerState{}}
+	scheduler := Scheduler{s, workers, "owner", func(string) {}}
+	if err := scheduler.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := s.Attempts(ctx)
+	if err != nil || len(attempts) != 1 {
+		t.Fatal(attempts, err)
+	}
+	a := attempts[0]
+	if a.Workspace != c.Repositories["fixture"] {
+		t.Fatal("worker not using checkout", a.Workspace)
+	}
+	var snap Snapshot
+	if err = json.Unmarshal(a.Snapshot, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if isolated(snap.UseIsolatedWorkspace) || snap.InputsDirectory == "" {
+		t.Fatal("shared context not snapshotted")
+	}
+	if err = os.WriteFile(a.Workspace+"/report.md", []byte("shared output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Submit(ctx, a.ID, capability(s.Config.InternalToken, a.ID), "result", json.RawMessage(`{"outcome":"completed","summary":"shared report","artifact_paths":["report.md"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	workers.states[a.ID] = WorkerState{Exists: true, Alive: false, Launched: true}
+	if err = scheduler.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Task(ctx, id)
+	if err != nil || got.Status != "completed" || !strings.Contains(string(got.Result), "sha256") {
+		t.Fatal("shared artifact result missing", got, err)
 	}
 }

@@ -25,7 +25,7 @@ def main():
     server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Handler, directory=str(ROOT / 'static')))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    limits = {'max_workers': 1, 'paused': False, 'available_tasks': 17, 'active_tasks': 1, 'active_workers': 1}
+    limits = {'max_workers': 1, 'paused': False, 'available_tasks': 17, 'active_tasks': 1, 'active_workers': 1, 'limits': {'lease_secs': 60, 'task_limit_secs': 3600, 'task_limit_tokens': 2000000}}
     errors, controls = [], []
     try:
         with sync_playwright() as p:
@@ -38,12 +38,20 @@ def main():
                 if path == '/api/instances':
                     result = [QUEUE, TEAM]
                 elif path == '/api/task-queue-profiles':
-                    result = [{'name': 'sample', 'queue_id': 'sample', 'max_workers_ceiling': 8}]
+                    result = [{'name': 'sample', 'default_max_workers': 2, 'default_lease_secs': 45, 'default_task_limit_secs': 900, 'default_task_limit_tokens': 10000}]
+                elif path.endswith('/task-queues/sample-queue/render'):
+                    result = {'preview_hash': 'rendered-hash', 'tasks': [{'key': 'one', 'task_type': 'report',
+                              'execution': {'provider': 'codex', 'model': 'test', 'permission': 'workspace-write'},
+                              'prompt': 'Inspect README.\nRequired output: reports/README.md', 'warnings': []}]}
+                elif path.endswith('/task-queues/sample-queue/enqueue'):
+                    body = request.request.post_data_json
+                    assert body['preview_hash'] == 'rendered-hash'
+                    result = {'task_ids': {'one': 101}}
                 elif path.endswith('/task-queues/sample-queue/status'):
-                    result = {'state': 'running', 'queue': limits, 'max_workers_ceiling': 8}
+                    result = {'state': 'running', 'queue': limits}
                 elif path.endswith('/task-queues/sample-queue/tasks'):
                     result = [dict(id=42, task_type='report', status='awaiting_review', attempt_count=1,
-                        max_attempts=3, latest_attempt='abc', definition_ref={'commit': 'a'*40}, parameters={'topic': 'README'},
+                        max_attempts=3, latest_attempt='abc', parameters={'topic': 'README'},
                         latest_result={'summary': 'Report ready', 'artifacts': []})]
                 elif path.endswith('/task-queues/sample-queue/logs'):
                     after = int(parse_qs(url.query).get('after', ['0'])[0])
@@ -54,6 +62,8 @@ def main():
                     controls.append(body)
                     if body['action'] == 'max_workers':
                         limits['max_workers'] = body['max_workers']
+                    elif body['action'] == 'limits':
+                        limits['limits'] = body['limits']
                     result = {'ok': True}
                 elif path == '/api/providers':
                     result = [{'provider':'claude','enabled':True,'label':'Claude','runtime_options':{}}]
@@ -78,12 +88,27 @@ def main():
             expect(page.locator('am-loop-pane')).not_to_be_visible()
             expect(panel.locator('[data-count=available_tasks]')).to_have_text('17')
             expect(panel.locator('[data-count=workers]')).to_have_text('1 / 1')
-            panel.locator('input').fill('2')
+            panel.locator('[name=max-workers]').fill('2')
             panel.get_by_role('button', name='Apply', exact=True).click()
             expect(panel.locator('.queue-effective')).to_have_text('Effective limit: 2')
-            panel.locator('input').fill('3')
+            panel.locator('[name=max-workers]').fill('3')
             page.evaluate('document.querySelector("am-task-queue-panel").load()')
-            expect(panel.locator('input')).to_have_value('3')
+            expect(panel.locator('[name=max-workers]')).to_have_value('3')
+            panel.locator('[name=lease]').fill('30')
+            panel.locator('[name=seconds]').fill('120')
+            panel.locator('[name=tokens]').fill('5000')
+            panel.get_by_role('button', name='Apply task limits', exact=True).click()
+            expect(panel.locator('.attempt-effective')).to_contain_text('time 120s')
+            assert any(c.get('limits', {}).get('task_limit_tokens') == 5000 for c in controls)
+            page.get_by_role('button', name='Load tasks', exact=True).click()
+            loader = page.locator('am-task-queue-loader')
+            loader.locator('textarea').fill(json.dumps({'batch_key':'browser-test','workflow_id':'run','tasks':[{'key':'one','task_type':'report','parameters':{'topic':'README'}}]}))
+            expect(loader.get_by_role('button', name='Load into queue')).to_be_disabled()
+            loader.get_by_role('button', name='Preview tasks').click()
+            expect(loader.locator('.rendered')).to_contain_text('Inspect README')
+            loader.get_by_role('button', name='Load into queue').click()
+            expect(loader.locator('.loader-message')).to_contain_text('101')
+            loader.get_by_role('button', name='Close', exact=True).click()
             page.locator('.queue-task-rows summary').click()
             page.locator('am-task-queue-tasks').get_by_role('button', name='approve', exact=True).click()
             assert any(c['action']=='approve' and c['attempt_id']=='abc' for c in controls)
@@ -101,7 +126,10 @@ def main():
             expect(panel).not_to_be_visible()
             page.evaluate('document.querySelector("am-new-dialog").open("task_queue")')
             expect(page.locator('am-task-queue-create')).to_be_visible()
-            expect(page.locator('am-task-queue-create input[name=max]')).to_have_value('1')
+            expect(page.locator('am-task-queue-create input[name=max]')).to_have_value('2')
+            expect(page.locator('am-task-queue-create input[name=lease]')).to_have_value('45')
+            expect(page.locator('am-task-queue-create input[name=seconds]')).to_have_value('900')
+            expect(page.locator('am-task-queue-create input[name=tokens]')).to_have_value('10000')
             expect(page.locator('am-task-queue-create select')).to_have_value('sample')
             page.evaluate('document.querySelector("am-new-dialog").setMode("team")')
             expect(page.locator('#team-yaml')).to_have_value(__import__('re').compile('gpt-6-astra'))

@@ -203,7 +203,10 @@ class CreateInstanceBody(BaseModel):
     controller_mode: str | None = None
     queue_profile: str | None = None
     queue_id: str | None = None
-    queue_initial_max_workers: int = 1
+    queue_initial_max_workers: int | None = None
+    queue_lease_secs: int | None = None
+    queue_task_limit_secs: int | None = None
+    queue_task_limit_tokens: int | None = None
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     provider: str = "claude"
@@ -708,13 +711,20 @@ def build_app() -> FastAPI:
             if body.controller_mode == "task_queue":
                 from .orchestration.controllers import queue_config
                 cfg = queue_config(body.queue_profile or "")
-                import re
-                selected_queue = body.queue_id or cfg.get("queue_id", "")
-                if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", selected_queue):
-                    raise ValueError("Queue identifier is required (letters, numbers, underscore or hyphen)")
-                body.queue_id = selected_queue
-                if not 1 <= body.queue_initial_max_workers <= cfg.get("max_workers_ceiling", 8):
-                    raise ValueError("Initial max workers outside configured range")
+                if body.queue_id and body.queue_id != body.queue_profile:
+                    raise ValueError("Queue identifier must match the profile name")
+                body.queue_id = body.queue_profile
+                from .orchestration.controllers import validate_limits
+                for field, key in [('queue_initial_max_workers', 'initial_max_workers'), ('queue_lease_secs', 'lease_seconds'),
+                                   ('queue_task_limit_secs', 'max_attempt_seconds'), ('queue_task_limit_tokens', 'max_attempt_tokens')]:
+                    value = getattr(body, field)
+                    if value is not None:
+                        cfg[key] = value
+                validate_limits(cfg)
+                body.queue_initial_max_workers = cfg['initial_max_workers']
+                body.queue_lease_secs = cfg['lease_seconds']
+                body.queue_task_limit_secs = cfg['max_attempt_seconds']
+                body.queue_task_limit_tokens = cfg['max_attempt_tokens']
             inst = await registry.create(
                 body.name,
                 body.path,
@@ -728,6 +738,9 @@ def build_app() -> FastAPI:
                 queue_profile=body.queue_profile,
                 queue_id=body.queue_id,
                 queue_initial_max_workers=body.queue_initial_max_workers,
+                queue_lease_secs=body.queue_lease_secs,
+                queue_task_limit_secs=body.queue_task_limit_secs,
+                queue_task_limit_tokens=body.queue_task_limit_tokens,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))

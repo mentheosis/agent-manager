@@ -2,14 +2,14 @@
 
 Status: v1 implemented and automated validation passed, 2026-09-11. The Go/team split,
 generic SQL scheduler, provider adapters and task-queue UI are implemented. The
-setup and current schema v2 contract are in [protocol.md](protocol.md). Existing consumer tables
+setup and current schema v1 contract are in [protocol.md](protocol.md). Existing consumer tables
 have not been migrated, and no live provider pilot has been launched.
 
 Implementation decisions:
 - Tables are `am_tasks`, `am_task_attempts`, `am_work_log`, and
   `am_schema_version`, with a configurable prefix and explicit schema setup.
-- Definitions use a pinned JSON manifest, Markdown instructions and parameter
-  schema. Workspaces are isolated Git archive exports; output artifacts are copied
+- Definitions are embedded in deployment profiles, keyed by queue ID and task type,
+  with Markdown instruction paths and a parameter map. Workspaces are isolated Git archive exports; output artifacts are copied
   to a content-addressed local store.
 - Worker reporting uses attempt-scoped MCP tools backed by authenticated HTTP.
 - Review is human-gated in v1. Automatic review promotion remains a later extension.
@@ -18,7 +18,7 @@ Implementation decisions:
 - The parent UI combines tasks/activity with status/settings in the right panel.
   Controller deletion preserves task/attempt history and worker conversations; direct
   attempt deletion remains disabled.
-- Wall-time and reported token/cost thresholds are implemented; provider account
+- Wall-time and reported token thresholds are implemented; provider account
   quotas remain necessary for hard spending limits.
 - Python team compatibility routes remain in the shared API; leader MCP setup is
   in the team adapter. Further mechanical route extraction can happen independently.
@@ -164,7 +164,7 @@ orchestrator/
     config.go
     scheduler.go
     store.go                       # MySQL claims, transitions and ownership checks
-    definitions.go                 # pinned references, params and input snapshots
+    definitions.go                 # profile task resolution, params and input snapshots
     submissions.go                 # authenticated attempt progress/results
     recovery.go
     *_test.go
@@ -279,22 +279,39 @@ definitions live in the consuming repository, not agent-manager. Each describes
 objectives, required parameters, output format, permitted work and acceptance criteria.
 Definitions can reference shared requirements maintained by that consumer.
 
-A task stores a `definition_ref` resolving to repository identity, immutable commit
-and relative path, plus optional integrity hash. Definition references may be inline
-structured values or normalized generic registry rows; do not maintain two editable
-sources of instructions. MVP uses repo files, without requiring a task-type table.
+Profiles support use_isolated_workspace (default true). False launches in the
+existing approved repository, with live files and edits. Inputs remain in a separate
+attempt-specific state directory. Retries preserve instructions/configuration but
+cannot reproduce shared filesystem state. Serialize shared writers across controllers.
 
-The generic resolver validates approved repositories/paths, pins the commit, and
-loads the content as worker instructions. Pin referenced requirement files as well.
-Reject traversal, unexpected symlinks and unapproved paths; do not execute setup code
-merely because a task references it. Missing definitions block work rather than falling
-back silently to the latest file. Local uncommitted definitions require an explicitly
-captured immutable artifact, not a mutable path disguised as a version.
+The deployment profile name is the queue ID; its embedded tasks map defines canonical
+task types. Each entry names an absolute Markdown instruction path, provider, model,
+permission and parameter map. There is no per-task definition_ref or manifest file.
+The resolver captures the exact instructions, task configuration and Git HEAD source
+archive before execution. Full inputs are stored in am_task_attempts.input_snapshot.
+Retries retain the preceding snapshot; new task rows resolve current definitions.
+Only the repository containing the instructions is exported into a worker workspace.
 
-Parameters remain JSON, with validation against the definition's versioned parameter
-schema. The scheduler understands structural validation only. Snapshot accepted
-upstream artifact references/hashes into each attempt. Changing a definition or an
-accepted upstream result requires explicit invalidation/revision of dependent work.
+Table names are static. Storage is derived from AGENT_MANAGER_STATE_DIR/queue-work/
+<queue_id>. Profiles specify database_env and default_max_workers/default_lease_secs/
+default_task_limit_secs/default_task_limit_tokens. Creation and the right panel allow
+controller-specific overrides. Running attempts and retries retain original limits.
+See protocol.md for the authoritative implementation contract and initial_manual_test_plan.md
+for the first deployment procedure.
+
+## Rendering and file contracts
+
+Stage Markdown and inputs/outputs support literal {{parameter}} substitution using
+validated parameters. Inputs may use upstream:<path> for accepted predecessor files.
+The Go controller validates inputs before launch, records signatures, rejects missing
+or stale required outputs on completion, and archives declared outputs automatically.
+File validation does not judge semantic correctness. Blocked/failed results can carry
+partial evidence.
+
+Operator CLI render/enqueue and a UI Load tasks dialog provide preview and batch
+insertion without starting a controller. Batches use stable producer keys/request
+hashes, atomic insertion and explicit dependencies. The initial am_tasks DDL includes
+producer_key/request_hash and a unique producer-task key for repeat-safe loading.
 
 ## SQL protocol
 
@@ -307,7 +324,7 @@ Design these logical tables before implementing the loop (names finalized in DDL
 
 | Table | Purpose |
 |---|---|
-| am_tasks | Opaque type/workflow, pinned definition, parameters, dependency, order/priority, state, scheduling/retry settings, latest accepted result reference |
+| am_tasks | Canonical type/workflow, parameters, dependency, order/priority, state, scheduling/retry settings, latest accepted result reference |
 | am_task_attempts | Worker/conversation ID, controller identity, lease/fencing token, input snapshot, start/heartbeat/end, outcome/error and resource usage |
 | am_work_log | Append-only meaningful events and concise reports, linked to task/attempt |
 | am_schema_version | Detect incompatible controller/database versions |
@@ -365,16 +382,15 @@ require idempotency or separate authorization for external side effects.
 On restart reconcile durable attempts with actual session/process existence: attach
 to surviving valid workers, classify ended workers, and recover expired leases.
 A live controller must not extend a hung worker indefinitely. Bound wall time, idle
-execution, retry count, token/spend allowance and provider requests. Share limits across
-controllers when they use the same provider/credential resource.
+execution, retry count, token allowance and provider requests. Limits are per
+controller; provider-account quotas are a deployment concern, not a shared scheduler cap.
 
 ## Parallel task limit and right-side queue controls
 
 Each UI controller has a locally persisted `max_workers` setting: the maximum number
-of concurrent worker attempts it owns. Tasks use an opaque `queue_id` with no queue
+of concurrent worker attempts it owns. Tasks use the profile name as `queue_id`, with no queue
 registration table or foreign key. Producers can insert tasks before any controller exists. Default to **1** for initial
-rollout; operators can set **2** or increase it later. Validate a positive integer
-against the deployment's configured ceiling. Use Pause to suspend dispatch rather
+rollout; operators can set **2** or increase it later. Validate positive integers. Use Pause to suspend dispatch rather
 than giving zero an ambiguous meaning. Include the setting in queue creation and
 configuration as well as the running controller's right-side panel.
 
@@ -465,8 +481,8 @@ must never appear in browser payloads.
 ## Boundaries
 
 - No consuming-project details in agent-manager implementation, built-in prompts or DDL.
-- No inline instruction copies in queue rows, mutable unversioned task definitions,
-  or secrets passed to workers.
+- No inline instruction copies in task rows or secrets passed to workers. Definitions
+  may change between tasks, but execution uses immutable per-attempt snapshots.
 - No task completion inferred solely from process exit, UI ready state or LLM confidence.
 - No broad host-command privilege added as a convenience for queue workers. The
   existing single-token command MCP is not an isolation boundary for a large pool.
@@ -486,7 +502,7 @@ must never appear in browser payloads.
 3. **UI organization and adapter extraction.** Move team components/CSS, extract event
    presentation and menu configuration, separate team creation from the dialog shell.
    Verify no visual/behavior regression. This completes the reusable foundation.
-4. **SQL and worker protocol.** Finalize DDL, migrations, canonical definition references,
+4. **SQL and worker protocol.** Finalize DDL, migrations, profile task definitions,
    attempt identities, scoped submissions, review transitions and recovery semantics.
    Define idempotent backend create/find/start operations before launching workers.
 5. **Go queue vertical slice.** Add task-queue mode that claims one neutral task, creates

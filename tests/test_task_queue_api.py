@@ -17,9 +17,10 @@ def queue_app(tmp_path, monkeypatch):
     monkeypatch.setenv('AGENT_MANAGER_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.setenv('QUEUE_TEST_DSN', 'secret-user:secret-password@tcp(db:3306)/queue')
     profile = tmp_path / 'profiles.json'
-    profile.write_text(json.dumps({'test': {'queue_id': 'neutral', 'dsn_env': 'QUEUE_TEST_DSN',
-        'workspace_root': str(tmp_path / 'work'), 'repositories': {'sample': str(tmp_path)},
-        'provider': 'codex', 'model': 'test-model', 'max_workers_ceiling': 2}}))
+    profile.write_text(json.dumps({'test': {'database_env': 'QUEUE_TEST_DSN',
+        'repositories': {'sample': str(tmp_path)}, 'default_max_workers': 2,
+        'tasks': {'neutral': {'instructions': str(tmp_path / 'task.md'), 'provider': 'codex',
+                             'model': 'test-model', 'permission': 'dangerFullAccess', 'parameters': {}}}}}))
     monkeypatch.setenv('AM_TASK_QUEUE_PROFILES', str(profile))
     monkeypatch.setattr(module, '_manager', None)
     app = build_app()
@@ -38,11 +39,12 @@ def test_profiles_and_launch_config_keep_secrets_server_side(queue_app):
     assert response.status_code == 200
     assert 'secret' not in response.text and 'dsn' not in response.text
     config = json.loads(launch_environment(parent, 'http://localhost:8787')['AM_QUEUE_CONFIG'])
-    assert config['initial_max_workers'] == 1
+    assert config['initial_max_workers'] == 2
+    assert config['workspace_root'] == str(__import__('pathlib').Path(parent.path) / 'state/queue-work/test')
     assert config['controller_id'] == parent.instance_id
     assert 'secret-password' in config['dsn']
     assert client.post('/api/instances', json={'name': 'bad', 'path': '.', 'kind': 'loop',
-        'controller_mode': 'task_queue', 'queue_profile': 'test', 'queue_initial_max_workers': 3}).status_code == 400
+        'controller_mode': 'task_queue', 'queue_profile': 'test', 'queue_initial_max_workers': 0}).status_code == 400
     assert client.get('/api/task-queues/queue/status').json() == {'state': 'stopped', 'queue': None}
     assert client.post('/api/instances/queue/orchestrator/start').status_code == 400
 
@@ -53,10 +55,10 @@ def test_attempt_launch_is_idempotent_and_cancellation_fences_late_launch(queue_
     monkeypatch.setattr(Instance, 'start', starts)
     monkeypatch.setattr(Instance, 'send', sends)
     attempt = 'a' * 32
-    workspace = __import__('pathlib').Path(parent.path) / 'work' / 'attempts' / attempt
+    workspace = __import__('pathlib').Path(parent.path) / 'state' / 'queue-work' / 'test' / 'attempts' / attempt
     workspace.mkdir(parents=True)
     url = f'/api/task-queues/queue/attempts/{attempt}'
-    body = {'task_id': 12, 'workspace': str(workspace), 'prompt': 'Neutral instructions'}
+    body = {'task_id': 12, 'workspace': str(workspace), 'prompt': 'Neutral instructions', 'execution': {'provider': 'codex', 'model': 'test-model', 'permission': 'dangerFullAccess'}}
     assert client.post(url, json=body).status_code == 401
     headers = {'Authorization': 'Bearer ' + internal_token()}
     first = client.post(url, json=body, headers=headers)
@@ -67,6 +69,7 @@ def test_attempt_launch_is_idempotent_and_cancellation_fences_late_launch(queue_
     sends.assert_awaited_once_with('Neutral instructions')
     assert client.post(url, json={**body, 'prompt': 'different'}, headers=headers).status_code == 409
     child = app.state.registry.get('queue_' + attempt)
+    assert child.provider == 'codex' and child.model == 'test-model' and child.permission_mode == 'danger-full-access'
     assert child._queue_environment_exclusions() and 'QUEUE_TEST_DSN' in child._queue_environment_exclusions()
     monkeypatch.setattr(manager, '_find_binary', lambda: '/tmp/am-orchestrator')
     mcp = worker_mcp(child, manager)
@@ -124,15 +127,17 @@ def test_drain_waits_for_workers_before_stopping(queue_app, monkeypatch):
         manager._processes.clear()
 
 
-def test_queue_identifier_overrides_profile_and_roundtrips(queue_app):
+def test_queue_identity_and_overrides_roundtrip(queue_app):
     client, app, parent, manager = queue_app
     response = client.post('/api/instances', json={'name': 'independent', 'path': parent.path,
         'kind': 'loop', 'controller_mode': 'task_queue', 'queue_profile': 'test',
-        'queue_id': 'another-pool', 'queue_initial_max_workers': 1})
+        'queue_id': 'test', 'queue_initial_max_workers': 3, 'queue_lease_secs': 30, 'queue_task_limit_secs': 120, 'queue_task_limit_tokens': 10000})
     assert response.status_code == 201, response.text
     created = app.state.registry.get(response.json()['title'])
-    assert created.queue_id == 'another-pool'
-    assert json.loads(launch_environment(created, 'http://localhost')['AM_QUEUE_CONFIG'])['queue_id'] == 'another-pool'
+    assert created.queue_id == 'test'
+    config = json.loads(launch_environment(created, 'http://localhost')['AM_QUEUE_CONFIG'])
+    assert config['initial_max_workers'] == 3 and config['lease_seconds'] == 30 and config['max_attempt_seconds'] == 120 and config['max_attempt_tokens'] == 10000
+    assert json.loads(launch_environment(created, 'http://localhost')['AM_QUEUE_CONFIG'])['queue_id'] == 'test'
     record = InstanceRecord(title='q', path='/tmp', kind='loop', controller_mode='task_queue', queue_id='another-pool')
     assert InstanceRecord.from_dict(record.to_dict()).queue_id == 'another-pool'
 
@@ -155,17 +160,112 @@ def test_delete_stopped_controller_retains_attempt_conversation(queue_app, monke
     stop.assert_awaited_once()
 
 
-def test_profile_without_queue_registration_requires_ui_identifier(queue_app):
+def test_profile_name_is_queue_identifier(queue_app):
+    client, app, parent, manager = queue_app
+    body = {'name': 'pool-controller', 'path': parent.path, 'kind': 'loop',
+            'controller_mode': 'task_queue', 'queue_profile': 'test'}
+    assert client.post('/api/instances', json={**body, 'queue_id': 'different'}).status_code == 400
+    response = client.post('/api/instances', json=body)
+    assert response.status_code == 201, response.text
+    assert response.json()['queue_id'] == 'test'
+
+
+def test_resolved_execution_survives_profile_edit(queue_app, monkeypatch):
     import os
     from pathlib import Path
     client, app, parent, manager = queue_app
-    path = Path(os.environ['AM_TASK_QUEUE_PROFILES'])
-    profiles = json.loads(path.read_text())
-    profiles['test'].pop('queue_id')
+    monkeypatch.setattr(Instance, 'start', AsyncMock())
+    monkeypatch.setattr(Instance, 'send', AsyncMock())
+    # The internal scheduler passes execution settings from the SQL snapshot,
+    # which must take precedence over current profile task settings.
+    profile = Path(os.environ['AM_TASK_QUEUE_PROFILES'])
+    data = json.loads(profile.read_text())
+    data['test']['tasks']['neutral']['model'] = 'changed-model'
+    profile.write_text(json.dumps(data))
+    attempt = 'c' * 32
+    config = json.loads(launch_environment(parent, 'http://localhost')['AM_QUEUE_CONFIG'])
+    workspace = Path(config['workspace_root']) / 'attempts' / attempt
+    workspace.mkdir(parents=True)
+    body = {'task_id': 3, 'workspace': str(workspace), 'prompt': 'Saved prompt',
+            'execution': {'provider': 'claude', 'model': 'original-model', 'permission': 'bypassPermission'}}
+    headers = {'Authorization': 'Bearer ' + internal_token()}
+    url = f'/api/task-queues/queue/attempts/{attempt}'
+    assert client.post(url, json=body, headers=headers).status_code == 200
+    child = app.state.registry.get('queue_' + attempt)
+    assert (child.provider, child.model, child.permission_mode) == ('claude', 'original-model', 'bypassPermissions')
+    assert client.post(url, json={**body, 'execution': {**body['execution'], 'model': 'other'}}, headers=headers).status_code == 409
+
+
+def test_shared_workspace_launch_is_restricted_to_approved_repository(queue_app, monkeypatch):
+    import os
+    from pathlib import Path
+    client, app, parent, manager = queue_app
+    path=Path(os.environ['AM_TASK_QUEUE_PROFILES'])
+    profiles=json.loads(path.read_text());profiles['test']['use_isolated_workspace']=False
     path.write_text(json.dumps(profiles))
-    body = {'name': 'pool-controller', 'path': parent.path, 'kind': 'loop',
-            'controller_mode': 'task_queue', 'queue_profile': 'test'}
-    assert client.post('/api/instances', json=body).status_code == 400
-    response = client.post('/api/instances', json={**body, 'queue_id': 'unregistered-pool'})
-    assert response.status_code == 201, response.text
-    assert response.json()['queue_id'] == 'unregistered-pool'
+    config=json.loads(launch_environment(parent,'http://localhost')['AM_QUEUE_CONFIG'])
+    assert config['use_isolated_workspace'] is False
+    monkeypatch.setattr(Instance,'start',AsyncMock())
+    monkeypatch.setattr(Instance,'send',AsyncMock())
+    attempt='d'*32
+    inputs=Path(config['workspace_root'])/'attempts'/attempt/'.queue-inputs'
+    inputs.mkdir(parents=True)
+    body={'task_id':4,'workspace':parent.path,'prompt':'Shared task',
+          'execution':{'provider':'codex','permission':'workspace-write'},
+          'use_isolated_workspace':False,'repository':'sample'}
+    url=f'/api/task-queues/queue/attempts/{attempt}'
+    headers={'Authorization':'Bearer '+internal_token()}
+    # Fixture's state directory is inside its fake repository. Use a separate
+    # approved checkout so the real containment check remains exercised.
+    repo=Path(parent.path).parent/(Path(parent.path).name+'-checkout');repo.mkdir()
+    monkeypatch.setitem(profiles['test']['repositories'],'sample',str(repo))
+    path.write_text(json.dumps(profiles));body['workspace']=str(repo)
+    assert client.post(url,json={**body,'workspace':'/tmp'},headers=headers).status_code==400
+    assert client.post(url,json={**body,'repository':'unknown'},headers=headers).status_code==400
+    response=client.post(url,json=body,headers=headers)
+    assert response.status_code==200,response.text
+    child=app.state.registry.get('queue_'+attempt)
+    assert child.path==str(repo) and child.add_dirs==[str(inputs)]
+    assert client.post(url,json={**body,'workspace':'/tmp'},headers=headers).status_code==409
+    assert client.post(url,json=body,headers=headers).status_code==200
+
+
+def test_workspace_flag_defaults_to_isolated_and_rejects_strings(queue_app):
+    import os
+    from pathlib import Path
+    client,app,parent,manager=queue_app
+    assert json.loads(launch_environment(parent,'http://localhost')['AM_QUEUE_CONFIG'])['use_isolated_workspace'] is True
+    path=Path(os.environ['AM_TASK_QUEUE_PROFILES']);profiles=json.loads(path.read_text())
+    profiles['test']['use_isolated_workspace']='false';path.write_text(json.dumps(profiles))
+    with pytest.raises(ValueError,match='must be boolean'):
+        launch_environment(parent,'http://localhost')
+
+
+def test_loading_routes_work_when_controller_stopped_and_require_preview(queue_app, monkeypatch):
+    from agent_manager.orchestration import task_loading
+    client,app,parent,manager=queue_app
+    command=AsyncMock(return_value={'task_ids':{'one':12}})
+    monkeypatch.setattr(task_loading,'queue_command',command)
+    monkeypatch.setattr(manager,'find_binary',lambda:'/tmp/test-orchestrator')
+    batch={'batch_key':'test','workflow_id':'run','tasks':[{'key':'one','task_type':'neutral','parameters':{}}]}
+    assert client.post('/api/task-queues/queue/enqueue',json=batch).status_code==400
+    command.assert_not_awaited()
+    assert client.post('/api/task-queues/queue/render',json=batch).status_code==200
+    assert command.call_args.args[2]=='render'
+    response=client.post('/api/task-queues/queue/enqueue',json={**batch,'preview_hash':'hash'})
+    assert response.status_code==200 and response.json()['task_ids']['one']==12
+    assert command.call_args.args[2]=='enqueue'
+
+
+def test_render_route_uses_real_go_renderer_without_database(queue_app, monkeypatch):
+    import os
+    from pathlib import Path
+    binary=os.environ.get('AM_TEST_ORCHESTRATOR_BINARY')
+    if not binary: pytest.skip('Requires built orchestrator')
+    client,app,parent,manager=queue_app
+    Path(parent.path,'task.md').write_text('Inspect the local source. Produce a report.')
+    monkeypatch.setattr(manager,'find_binary',lambda:binary)
+    response=client.post('/api/task-queues/queue/render',json={'batch_key':'render','workflow_id':'run','tasks':[{'key':'one','task_type':'neutral','parameters':{}}]})
+    assert response.status_code==200,response.text
+    assert 'Inspect the local source' in response.json()['tasks'][0]['prompt']
+    assert 'secret-password' not in response.text

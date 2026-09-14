@@ -36,33 +36,67 @@ def profiles() -> dict:
     return data
 
 
+def normalize_worker(task: dict) -> dict:
+    provider = task.get('provider', 'codex')
+    permission = task.get('permission') or task.get('permission_mode') or ('acceptEdits' if provider == 'claude' else 'workspace-write')
+    permission = {'dangerFullAccess': 'danger-full-access', 'bypassPermission': 'bypassPermissions'}.get(permission, permission)
+    allowed = {'codex': {'read-only', 'workspace-write', 'danger-full-access'},
+               'claude': {'default', 'acceptEdits', 'plan', 'bypassPermissions'}}
+    if provider not in allowed or permission not in allowed[provider]:
+        raise ValueError('Invalid task provider or permission')
+    return {'provider': provider, 'model': task.get('model'), 'permission_mode': permission}
+
+
 def queue_config(name: str) -> dict:
+    import re
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', name):
+        raise ValueError('Invalid queue profile name')
     profile = dict(profiles().get(name) or {})
     if not profile:
         raise ValueError('Unknown task queue profile')
-    env = profile.pop('dsn_env', '')
+    env = profile.get('database_env', '')
     if not env or env not in os.environ:
         raise ValueError('Queue database environment variable is not configured')
-    profile['dsn'] = os.environ[env]
-    profile['internal_token'] = internal_token()
-    if not Path(profile.get('workspace_root', '')).is_absolute():
-        raise ValueError('Queue workspace_root must be absolute')
-    if profile.get('provider', 'codex') not in ('codex', 'claude'):
-        raise ValueError('Invalid queue worker provider')
-    return profile
+    use_isolated = profile.get('use_isolated_workspace', True)
+    if type(use_isolated) is not bool:
+        raise ValueError('use_isolated_workspace must be boolean')
+    tasks = profile.get('tasks', {})
+    if not isinstance(tasks, dict):
+        raise ValueError('Profile tasks must be an object')
+    config = {'profile_path': os.environ['AM_TASK_QUEUE_PROFILES'], 'queue_id': name, 'dsn': os.environ[env], 'internal_token': internal_token(),
+        'repositories': profile.get('repositories', {}), 'tasks': tasks, 'use_isolated_workspace': use_isolated,
+        'workspace_root': str(Path(os.environ.get('AGENT_MANAGER_STATE_DIR', '/var/lib/agent-manager')).resolve() / 'queue-work' / name),
+        'initial_max_workers': profile.get('default_max_workers', 1),
+        'lease_seconds': profile.get('default_lease_secs', 60),
+        'max_attempt_seconds': profile.get('default_task_limit_secs', 3600),
+        'max_attempt_tokens': profile.get('default_task_limit_tokens', 2000000)}
+    validate_limits(config)
+    return config
+
+
+def validate_limits(config: dict):
+    for key in ('initial_max_workers', 'lease_seconds', 'max_attempt_seconds', 'max_attempt_tokens'):
+        if type(config[key]) is not int or config[key] < 1:
+            raise ValueError('Queue limits must be positive integers')
+    if config['lease_seconds'] < 15 or config['max_attempt_seconds'] < config['lease_seconds']:
+        raise ValueError('Lease must be at least 15 seconds and no longer than task time limit')
 
 
 def instance_queue_config(instance) -> dict:
-    config = queue_config(instance.queue_profile)
-    config['queue_id'] = instance.queue_id or config.get('queue_id', '')
-    return config
+    return queue_config(instance.queue_profile or instance.queue_id)
 
 
 def launch_environment(instance, base_url: str) -> dict:
     if getattr(instance, 'controller_mode', 'team') != 'task_queue':
         return {}
     config = instance_queue_config(instance)
-    config.update(initial_max_workers=instance.queue_initial_max_workers, base_url=base_url, parent=instance.title, controller_id=instance.instance_id)
+    for field, key in [('queue_initial_max_workers', 'initial_max_workers'), ('queue_lease_secs', 'lease_seconds'),
+                       ('queue_task_limit_secs', 'max_attempt_seconds'), ('queue_task_limit_tokens', 'max_attempt_tokens')]:
+        value = getattr(instance, field, None)
+        if value is not None:
+            config[key] = value
+    validate_limits(config)
+    config.update(base_url=base_url, parent=instance.title, controller_id=instance.instance_id)
     return {'AM_QUEUE_CONFIG': json.dumps(config)}
 
 
@@ -81,4 +115,4 @@ def worker_mcp(instance, manager) -> dict:
 
 def worker_environment_exclusions() -> list[str]:
     return list({'AM_QUEUE_CONFIG', 'AM_TASK_QUEUE_PROFILES', 'DOCKER_MCP_TOKEN', 'DOCKER_MCP_URL',
-                 *(p.get('dsn_env', '') for p in profiles().values())} - {''})
+                 *(p.get('database_env', '') for p in profiles().values())} - {''})

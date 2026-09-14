@@ -44,7 +44,7 @@ func Run(ctx context.Context, c Config, port int, log func(string)) error {
 		if status.Paused {
 			state = "paused"
 		}
-		writeJSON(w, map[string]any{"state": state, "group": c.Parent, "pid": os.Getpid(), "queue": status, "max_workers_ceiling": c.MaxWorkersCeiling})
+		writeJSON(w, map[string]any{"state": state, "group": c.Parent, "pid": os.Getpid(), "queue": status})
 	})
 	mux.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
 		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
@@ -66,6 +66,7 @@ func Run(ctx context.Context, c Config, port int, log func(string)) error {
 		}
 		var body struct {
 			Action  string `json:"action"`
+			Limits  Limits `json:"limits"`
 			Max     *int   `json:"max_workers"`
 			Task    int64  `json:"task_id"`
 			Attempt string `json:"attempt_id"`
@@ -85,6 +86,8 @@ func Run(ctx context.Context, c Config, port int, log func(string)) error {
 				paused = &p
 			}
 			e = store.Configure(r.Context(), body.Max, paused, body.Actor)
+		case "limits":
+			e = store.ConfigureLimits(r.Context(), body.Limits, body.Actor)
 		case "cancel_all":
 			var attempts []Attempt
 			attempts, e = store.Attempts(r.Context())

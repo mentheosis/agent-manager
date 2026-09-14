@@ -13,9 +13,10 @@ import (
 // Settings belong to the durable UI instance, never to the task-pool identifier.
 type controllerControls struct {
 	mu         sync.Mutex
-	MaxWorkers int   `json:"max_workers"`
-	Paused     bool  `json:"paused"`
-	Revision   int64 `json:"revision"`
+	MaxWorkers int    `json:"max_workers"`
+	Paused     bool   `json:"paused"`
+	Revision   int64  `json:"revision"`
+	Limits     Limits `json:"limits"`
 	path       string
 }
 
@@ -24,7 +25,7 @@ func loadControls(c Config) (*controllerControls, error) {
 		return nil, errors.New("invalid controller ID")
 	}
 	path := filepath.Join(c.WorkspaceRoot, "controllers", c.ControllerID+".json")
-	value := &controllerControls{MaxWorkers: max(1, c.InitialMaxWorkers), Paused: true, path: path}
+	value := &controllerControls{MaxWorkers: max(1, c.InitialMaxWorkers), Paused: true, path: path, Limits: c.limits()}
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if err = json.Unmarshal(data, value); err != nil {
@@ -33,16 +34,20 @@ func loadControls(c Config) (*controllerControls, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if value.MaxWorkers < 1 || value.MaxWorkers > c.MaxWorkersCeiling {
-		return nil, errors.New("saved worker limit outside deployment ceiling")
+	if value.MaxWorkers < 1 {
+		return nil, errors.New("saved worker limit must be positive")
 	}
 	return value, nil
 }
-func (c *controllerControls) save(limit int, paused bool) error {
+func (c *controllerControls) save(limit int, paused bool, updated ...Limits) error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0700); err != nil {
 		return err
 	}
-	data, err := json.Marshal(map[string]any{"max_workers": limit, "paused": paused, "revision": c.Revision + 1})
+	limits := c.Limits
+	if len(updated) > 0 {
+		limits = updated[0]
+	}
+	data, err := json.Marshal(map[string]any{"max_workers": limit, "paused": paused, "revision": c.Revision + 1, "limits": limits})
 	if err != nil {
 		return err
 	}
@@ -65,6 +70,7 @@ func (c *controllerControls) save(limit int, paused bool) error {
 	if err = os.Rename(file.Name(), c.path); err != nil {
 		return err
 	}
+	c.Limits = limits
 	c.MaxWorkers = limit
 	c.Paused = paused
 	c.Revision++
