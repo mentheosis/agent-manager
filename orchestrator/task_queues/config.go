@@ -13,6 +13,7 @@ import (
 
 // Config is delivered by the trusted supervisor environment, never by task data.
 type Config struct {
+	BasePath             string                `json:"base_path,omitempty"`
 	UseIsolatedWorkspace *bool                 `json:"use_isolated_workspace,omitempty"`
 	ProfilePath          string                `json:"profile_path"`
 	TablePrefix          string                `json:"-"`

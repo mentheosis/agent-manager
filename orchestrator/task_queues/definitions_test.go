@@ -59,8 +59,17 @@ func TestPinnedDefinitionsAndParameterValidation(t *testing.T) {
 	c.Tasks["neutral"] = def
 	writeProfile()
 	_, replay, err := resolveSnapshot(context.Background(), c, task, ID(), nil, snapshot)
-	if err != nil || !bytes.Equal(snapshot, replay) {
-		t.Fatal("retry changed snapshot", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after Snapshot
+	json.Unmarshal(snapshot, &before)
+	json.Unmarshal(replay, &after)
+	before.Prompt, after.Prompt = "", ""
+	firstJSON, _ := json.Marshal(before)
+	secondJSON, _ := json.Marshal(after)
+	if !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatal("retry changed saved contract")
 	}
 	if strings.Contains(string(replay), "CHANGED INSTRUCTIONS") || strings.Contains(string(replay), "changed-model") {
 		t.Fatal("retry used new config")
@@ -90,7 +99,7 @@ func TestPinnedDefinitionsAndParameterValidation(t *testing.T) {
 	if err = os.Remove(c.ProfilePath); err != nil {
 		t.Fatal(err)
 	}
-	if _, replayed, err := resolveSnapshot(context.Background(), c, task, ID(), nil, snapshot); err != nil || !bytes.Equal(replayed, snapshot) {
+	if _, replayed, err := resolveSnapshot(context.Background(), c, task, ID(), nil, snapshot); err != nil || strings.Contains(string(replayed), "CHANGED INSTRUCTIONS") {
 		t.Fatal("saved retry depended on mutable repository/profile", err)
 	}
 
@@ -257,8 +266,8 @@ func TestSharedWorkspacePreservesCheckoutAndSeparatesInputs(t *testing.T) {
 	if err != nil || string(got) != "accepted evidence" {
 		t.Fatal("missing inputs", err)
 	}
-	if !strings.Contains(first.Prompt, first.InputsDirectory) {
-		t.Fatal("input location missing from prompt")
+	if !strings.Contains(first.Prompt, "no required predecessor inputs") {
+		t.Fatal("undeclared artifacts must not create required predecessor inputs")
 	}
 	if _, err = os.Stat(filepath.Join(c.WorkspaceRoot, "sources")); !os.IsNotExist(err) {
 		t.Fatal("shared mode created source archives")

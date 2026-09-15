@@ -5,7 +5,7 @@ import os
 
 
 async def queue_command(config, binary, action, payload):
-    if action not in ('render', 'enqueue', 'tasks', 'logs'):
+    if action not in ('render', 'enqueue', 'tasks', 'logs', 'attempt-status'):
         raise ValueError('Unknown queue command')
     raw = json.dumps(payload).encode()
     if len(raw) > 1 << 20:

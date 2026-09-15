@@ -325,11 +325,13 @@ def mount_routes(app, registry, manager):
             name = 'queue_' + attempt
             if registry.get(name):
                 raise HTTPException(409, 'Conversation name collision')
-            child = Instance(title=name, display_title=f"Task {body['task_id']} · {attempt[:8]}",
+            workflow = body.get('workflow_id') or cfg['queue_id']
+            attempt_number = body.get('attempt_number', 1)
+            child = Instance(title=name, display_title=f"{workflow}-{body['task_id']}-{attempt_number} {attempt[:8]}",
                 path=str(workspace), provider=execution['provider'], model=execution['model'],
                 permission_mode=execution['permission_mode'], add_dirs=add_dirs,
                 parent=title, queue_profile=inst.queue_profile, queue_id=cfg['queue_id'],
-                queue_attempt={'id': attempt, 'task_id': body['task_id'], 'launch_state': 'reserved', 'prompt_hash': digest})
+                queue_attempt={'id': attempt, 'task_id': body['task_id'], 'launch_state': 'reserved', 'prompt_hash': digest, 'replay_profile': body.get('execution', {}).get('replay_profile')})
             registry._wire_hooks(child)
             registry._instances[name] = child
             inst.children.append(name)
@@ -339,6 +341,60 @@ def mount_routes(app, registry, manager):
             await child.start()
             await child.send(prompt)
             return summary(child)
+
+    @app.post('/api/task-queues/{title}/attempts/{attempt}/replay')
+    async def replay_attempt(title: str, attempt: str, request: Request):
+        import os, json
+        from .controllers import attempt_token
+        from .task_loading import queue_command
+        token = request.headers.get('authorization', '').removeprefix('Bearer ')
+        if not hmac.compare_digest(token, attempt_token(attempt)):
+            raise HTTPException(401, 'Invalid attempt capability')
+        child = worker(title, attempt)
+        if not child or child.queue_attempt.get('cancelled') or not child.queue_attempt.get('replay_profile'):
+            raise HTTPException(403, 'Replay is not enabled for this attempt')
+        cfg = instance_queue_config(child)
+        state = await queue_command(cfg, manager.find_binary(), 'attempt-status', {'attempt': attempt})
+        if state.get('status') not in ('claimed', 'running'):
+            raise HTTPException(409, 'Attempt is no longer active')
+        raw = await request.body()
+        if len(raw)>20000: raise HTTPException(413, 'Replay request too large')
+        body = json.loads(raw)
+        if not isinstance(body, dict) or set(body)-{'action','run_key','operation','sql','job_id'}:
+            raise HTTPException(400, 'Invalid replay arguments')
+        action=body.get('action')
+        jobs=child.queue_attempt.setdefault('replay_jobs', [])
+        if action in ('job_status','job_logs'):
+            if body.get('job_id') not in jobs: raise HTTPException(403, 'Job does not belong to this attempt')
+            tool='get_job_status' if action=='job_status' else 'tail_job_log'
+            args={'job_id':body['job_id']}
+            if action=='job_logs': args['max_lines']=200
+        elif action in ('start','status','logs','cancel','query'):
+            tool='compose'
+            args={k:v for k,v in body.items() if k!='job_id'}
+            args['profile']=child.queue_attempt['replay_profile']
+            if action!='query':
+                suffix=body.get('run_key','')
+                if not isinstance(suffix,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,40}',suffix): raise HTTPException(400, 'run_key must be a 1..40 character scenario-step suffix')
+                scope=hashlib.sha256((cfg['queue_id']+':'+str(child.queue_attempt['task_id'])).encode()).hexdigest()[:20]
+                args['run_key']=scope+'-'+suffix
+        else: raise HTTPException(400, 'Invalid replay action')
+        url=os.environ.get('DOCKER_MCP_URL');secret=os.environ.get('DOCKER_MCP_TOKEN')
+        if not url or not secret: raise HTTPException(503, 'Host MCP is not configured on the backend')
+        try:
+            async with httpx.AsyncClient(timeout=30,trust_env=False) as client:
+                response=await client.post(url,headers={'Authorization':'Bearer '+secret},json={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':tool,'arguments':args}})
+                response.raise_for_status();result=response.json()
+            if tool=='compose':
+                for content in result.get('result',{}).get('content',[]):
+                    if content.get('type')=='text':
+                        try: job=json.loads(content['text'])
+                        except (ValueError,KeyError): continue
+                        if isinstance(job,dict) and job.get('id'):
+                            jobs.append(job['id']);await registry._save_records()
+            return result
+        except (httpx.HTTPError, ValueError):
+            raise HTTPException(503, 'Host replay request unavailable; inspect the same run key before retrying')
 
     @app.delete('/api/task-queues/{title}/attempts/{attempt}')
     async def cancel_attempt(title: str, attempt: str, request: Request):

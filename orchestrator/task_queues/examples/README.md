@@ -58,3 +58,10 @@ Database connection variables accept either a MySQL URL
 (`USER:PASSWORD@tcp(HOST:3306)/DATABASE`). Percent-encode special characters in URL
 credentials. A missing engine prefix means MySQL; other explicit engine prefixes
 are rejected until supported. URL query parameters use Go MySQL driver option names.
+
+Optional `base_path` is relative to the approved repository root. Input/output paths
+(and file paths supplied through parameters) are resolved beneath it. `upstream:`
+uses the same resolved repository-relative artifact path in predecessor evidence.
+Relative instruction paths also use this base and require exactly one repository;
+absolute instruction paths remain supported. Working directories do not change.
+Retries retain their saved resolved paths, while launch guidance is regenerated.

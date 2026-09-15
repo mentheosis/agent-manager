@@ -106,8 +106,11 @@ class AmToolbar extends HTMLElement {
     }
 
     set instance(inst) {
+        clearTimeout(this._killTimer);
+        this._killGeneration = (this._killGeneration || 0) + 1;
         this._instance = inst;
         this.update();
+        if (inst?.queue_attempt) this.refreshKillStatus(this._killGeneration);
         this.renderFilters();
         this.dispatchFilterEvent();
     }
@@ -142,7 +145,10 @@ class AmToolbar extends HTMLElement {
 
         this.updateNotifyButton();
         const managed = this.isQueueView() || !!this._instance?.queue_attempt;
-        this.querySelector('#btn-kill').hidden = !!this._instance?.queue_attempt;
+        const kill = this.querySelector('#btn-kill');
+        kill.hidden = false;
+        kill.disabled = !!this._instance?.queue_attempt;
+        kill.title = this._instance?.queue_attempt ? 'Checking whether this queue attempt has finished…' : '';
         this.querySelector('#btn-kill').textContent = this.isQueueView() ? 'Delete controller' : 'Kill';
         this.querySelector('#btn-notify-idle').hidden = this.isQueueView();
 
@@ -213,6 +219,31 @@ class AmToolbar extends HTMLElement {
         }
     }
 
+    disconnectedCallback() {
+        clearTimeout(this._killTimer);
+        this._killGeneration = (this._killGeneration || 0) + 1;
+    }
+
+    async refreshKillStatus(generation) {
+        const inst = this._instance;
+        if (!inst?.queue_attempt || generation !== this._killGeneration) return;
+        const button = this.querySelector('#btn-kill');
+        try {
+            const response = await fetch(`/api/instances/${encodeURIComponent(inst.title)}/kill-status`);
+            if (!response.ok) throw new Error('Status unavailable');
+            const result = await response.json();
+            if (generation !== this._killGeneration) return;
+            button.disabled = !result.allowed;
+            button.title = result.allowed ? 'Remove this finished conversation; task records and artifacts are retained.' : result.reason;
+        } catch {
+            if (generation !== this._killGeneration) return;
+            button.disabled = true;
+            button.title = 'Cannot verify queue ownership. Kill will become available once the attempt is confirmed finished.';
+        }
+        if (generation === this._killGeneration)
+            this._killTimer = setTimeout(() => this.refreshKillStatus(generation), 3000);
+    }
+
     async killInstance() {
         if (!this._instance) return;
 
@@ -222,7 +253,9 @@ class AmToolbar extends HTMLElement {
         const childCount = this._instance.children?.length || 0;
 
         let confirmMsg = `Delete "${name}"? This will stop the session and remove all history.`;
-        if (isQueue) {
+        if (this._instance.queue_attempt) {
+            confirmMsg = `Remove finished conversation "${name}"? Conversation history will be deleted. SQL task/attempt records and submitted artifacts are preserved.`;
+        } else if (isQueue) {
             confirmMsg = `Delete controller "${name}"? This stops its workers and preserves task, attempt and worker conversation history.`;
         } else if (isTeam && childCount > 0) {
             confirmMsg = `Delete team "${name}" and its ${childCount} member(s)? This will stop all sessions and remove all history.`;

@@ -170,3 +170,56 @@ func TestRenderingPreservesLargeIntegerParameters(t *testing.T) {
 		t.Fatal("hash depends on JSON object key order")
 	}
 }
+
+func TestRepositoryInputsDoNotRequirePredecessor(t *testing.T) {
+	prompt := assignment("Discover", []string{"audit/requirements.md"}, nil)
+	if !strings.Contains(prompt, "no required predecessor inputs") || !strings.Contains(prompt, "do not require predecessor approval") {
+		t.Fatal(prompt)
+	}
+	prompt = assignment("Implement", []string{"upstream:audit/report.md"}, nil)
+	if strings.Contains(prompt, "no required predecessor inputs") || !strings.Contains(prompt, "Required accepted predecessor inputs") {
+		t.Fatal(prompt)
+	}
+}
+
+func TestBasePathResolvesContractsAndInstructions(t *testing.T) {
+	c, task := definitionFixture(t)
+	def := c.Tasks[task.Type]
+	root := filepath.Dir(def.Instructions)
+	c.BasePath = "audit"
+	if err := os.MkdirAll(filepath.Join(root, "audit"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "audit", "task.md"), []byte("Investigate {{topic}}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	def.Instructions = "task.md"
+	def.Inputs = []string{"requirements.md", "upstream:outputs/report.md"}
+	def.Outputs = []string{"outputs/{{topic}}.md"}
+	c.Tasks[task.Type] = def
+	prepared, err := readDefinition(c, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Inputs[0] != "audit/requirements.md" || prepared.Inputs[1] != "upstream:audit/outputs/report.md" || !strings.HasPrefix(prepared.Outputs[0], "audit/outputs/") {
+		t.Fatal("incorrect base path resolution")
+	}
+	c.BasePath = "../escape"
+	if _, err = readDefinition(c, task); err == nil {
+		t.Fatal("expected traversal rejection")
+	}
+}
+
+func TestRetryRegeneratesInputGuidance(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "requirements.md"), []byte("criteria"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snap := Snapshot{Instructions: "Discover", Inputs: []string{"requirements.md"}, BasePrompt: "Old ambiguous predecessor guidance", Prompt: "Old ambiguous predecessor guidance"}
+	if err := prepareContract(root, filepath.Join(root, "empty-evidence"), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(snap.Prompt, "Old ambiguous") || !strings.Contains(snap.Prompt, filepath.Join(root, "requirements.md")) || !strings.Contains(snap.Prompt, "no required predecessor inputs") {
+		t.Fatal(snap.Prompt)
+	}
+}

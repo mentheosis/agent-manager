@@ -64,7 +64,7 @@ def queue_config(name: str) -> dict:
     if not isinstance(tasks, dict):
         raise ValueError('Profile tasks must be an object')
     config = {'profile_path': os.environ['AM_TASK_QUEUE_PROFILES'], 'queue_id': name, 'dsn': os.environ[env], 'internal_token': internal_token(),
-        'repositories': profile.get('repositories', {}), 'tasks': tasks, 'use_isolated_workspace': use_isolated,
+        'base_path': profile.get('base_path', ''), 'repositories': profile.get('repositories', {}), 'tasks': tasks, 'use_isolated_workspace': use_isolated,
         'workspace_root': str(Path(os.environ.get('AGENT_MANAGER_STATE_DIR', '/var/lib/agent-manager')).resolve() / 'queue-work' / name),
         'initial_max_workers': profile.get('default_max_workers', 1),
         'lease_seconds': profile.get('default_lease_secs', 60),

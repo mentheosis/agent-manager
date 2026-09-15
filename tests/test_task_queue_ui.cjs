@@ -89,3 +89,21 @@ test('workflow badges distinguish completion, attention, activity and idle',()=>
  assert.equal(status('cancelled'),'blocked');
  assert.equal(status(),'idle');
 });
+
+test('expanded rows survive conversation changes and remain isolated per controller',()=>{
+ const Tasks=load('task_queues/am-task-queue-tasks.js');
+ const view=new Tasks();
+ view._instance={instance_id:'one',title:'first'};
+ view.expandedRows().add('workflow:pilot');view.expandedRows().add('task:1');
+ view._instance=null;
+ view._instance={instance_id:'two',title:'second'};
+ assert.equal(view.expandedRows().size,0);
+ view.expandedRows().add('task:2');
+ view._instance={instance_id:'one',title:'renamed'};
+ assert.deepEqual([...view.expandedRows()],['workflow:pilot','task:1']);
+ view.expandedRows().delete('workflow:pilot');
+ view._instance={instance_id:'two',title:'second'};
+ assert.deepEqual([...view.expandedRows()],['task:2']);
+ view._instance={instance_id:'one',title:'renamed'};
+ assert.equal(view.expandedRows().has('workflow:pilot'),false);
+});

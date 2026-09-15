@@ -85,8 +85,8 @@ func (m *JobManager) start(profileName string, input []byte) (*Job, error) {
 		return nil, fmt.Errorf("unknown profile %q", profileName)
 	}
 
-	if prof.Athena != nil && input == nil {
-		return nil, fmt.Errorf("use athena_query for Athena profiles")
+	if (prof.Athena != nil || prof.Compose != nil) && input == nil {
+		return nil, fmt.Errorf("use the typed query/compose tool for this profile")
 	}
 	m.mu.Lock()
 	if m.cfg.MaxConcurrentPerProfile > 0 {
@@ -114,7 +114,7 @@ func (m *JobManager) start(profileName string, input []byte) (*Job, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	argv := prof.Argv
-	if prof.Athena != nil {
+	if prof.Athena != nil || prof.Compose != nil {
 		argv = []string{prof.Argv[0], "-I", prof.Argv[1]}
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -124,7 +124,7 @@ func (m *JobManager) start(profileName string, input []byte) (*Job, error) {
 	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if m.cfg.InheritEnv && prof.Athena == nil {
+	if m.cfg.InheritEnv && prof.Athena == nil && prof.Compose == nil {
 		// Inherit full host environment, plus any profile-specific overrides
 		cmd.Env = append(os.Environ(), envMapToSlice(prof.Env)...)
 	} else {

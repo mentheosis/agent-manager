@@ -64,7 +64,7 @@ def test_attempt_launch_is_idempotent_and_cancellation_fences_late_launch(queue_
     workspace = __import__('pathlib').Path(parent.path) / 'state' / 'queue-work' / 'test' / 'attempts' / attempt
     workspace.mkdir(parents=True)
     url = f'/api/task-queues/queue/attempts/{attempt}'
-    body = {'task_id': 12, 'workspace': str(workspace), 'prompt': 'Neutral instructions', 'execution': {'provider': 'codex', 'model': 'test-model', 'permission': 'dangerFullAccess'}}
+    body = {'task_id': 12, 'workflow_id': 'trx-pilot-001', 'attempt_number': 2, 'workspace': str(workspace), 'prompt': 'Neutral instructions', 'execution': {'provider': 'codex', 'model': 'test-model', 'permission': 'dangerFullAccess'}}
     assert client.post(url, json=body).status_code == 401
     headers = {'Authorization': 'Bearer ' + internal_token()}
     first = client.post(url, json=body, headers=headers)
@@ -75,6 +75,7 @@ def test_attempt_launch_is_idempotent_and_cancellation_fences_late_launch(queue_
     sends.assert_awaited_once_with('Neutral instructions')
     assert client.post(url, json={**body, 'prompt': 'different'}, headers=headers).status_code == 409
     child = app.state.registry.get('queue_' + attempt)
+    assert child.display_title == 'trx-pilot-001-12-2 ' + attempt[:8]
     assert child.provider == 'codex' and child.model == 'test-model' and child.permission_mode == 'danger-full-access'
     assert child._queue_environment_exclusions() and 'QUEUE_TEST_DSN' in child._queue_environment_exclusions()
     monkeypatch.setattr(manager, '_find_binary', lambda: '/tmp/am-orchestrator')
@@ -288,3 +289,43 @@ def test_stopped_queue_reads_without_dispatch(queue_app, monkeypatch):
         assert response.status_code == 200 and response.json() == []
         assert command.call_args.args[2:] == (action, payload)
     assert manager.get(parent.title) is None
+
+@pytest.mark.parametrize('status,expected', [('running',409),('submitted',409),('completed',204),('blocked',204),('awaiting_review',204),('',204)])
+def test_delete_finished_queue_conversation_preserves_queue_records(queue_app, monkeypatch, status, expected):
+    from agent_manager.orchestration import task_loading
+    client, app, parent, manager = queue_app
+    child = Instance(title='finished-worker', path=parent.path, parent=parent.title, status='ready',
+        queue_profile='test', queue_attempt={'id':'b'*32,'task_id':99})
+    app.state.registry._instances[child.title] = child
+    query = AsyncMock(return_value={'status':status})
+    monkeypatch.setattr(task_loading, 'queue_command', query)
+    monkeypatch.setattr(manager, 'find_binary', lambda: '/test/orchestrator')
+    protection = client.get('/api/instances/finished-worker/kill-status').json()
+    assert protection['allowed'] == (expected == 204)
+    assert bool(protection['reason']) == (expected == 409)
+    response = client.delete('/api/instances/finished-worker')
+    assert response.status_code == expected, response.text
+    assert query.call_args.args[2] == 'attempt-status'
+    assert (app.state.registry.get(child.title) is None) == (expected == 204)
+
+
+def test_replay_relay_requires_task_opt_in_and_scopes_jobs(queue_app, monkeypatch):
+    from agent_manager.orchestration.controllers import attempt_token
+    from agent_manager.orchestration import task_loading
+    client, app, parent, manager = queue_app
+    attempt = 'c'*32
+    child = Instance(title='replay-worker', path=parent.path, parent=parent.title,
+        queue_profile='test', status='ready', queue_attempt={'id':attempt,'task_id':77})
+    app.state.registry._instances[child.title] = child
+    url = f'/api/task-queues/queue/attempts/{attempt}/replay'
+    assert client.post(url,json={'action':'query','sql':'SELECT 1'}).status_code == 401
+    headers={'Authorization':'Bearer '+attempt_token(attempt)}
+    assert client.post(url,headers=headers,json={'action':'query','sql':'SELECT 1'}).status_code == 403
+    child.queue_attempt['replay_profile']='approved-replay'
+    monkeypatch.setattr(task_loading,'queue_command',AsyncMock(return_value={'status':'running'}))
+    monkeypatch.setattr(manager,'find_binary',lambda:'/test/orchestrator')
+    assert client.post(url,headers=headers,json={'action':'job_logs','job_id':'foreign'}).status_code == 403
+    assert client.post(url,headers=headers,json={'action':'start','run_key':'../bad','operation':'extract'}).status_code == 400
+    assert client.post(url,headers=headers,json={'action':'query','sql':'SELECT 1','profile':'shell'}).status_code == 400
+    monkeypatch.setattr(task_loading,'queue_command',AsyncMock(return_value={'status':'completed'}))
+    assert client.post(url,headers=headers,json={'action':'query','sql':'SELECT 1'}).status_code == 409

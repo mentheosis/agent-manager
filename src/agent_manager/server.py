@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import glob
 import json
 import logging
@@ -770,12 +771,36 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=404)
         return {**_summary(inst), "history": inst.history()}
 
+    async def kill_protection(inst):
+        if inst and inst.queue_attempt:
+            if inst.status in ('creating', 'running') or not inst._inbox.empty():
+                return "This attempt is active in the queue. Use the queue controls to cancel it."
+            from .orchestration.controllers import instance_queue_config
+            from .orchestration.task_loading import queue_command
+            try:
+                result = await queue_command(instance_queue_config(inst), orchestrator_manager.find_binary(),
+                    'attempt-status', {'attempt': inst.queue_attempt['id']})
+            except (ValueError, OSError, asyncio.TimeoutError):
+                return "Could not verify that the queue attempt has finished."
+            if result['status'] not in ('', 'completed', 'failed', 'blocked', 'cancelled', 'awaiting_review'):
+                return "The queue is still finalizing this attempt. Kill becomes available when it finishes."
+        return None
+
+    @app.get("/api/instances/{title}/kill-status")
+    async def kill_status(title: str):
+        inst = registry.get(title)
+        if not inst:
+            raise HTTPException(404)
+        reason = await kill_protection(inst)
+        return {'allowed': reason is None, 'reason': reason}
+
     @app.delete("/api/instances/{title}", status_code=204)
     async def delete_instance(title: str) -> Response:
         # Stop orchestrator if this is a loop instance
         inst = registry.get(title)
-        if inst and inst.queue_attempt:
-            raise HTTPException(409, "Attempt conversations are retained for audit history")
+        reason = await kill_protection(inst)
+        if reason:
+            raise HTTPException(409, reason)
         if inst and inst.controller_mode == "task_queue":
             await app.state.delete_queue_controller(title)
             return Response(status_code=204)

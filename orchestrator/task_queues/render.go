@@ -33,6 +33,7 @@ func readDefinition(c Config, t Task) (*preparedDefinition, error) {
 			return nil, errors.New("profile file unavailable")
 		}
 		var profiles map[string]struct {
+			BasePath             string                `json:"base_path"`
 			Tasks                map[string]Definition `json:"tasks"`
 			UseIsolatedWorkspace *bool                 `json:"use_isolated_workspace"`
 			Repositories         map[string]string     `json:"repositories"`
@@ -45,6 +46,7 @@ func readDefinition(c Config, t Task) (*preparedDefinition, error) {
 			return nil, errors.New("queue profile no longer exists")
 		}
 		c.UseIsolatedWorkspace = profile.UseIsolatedWorkspace
+		c.BasePath = profile.BasePath
 		c.Tasks = profile.Tasks
 		c.Repositories = profile.Repositories
 	}
@@ -94,6 +96,20 @@ func readDefinition(c Config, t Task) (*preparedDefinition, error) {
 	if err = schema.Validate(params); err != nil {
 		return nil, fmt.Errorf("invalid task parameters: %w", err)
 	}
+	if c.BasePath != "" && !safeRelative(c.BasePath) {
+		return nil, errors.New("base_path must be a repository-relative path without traversal")
+	}
+	if !filepath.IsAbs(def.Instructions) {
+		if len(c.Repositories) != 1 {
+			return nil, errors.New("relative instructions require one repository")
+		}
+		if !safeRelative(def.Instructions) {
+			return nil, errors.New("invalid instruction path")
+		}
+		for _, root := range c.Repositories {
+			def.Instructions = filepath.Join(root, c.BasePath, def.Instructions)
+		}
+	}
 	instructionPath, err := filepath.EvalSymlinks(def.Instructions)
 	if err != nil || !filepath.IsAbs(def.Instructions) {
 		return nil, errors.New("instructions must name an accessible absolute file")
@@ -138,6 +154,16 @@ func readDefinition(c Config, t Task) (*preparedDefinition, error) {
 	outputs, err := renderPaths(def.Outputs, params, false)
 	if err != nil {
 		return nil, err
+	}
+	for _, paths := range [][]string{inputs, outputs} {
+		for i, path := range paths {
+			prefix := ""
+			if strings.HasPrefix(path, "upstream:") {
+				prefix = "upstream:"
+				path = strings.TrimPrefix(path, prefix)
+			}
+			paths[i] = prefix + filepath.ToSlash(filepath.Join(c.BasePath, path))
+		}
 	}
 	return &preparedDefinition{c, def, []byte(rendered), repo, alias, instructionPath, inputs, outputs}, nil
 }
@@ -201,11 +227,21 @@ func renderPaths(templates []string, params any, inputs bool) ([]string, error) 
 }
 func assignment(instructions string, inputs, outputs []string) string {
 	prompt := instructions
-	if len(inputs) > 0 {
-		prompt += "\n\nRequired input files (upstream: paths are beneath the supplied predecessor evidence directory):"
-		for _, p := range inputs {
-			prompt += "\n- " + p
+	local, upstream := []string{}, []string{}
+	for _, path := range inputs {
+		if strings.HasPrefix(path, "upstream:") {
+			upstream = append(upstream, strings.TrimPrefix(path, "upstream:"))
+		} else {
+			local = append(local, path)
 		}
+	}
+	if len(local) > 0 {
+		prompt += "\n\nRequired repository inputs (relative to the working directory; these are authoritative task inputs and do not require predecessor approval):\n- " + strings.Join(local, "\n- ")
+	}
+	if len(upstream) > 0 {
+		prompt += "\n\nRequired accepted predecessor inputs (relative to the supplied evidence directory):\n- " + strings.Join(upstream, "\n- ")
+	} else {
+		prompt += "\n\nThis task has no required predecessor inputs. An absent or empty predecessor directory is expected and is not a blocker."
 	}
 	if len(outputs) > 0 {
 		prompt += "\n\nRequired output files (relative to the working directory; create or rewrite each during this attempt):"
@@ -255,6 +291,28 @@ func fileSignature(root, path string) (string, error) {
 	return fmt.Sprintf("%d:%d:%s", info.ModTime().UnixNano(), n, hex.EncodeToString(hash.Sum(nil))), nil
 }
 func prepareContract(workspace, evidence string, snap *Snapshot) error {
+	snap.BasePrompt = assignment(snap.Instructions, snap.Inputs, snap.Outputs)
+	snap.Prompt = snap.BasePrompt + "\n\nReport meaningful progress with queue_progress. Finish with queue_submit_result (completed, blocked, or failed) and artifact paths relative to the working directory."
+	snap.Prompt += "\nWorking directory: " + workspace
+	if !isolated(snap.UseIsolatedWorkspace) {
+		snap.Prompt += "\nWorkspace mode: shared filesystem. Preserve unrelated local edits; do not reset or clean the checkout."
+	}
+	snap.Prompt += "\n\nResolved required input locations:"
+	for _, path := range snap.Inputs {
+		root := workspace
+		if strings.HasPrefix(path, "upstream:") {
+			root = evidence
+			path = strings.TrimPrefix(path, "upstream:")
+		}
+		snap.Prompt += "\n- " + filepath.Join(root, path)
+	}
+	for _, path := range snap.Inputs {
+		if strings.HasPrefix(path, "upstream:") {
+			snap.Prompt += "\nPredecessor evidence directory: " + evidence
+			break
+		}
+	}
+
 	snap.InputSignatures = map[string]string{}
 	for _, input := range snap.Inputs {
 		root, path := workspace, input

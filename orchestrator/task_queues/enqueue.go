@@ -185,10 +185,11 @@ func QueueCommand(ctx context.Context, c Config, action string, input io.Reader,
 	if len(raw) > 1<<20 {
 		return errors.New("batch exceeds 1 MiB")
 	}
-	if action == "tasks" || action == "logs" {
+	if action == "tasks" || action == "logs" || action == "attempt-status" {
 		var request struct {
-			Offset int   `json:"offset"`
-			After  int64 `json:"after"`
+			Attempt string `json:"attempt"`
+			Offset  int    `json:"offset"`
+			After   int64  `json:"after"`
 		}
 		if err := json.Unmarshal(raw, &request); err != nil {
 			return err
@@ -205,7 +206,21 @@ func QueueCommand(ctx context.Context, c Config, action string, input io.Reader,
 			return err
 		}
 		var result any
-		if action == "tasks" {
+		if action == "attempt-status" {
+			var status string
+			rows, queryErr := store.DB.QueryContext(ctx, "SELECT status FROM am_task_attempts WHERE queue_id=? AND id=?", c.QueueID, request.Attempt)
+			if queryErr != nil {
+				return queryErr
+			}
+			if rows.Next() {
+				err = rows.Scan(&status)
+			}
+			if err == nil {
+				err = rows.Err()
+			}
+			rows.Close()
+			result = map[string]string{"status": status}
+		} else if action == "tasks" {
 			result, err = store.Tasks(ctx, request.Offset)
 		} else {
 			result, err = store.Logs(ctx, request.After)

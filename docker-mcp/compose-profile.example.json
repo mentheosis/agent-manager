@@ -1,0 +1,17 @@
+{
+  "name": "sample-jobs",
+  "description": "Approved application maintenance jobs",
+  "cwd": "/srv/sample",
+  "argv": ["/opt/mcp/bin/python", "/opt/agent-manager/docker-mcp/compose_runner.py"],
+  "compose": {
+    "docker": "/usr/bin/docker",
+    "compose_files": ["/srv/sample/compose.yml"],
+    "service": "worker",
+    "state_dir": "/var/lib/mcp/sample-jobs",
+    "container_python": "python3",
+    "command_prefix": ["/usr/local/bin/sample"],
+    "source_paths": ["src"],
+    "timeout_seconds": 3600,
+    "operations": {"check": ["check"], "refresh": ["refresh", "--incremental"]}
+  }
+}

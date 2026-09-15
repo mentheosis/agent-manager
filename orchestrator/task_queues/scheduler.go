@@ -41,7 +41,7 @@ func (w *APIWorkers) Launch(ctx context.Context, a Attempt, t Task, workspace, p
 		return
 	}
 	execution := snap.Task
-	err = w.Client.Request(ctx, http.MethodPost, w.path(a.ID), map[string]any{"task_id": t.ID, "workspace": workspace, "prompt": prompt, "execution": execution, "use_isolated_workspace": isolated(snap.UseIsolatedWorkspace), "repository": snap.Repository}, &out, w.Config.InternalToken)
+	err = w.Client.Request(ctx, http.MethodPost, w.path(a.ID), map[string]any{"task_id": t.ID, "workflow_id": t.Workflow, "attempt_number": t.AttemptCount, "workspace": workspace, "prompt": prompt, "execution": execution, "use_isolated_workspace": isolated(snap.UseIsolatedWorkspace), "repository": snap.Repository}, &out, w.Config.InternalToken)
 	return
 }
 func (w *APIWorkers) State(ctx context.Context, id string) (out WorkerState, err error) {

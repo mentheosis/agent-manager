@@ -65,7 +65,8 @@ type AthenaConfig struct {
 }
 
 type Profile struct {
-	Athena *AthenaConfig `json:"athena,omitempty"`
+	Compose *ComposeConfig `json:"compose,omitempty"`
+	Athena  *AthenaConfig  `json:"athena,omitempty"`
 
 	// Name is the identifier the MCP client uses to invoke this profile.
 	// Must be unique within the config. Use kebab-case (e.g. "build-dev").
@@ -185,6 +186,32 @@ func (c *Config) validate() error {
 			return fmt.Errorf("profile %q: cwd %q is not a directory", p.Name, p.Cwd)
 		}
 
+		if p.Compose != nil {
+			if p.Athena != nil || len(p.Argv) != 2 || !filepath.IsAbs(p.Argv[0]) || !filepath.IsAbs(p.Argv[1]) || p.Script != "" || p.Command != "" {
+				return fmt.Errorf("Compose profile requires absolute Python/helper argv")
+			}
+			r := p.Compose
+			if !filepath.IsAbs(r.Docker) || !filepath.IsAbs(r.StateDir) || len(r.ComposeFiles) == 0 || r.Service == "" || len(r.Operations) == 0 {
+				return fmt.Errorf("incomplete Compose profile")
+			}
+			if r.Database != nil && (!filepath.IsAbs(r.ConfigFile) || !filepath.IsAbs(r.ContainerConfig) || len(r.Database.ConfigKeys) == 0 || r.Database.Host == "" || r.Database.Name == "" || len(r.Database.AllowedTables) == 0) {
+				return fmt.Errorf("incomplete Compose database settings")
+			}
+			for _, argv := range r.Operations {
+				if len(argv) == 0 {
+					return fmt.Errorf("Compose operation must specify a command")
+				}
+			}
+			for _, file := range r.ComposeFiles {
+				if !filepath.IsAbs(file) {
+					return fmt.Errorf("compose paths must be absolute")
+				}
+			}
+			if r.TimeoutSeconds < 1 || r.TimeoutSeconds > 86400 {
+				return fmt.Errorf("Compose timeout must be 1..86400 seconds")
+			}
+			p.TimeoutSeconds = 90
+		}
 		if p.Athena != nil {
 			a := p.Athena
 			if len(p.Argv) != 2 || !filepath.IsAbs(p.Argv[0]) || !filepath.IsAbs(p.Argv[1]) || p.Script != "" || p.Command != "" {

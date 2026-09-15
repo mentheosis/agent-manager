@@ -18,13 +18,14 @@ import (
 )
 
 type Definition struct {
-	Instructions string          `json:"instructions"`
-	Provider     string          `json:"provider"`
-	Model        string          `json:"model,omitempty"`
-	Permission   string          `json:"permission"`
-	Parameters   json.RawMessage `json:"parameters"`
-	Inputs       []string        `json:"inputs,omitempty"`
-	Outputs      []string        `json:"outputs,omitempty"`
+	ReplayProfile string          `json:"replay_profile,omitempty"`
+	Instructions  string          `json:"instructions"`
+	Provider      string          `json:"provider"`
+	Model         string          `json:"model,omitempty"`
+	Permission    string          `json:"permission"`
+	Parameters    json.RawMessage `json:"parameters"`
+	Inputs        []string        `json:"inputs,omitempty"`
+	Outputs       []string        `json:"outputs,omitempty"`
 }
 
 type Limits struct {

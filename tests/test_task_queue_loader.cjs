@@ -5,7 +5,7 @@ const vm=require('node:vm');
 function fixture(result){
  let Loader;
  const nodes={};
- const node=()=>({textContent:'',hidden:false,disabled:false,children:[],replaceChildren(){this.children=[];},append(n){this.children.push(n);}});
+ const node=()=>({textContent:'',hidden:false,disabled:false,children:[],setAttribute(k,v){this[k]=v;},replaceChildren(){this.children=[];},append(n){this.children.push(n);}});
  vm.runInNewContext(fs.readFileSync('static/components/task_queues/am-task-queue-loader.js','utf8').replace(/^import.*$/m,''),{
   HTMLElement:class{},customElements:{define(_,cls){Loader=cls;}},queueRequest:async()=>result,
   document:{createElement:node,dispatchEvent(){}},CustomEvent:class{}
@@ -20,9 +20,11 @@ test('preview summarizes tasks and selects a single rendered assignment',async()
  const {loader,nodes}=fixture({preview_hash:'hash',tasks:[task('one'),task('two')]});
  await loader.run('render');
  assert.match(nodes['.loader-message'].textContent,/2 tasks parsed · 2 rendered · 0 failed/);
- assert.equal(nodes['.preview-tasks'].children.length,2);
+ assert.equal(nodes['.preview-tasks tbody'].children.length,2);
  assert.match(nodes['.rendered'].textContent,/Instructions for one/);
- loader.showTask(1);assert.match(nodes['.rendered'].textContent,/Instructions for two/);
+ nodes['.preview-tasks tbody'].children[1].onclick();
+ assert.equal(nodes['.preview-tasks tbody'].children[1]['aria-selected'],'true');
+ assert.match(nodes['.rendered'].textContent,/Instructions for two/);
  assert.equal(nodes['.enqueue'].disabled,false);
 });
 test('partial preview cannot be loaded',async()=>{
@@ -31,9 +33,19 @@ test('partial preview cannot be loaded',async()=>{
  assert.match(nodes['.loader-message'].textContent,/1 tasks unresolved/);
 });
 test('successful load gives count and close action',async()=>{
- const {loader,nodes}=fixture({task_ids:[12,13]});loader._preview={preview_hash:'hash'};
+ const {loader,nodes}=fixture({task_ids:{one:12,two:13}});loader._preview={preview_hash:'hash'};
  await loader.run('enqueue');
  assert.match(nodes['.loader-message'].textContent,/2 tasks loaded successfully/);
  assert.equal(nodes['.done'].hidden,false);
  assert.equal(nodes['.enqueue'].disabled,true);
+});
+test('expected predecessor inputs do not require attention; missing local files do',()=>{
+ const {loader}=fixture({});
+ const pending={warnings:['Pending accepted predecessor artifact: upstream:report.md']};
+ assert.equal(loader.previewAttention(pending).count,0);
+ assert.equal(loader.attentionLabel(pending),'Rendered · No action needed');
+ const missing={warnings:[...pending.warnings,'Input must be available before execution: scope.json']};
+ assert.equal(loader.previewAttention(missing).count,1);
+ assert.match(loader.attentionLabel(missing),/1 local input missing/);
+ assert.equal(loader.previewAttention({warnings:['Isolated execution reads committed Git HEAD files; preview inspects the mounted repository.']}).count,1);
 });

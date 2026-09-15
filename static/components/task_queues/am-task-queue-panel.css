@@ -62,3 +62,9 @@ am-task-queue-panel.visible { display:flex; }
 .queue-workflow-status[data-state=completed] { --workflow-color:var(--green, #48bb78); }
 .queue-workflow-status[data-state=blocked] { --workflow-color:var(--red, #f87171); }
 .queue-workflow-status[data-state=awaiting-human] { --workflow-color:var(--yellow, #e6b450); }
+am-task-queue-loader .preview-tasks { margin:12px 0; }
+am-task-queue-loader .preview-tasks [aria-selected=true] { background:var(--bg-highlight); box-shadow:inset 3px 0 var(--accent); }
+am-task-queue-loader .preview-tasks tr:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+am-task-queue-loader .preview-tasks th:first-child,am-task-queue-loader .preview-tasks td:first-child { width:auto; }
+am-task-queue-loader .preview-tasks [data-attention=true] td:last-child { color:var(--yellow, #e6b450); font-weight:600; }
+am-task-queue-loader .preview-attention { color:var(--yellow, #e6b450); background:color-mix(in srgb, var(--yellow, #e6b450) 12%, transparent); border:1px solid var(--yellow, #e6b450); border-left-width:4px; border-radius:5px; padding:12px; margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; font-weight:600; }

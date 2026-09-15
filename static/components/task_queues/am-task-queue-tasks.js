@@ -10,6 +10,7 @@ class AmTaskQueueTasks extends HTMLElement {
     this._offset = 0;
     this._busy = false;
     this._filters = {};
+    this._expandedByController = new Map();
     this._onStatus = e => {
       if (e.detail.title !== this._instance?.title) return;
       const badge = this.querySelector(".queue-main-status");
@@ -131,6 +132,7 @@ class AmTaskQueueTasks extends HTMLElement {
     const cell = document.createElement("td"); cell.colSpan = values.length + 1;
     detail.append(cell); body.append(header, detail);
     const toggle = expanded => {
+      if (expanded) open.add(key); else open.delete(key);
       detail.hidden = !expanded;
       header.dataset.open = String(expanded);
       caret.textContent = expanded ? "▾" : "▸";
@@ -153,9 +155,14 @@ class AmTaskQueueTasks extends HTMLElement {
       return { state: "active", label: "Active" };
     return { state: "idle", label: "Idle" };
   }
+  expandedRows() {
+    const key = this._instance?.instance_id || this._instance?.title;
+    if (!this._expandedByController.has(key)) this._expandedByController.set(key, new Set());
+    return this._expandedByController.get(key);
+  }
   renderTasks(tasks) {
     const rows = this.querySelector(".queue-task-rows");
-    const open = new Set([...rows.querySelectorAll('[data-open="true"]')].map(el => el.dataset.expansion));
+    const open = this.expandedRows();
     rows.replaceChildren();
     if (!tasks.length) {
       rows.append(textElement("p", "No tasks. Use Load tasks to preview and insert a task batch."));
