@@ -26,6 +26,7 @@ type Store struct {
 	controls *controllerControls
 }
 type Task struct {
+	Rounds       []Round         `json:"rounds,omitempty"`
 	ID           int64           `json:"id"`
 	QueueID      string          `json:"queue_id"`
 	Workflow     string          `json:"workflow_id"`
@@ -43,16 +44,22 @@ type Task struct {
 	LatestUsage  json.RawMessage `json:"latest_usage,omitempty"`
 }
 type Attempt struct {
-	ID           string          `json:"id"`
-	TaskID       int64           `json:"task_id"`
-	Owner        string          `json:"owner"`
-	Status       string          `json:"status"`
-	Conversation string          `json:"conversation_id"`
-	Workspace    string          `json:"workspace"`
-	Snapshot     json.RawMessage `json:"input_snapshot"`
-	Submission   json.RawMessage `json:"submission,omitempty"`
-	Started      time.Time       `json:"started_at"`
-	Lease        time.Time       `json:"lease_expires"`
+	ResumeTurn   string            `json:"-"`
+	ResumeWorker bool              `json:"-"`
+	ReviewFiles  map[string]string `json:"-"`
+	RootAttempt  string            `json:"-"`
+	Role         string            `json:"-"`
+	Round        int               `json:"-"`
+	ID           string            `json:"id"`
+	TaskID       int64             `json:"task_id"`
+	Owner        string            `json:"owner"`
+	Status       string            `json:"status"`
+	Conversation string            `json:"conversation_id"`
+	Workspace    string            `json:"workspace"`
+	Snapshot     json.RawMessage   `json:"input_snapshot"`
+	Submission   json.RawMessage   `json:"submission,omitempty"`
+	Started      time.Time         `json:"started_at"`
+	Lease        time.Time         `json:"lease_expires"`
 }
 type Status struct {
 	Limits     Limits `json:"limits"`
@@ -140,6 +147,10 @@ func (s *Store) Check(ctx context.Context) error {
 	if err := s.DB.QueryRowContext(ctx, "SELECT MAX(version) FROM am_schema_version").Scan(&version); err != nil {
 		return errors.New("queue schema missing or inaccessible; apply schema explicitly")
 	}
+	var rounds int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM am_task_rounds WHERE 1=0").Scan(&rounds); err != nil {
+		return errors.New("queue round schema missing; reapply schema/001.sql")
+	}
 	if version != 1 {
 		return errors.New("unsupported queue schema version")
 	}
@@ -199,22 +210,12 @@ func (s *Store) Claim(ctx context.Context, owner string) (*Attempt, *Task, error
 		if e != nil {
 			return e
 		}
-		initial, _ := json.Marshal(Snapshot{Limits: s.controls.Limits})
-		var previous json.RawMessage
-		err := tx.QueryRowContext(ctx, "SELECT input_snapshot FROM am_task_attempts WHERE task_id=? AND input_snapshot IS NOT NULL ORDER BY started_at DESC,id DESC LIMIT 1", t.ID).Scan(&previous)
-		if err != nil && err != sql.ErrNoRows {
-			return err
-		}
-		if len(previous) > 0 && string(previous) != "null" {
-			initial = previous
-		}
-		var snap Snapshot
-		if err = json.Unmarshal(initial, &snap); err != nil {
-			return err
-		}
+		initial, _ := json.Marshal(Snapshot{})
+		// A new attempt resolves the current definition; only same-attempt recovery
+		// reuses its persisted snapshot.
 		a = &Attempt{ID: ID(), TaskID: t.ID, Owner: owner, Status: "claimed", Snapshot: initial}
 		task = &t
-		if _, e = tx.ExecContext(ctx, `INSERT INTO am_task_attempts(id,task_id,queue_id,owner,backend_id,lease_expires,input_snapshot) VALUES (?,?,?,?,?,TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)),?)`, a.ID, t.ID, s.Config.QueueID, owner, s.backendID(), snap.Limits.LeaseSeconds, string(initial)); e != nil {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO am_task_attempts(id,task_id,queue_id,owner,backend_id,lease_expires,input_snapshot) VALUES (?,?,?,?,?,TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)),?)`, a.ID, t.ID, s.Config.QueueID, owner, s.backendID(), s.controls.Limits.LeaseSeconds, string(initial)); e != nil {
 			return e
 		}
 		if _, e = tx.ExecContext(ctx, `UPDATE am_tasks SET status='running',latest_attempt=?,attempt_count=attempt_count+1,updated_at=UTC_TIMESTAMP(6) WHERE id=?`, a.ID, t.ID); e != nil {
@@ -267,7 +268,7 @@ func (s *Store) backendID() string {
 	return hex.EncodeToString(hash[:])
 }
 func (s *Store) Attempts(ctx context.Context) ([]Attempt, error) {
-	rows, e := s.DB.QueryContext(ctx, "SELECT id,task_id,owner,status,COALESCE(conversation_id,''),COALESCE(workspace,''),COALESCE(input_snapshot,'null'),COALESCE(submission,'null'),started_at,lease_expires FROM am_task_attempts WHERE queue_id=? AND backend_id=? AND status IN "+active, s.Config.QueueID, s.backendID())
+	rows, e := s.DB.QueryContext(ctx, "SELECT id,task_id,owner,status,COALESCE(conversation_id,''),COALESCE(workspace,''),COALESCE(input_snapshot,'null'),COALESCE(submission,'null'),TIMESTAMPADD(MICROSECOND,COALESCE(JSON_EXTRACT(resource_usage,'$.paused_micros'),0),started_at),lease_expires FROM am_task_attempts WHERE queue_id=? AND backend_id=? AND status IN "+active, s.Config.QueueID, s.backendID())
 	if e != nil {
 		return nil, e
 	}
@@ -298,6 +299,15 @@ func (s *Store) Task(ctx context.Context, id int64) (Task, error) {
 	t.Latest = latest.String
 	if e == nil && t.Latest != "" {
 		e = s.DB.QueryRowContext(ctx, "SELECT COALESCE(submission,'null'),COALESCE(error_text,''),COALESCE(resource_usage,'null') FROM am_task_attempts WHERE id=? AND queue_id=?", t.Latest, s.Config.QueueID).Scan(&t.LatestResult, &t.LatestError, &t.LatestUsage)
+		if errors.Is(e, sql.ErrNoRows) {
+			// History can be removed during a manual reset. Keep the task visible
+			// rather than failing the entire queue read on an orphaned pointer.
+			e = nil
+			t.LatestError = "Referenced attempt history is missing; task state is unchanged"
+		}
+	}
+	if e == nil && t.Latest != "" {
+		t.Rounds, e = s.Rounds(ctx, t.Latest)
 	}
 	return t, e
 }
@@ -328,7 +338,7 @@ func (s *Store) Launched(ctx context.Context, a Attempt, conversation string) er
 	})
 }
 func (s *Store) Renew(ctx context.Context, a Attempt) error {
-	r, e := s.DB.ExecContext(ctx, "UPDATE am_task_attempts SET lease_expires=TIMESTAMPADD(SECOND,COALESCE(JSON_EXTRACT(input_snapshot,'$.limits.lease_secs'),?),UTC_TIMESTAMP(6)),heartbeat_at=UTC_TIMESTAMP(6) WHERE id=? AND queue_id=? AND owner=? AND status IN "+active+" AND lease_expires>UTC_TIMESTAMP(6)", s.Config.LeaseSeconds, a.ID, s.Config.QueueID, a.Owner)
+	r, e := s.DB.ExecContext(ctx, "UPDATE am_task_attempts SET lease_expires=TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(6)),heartbeat_at=UTC_TIMESTAMP(6) WHERE id=? AND queue_id=? AND owner=? AND status IN "+active+" AND lease_expires>UTC_TIMESTAMP(6)", s.CurrentLimits().LeaseSeconds, a.ID, s.Config.QueueID, a.Owner)
 	if e != nil {
 		return e
 	}
@@ -487,6 +497,9 @@ func (s *Store) Action(ctx context.Context, id int64, action, attemptID, actor s
 			}
 			next = "queued"
 		case "cancel":
+			if attemptID != "" && latest != attemptID {
+				return ErrConflict
+			}
 			if status == "running" {
 				return errors.New("cancel active attempt through scheduler")
 			}

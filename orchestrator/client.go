@@ -12,6 +12,12 @@ import (
 )
 
 // Client wraps the agent-manager web server HTTP API.
+type HTTPStatusError struct{ StatusCode int }
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("agent API returned HTTP %d", e.StatusCode)
+}
+
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
@@ -184,7 +190,7 @@ func (c *Client) Request(ctx context.Context, method, path string, input, output
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("agent API returned HTTP %d", resp.StatusCode)
+		return &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	if output != nil {
 		return json.NewDecoder(resp.Body).Decode(output)

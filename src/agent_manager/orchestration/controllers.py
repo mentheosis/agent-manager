@@ -69,13 +69,14 @@ def queue_config(name: str) -> dict:
         'initial_max_workers': profile.get('default_max_workers', 1),
         'lease_seconds': profile.get('default_lease_secs', 60),
         'max_attempt_seconds': profile.get('default_task_limit_secs', 3600),
-        'max_attempt_tokens': profile.get('default_task_limit_tokens', 2000000)}
+        'max_attempt_tokens': profile.get('default_task_limit_tokens', 2000000),
+        'review_round_limit': profile.get('default_review_round_limit', 8)}
     validate_limits(config)
     return config
 
 
 def validate_limits(config: dict):
-    for key in ('initial_max_workers', 'lease_seconds', 'max_attempt_seconds', 'max_attempt_tokens'):
+    for key in ('initial_max_workers', 'lease_seconds', 'max_attempt_seconds', 'max_attempt_tokens', 'review_round_limit'):
         if type(config[key]) is not int or config[key] < 1:
             raise ValueError('Queue limits must be positive integers')
     if config['lease_seconds'] < 15 or config['max_attempt_seconds'] < config['lease_seconds']:
@@ -91,7 +92,7 @@ def launch_environment(instance, base_url: str) -> dict:
         return {}
     config = instance_queue_config(instance)
     for field, key in [('queue_initial_max_workers', 'initial_max_workers'), ('queue_lease_secs', 'lease_seconds'),
-                       ('queue_task_limit_secs', 'max_attempt_seconds'), ('queue_task_limit_tokens', 'max_attempt_tokens')]:
+                       ('queue_task_limit_secs', 'max_attempt_seconds'), ('queue_task_limit_tokens', 'max_attempt_tokens'), ('queue_review_round_limit', 'review_round_limit')]:
         value = getattr(instance, field, None)
         if value is not None:
             config[key] = value
@@ -102,15 +103,26 @@ def launch_environment(instance, base_url: str) -> dict:
 
 def worker_mcp(instance, manager) -> dict:
     attempt = getattr(instance, 'queue_attempt', None)
-    if not attempt:
+    if not attempt or attempt.get("detached"):
         return {}
     binary = manager.find_binary()
     if not binary:
         raise RuntimeError('am-orchestrator binary is unavailable')
-    return {'queue': {'command': binary,
+    review = attempt.get('role') == 'reviewer'
+    allowed = ['queue_progress', 'queue_read_history'] + (
+        ['queue_read_file', 'queue_submit_review'] if review else ['queue_submit_result', 'queue_replay'])
+    result = {'queue': {'command': binary, 'required': True,
+        'enabled_tools': allowed,
+        'tools': {name: {'approval_mode': 'approve'} for name in allowed},
         'args': ['--mode', 'queue-worker', '--group', instance.parent,
                  '--base-url', manager.base_url, '--attempt', attempt['id']],
-        'env': {'AM_ATTEMPT_TOKEN': attempt_token(attempt['id'])}}}
+        'env': {'AM_ATTEMPT_TOKEN': attempt_token(attempt['id']),
+                'AM_QUEUE_ROLE': attempt.get('role') or 'worker',
+                'AM_REVIEW_FILES': json.dumps(attempt.get('review_files', {}))}}}
+    if instance.provider != 'codex':
+        for key in ('required', 'enabled_tools', 'tools'):
+            result['queue'].pop(key, None)
+    return result
 
 
 def worker_environment_exclusions() -> list[str]:

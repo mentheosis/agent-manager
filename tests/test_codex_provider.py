@@ -1194,3 +1194,17 @@ async def test_codex_runtime_resumes_after_capturing_session_id(tmp_path: Path, 
     # The artifact protocol is now embedded in the developer_instructions value.
     assert "agent-manager:artifact" in args[0]
     assert "agent-manager:artifact" in args[1]
+
+
+def test_codex_scoped_queue_mcp_permissions():
+    runtime = CodexRuntime(AgentConfig(provider='codex',title='review', cwd='/tmp', permission_mode='read-only',
+        mcp_servers={'queue': {'command':'am-orchestrator','args':['--mode','queue-worker'],
+            'required':True,'enabled_tools':['queue_read_file','queue_submit_review'],
+            'tools':{'queue_read_file':{'approval_mode':'approve'},'queue_submit_review':{'approval_mode':'approve'}}}}))
+    args = runtime._team_mcp_args()
+    assert 'mcp_servers.queue.required=true' in args
+    assert 'mcp_servers.queue.tools."queue_read_file".approval_mode="approve"' in args
+    assert 'mcp_servers.queue.tools."queue_submit_review".approval_mode="approve"' in args
+    assert not any('default_tools_approval_mode' in value for value in args)
+    command = runtime._build_command('review', [])
+    assert '--dangerously-bypass-approvals-and-sandbox' not in command

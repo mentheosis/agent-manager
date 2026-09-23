@@ -208,7 +208,7 @@ func QueueCommand(ctx context.Context, c Config, action string, input io.Reader,
 		var result any
 		if action == "attempt-status" {
 			var status string
-			rows, queryErr := store.DB.QueryContext(ctx, "SELECT status FROM am_task_attempts WHERE queue_id=? AND id=?", c.QueueID, request.Attempt)
+			rows, queryErr := store.DB.QueryContext(ctx, "SELECT status FROM am_task_attempts WHERE queue_id=? AND id=? UNION ALL SELECT IF(r.submission IS NULL,a.status,'submitted') FROM am_task_rounds r JOIN am_task_attempts a ON a.id=r.attempt_id WHERE a.queue_id=? AND r.id=?", c.QueueID, request.Attempt, c.QueueID, request.Attempt)
 			if queryErr != nil {
 				return queryErr
 			}

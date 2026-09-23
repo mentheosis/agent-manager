@@ -2,6 +2,8 @@
  * Sidebar component - instance list with drag-to-reorder.
  */
 
+import { queueRequest } from "./task_queues/api.js";
+
 import * as api from '../lib/api.js';
 import { streamManager } from '../lib/streams.js';
 
@@ -9,9 +11,18 @@ class AmSidebar extends HTMLElement {
     constructor() {
         super();
         this._instances = [];
+        this._queueStatuses = new Map();
+        this._queueReads = new Set();
+        this._onQueueTasks = event => {
+            const {title, tasks} = event.detail;
+            if (this._instances.some(i => i.title === title && i.controller_mode === 'task_queue')) {
+                this.setQueueStatus(title, this.queueRollup(tasks));
+            }
+        };
         this._selectedTitle = null;
         this._draggedItem = null;
         this._dropMode = null;  // 'reorder' | 'reparent' | 'folder'
+        this._expandedReviews = new Set();
         this._expandedTeams = new Set();  // Track which teams are expanded
         this._expandedFolders = new Set();  // Track which folders are expanded
         this._unsubscribers = [];  // Track stream subscriptions for cleanup
@@ -22,6 +33,9 @@ class AmSidebar extends HTMLElement {
 
     connectedCallback() {
         this.id = 'sidebar';
+        document.addEventListener('queue-tasks-updated', this._onQueueTasks);
+        this._queueTimer = setInterval(() => this.refreshQueueStatuses(), 10000);
+        this._idleTimer = setInterval(() => this.refreshConversationStatuses(), 30000);
         this.innerHTML = `
             <div id="sidebar-header">
                 <h1><img src="/favicon.svg" alt=""> <span class="sidebar-brand-text">Agent Manager</span></h1>
@@ -200,6 +214,9 @@ class AmSidebar extends HTMLElement {
 
     disconnectedCallback() {
         this.clearLongPressTimer();
+        clearInterval(this._queueTimer);
+        clearInterval(this._idleTimer);
+        document.removeEventListener('queue-tasks-updated', this._onQueueTasks);
         // Clean up all subscriptions
         for (const unsub of this._unsubscribers) {
             unsub();
@@ -213,7 +230,142 @@ class AmSidebar extends HTMLElement {
 
     set instances(value) {
         this._instances = value || [];
+        for (const title of this._queueStatuses.keys()) {
+            if (!this._instances.some(i => i.title === title && i.controller_mode === 'task_queue')) this._queueStatuses.delete(title);
+        }
         this.render();
+        this.refreshQueueStatuses();
+    }
+
+    conversationDisplayStatus(inst, stream, now = Date.now()) {
+        const status = stream?.status || inst.status || 'creating';
+        if (status !== 'ready') return status;
+        const history = stream?.eventHistory || [];
+        for (let i = history.length - 1; i >= 0; i--) {
+            const event = history[i];
+            if (['connection', 'history_end', 'status', 'system_init'].includes(event.type)) continue;
+            const timestamp = Date.parse(event.ts);
+            if (Number.isFinite(timestamp))
+                return now - timestamp > 30 * 60 * 1000 ? 'idle' : 'ready';
+        }
+        const created = Date.parse(inst.created_at);
+        if (Number.isFinite(created) && now - created > 30 * 60 * 1000) return 'idle';
+        // Unknown activity age is not evidence of inactivity.
+        return 'ready';
+    }
+
+    paintConversationStatus(inst, stream) {
+        const status = this.conversationDisplayStatus(inst, stream);
+        for (const item of this.querySelectorAll('[data-title]')) {
+            if (item.dataset.title !== inst.title) continue;
+            item.classList.remove('creating','loading','ready','running','paused','error','deleted','idle');
+            item.classList.add(status);
+            const dot = item.querySelector('.status-dot');
+            const label = item.querySelector('.status-label');
+            if (dot) dot.className = `status-dot ${status}`;
+            if (label) {
+                label.className = `status-label ${status}`;
+                label.textContent = status;
+            }
+        }
+    }
+
+    refreshConversationStatuses() {
+        for (const inst of this._instances) {
+            if (inst.controller_mode !== 'task_queue')
+                this.paintConversationStatus(inst, streamManager.get(inst.title));
+        }
+    }
+
+    queueRollup(tasks) {
+        if (!Array.isArray(tasks)) return {state:'unknown', label:'Status unavailable'};
+        // A human gate has precedence even when another workflow is running.
+        if (tasks.some(t => t.status === 'awaiting_review' ||
+            (t.status === 'blocked' && /^Paused by operator:/.test(t.latest_error || ''))))
+            return {state:'waiting-human', label:'Waiting for human'};
+        if (tasks.some(t => ['claimed','running','submitted','reviewing'].includes(t.status)))
+            return {state:'running', label:'Running'};
+        if (tasks.some(t => ['blocked','failed','cancelled'].includes(t.status)))
+            return {state:'blocked', label:'Blocked'};
+        if (tasks.length && tasks.every(t => t.status === 'completed'))
+            return {state:'completed', label:'Completed'};
+        return {state:'idle', label:'Idle'};
+    }
+
+    queueDisplay(inst) {
+        return this._queueStatuses.get(inst.title) || {state:'unknown', label:'Checking tasks…'};
+    }
+
+    setQueueStatus(title, status) {
+        this._queueStatuses.set(title, status);
+        const states = ['creating','loading','ready','running','paused','error','deleted','unknown','waiting-human','blocked','completed','idle'];
+        for (const item of this.querySelectorAll('[data-title]')) {
+            if (item.dataset.title !== title) continue;
+            item.classList.remove(...states);
+            item.classList.add(status.state);
+            const dot = item.querySelector('.status-dot');
+            const label = item.querySelector('.status-label');
+            if (dot) dot.className = `status-dot ${status.state}`;
+            if (label) {
+                label.className = `status-label ${status.state}`;
+                label.textContent = status.label;
+            }
+            if (item.classList.contains('mini-item')) {
+                const inst = this._instances.find(i => i.title === title);
+                item.title = `${inst ? this.displayName(inst) : title}: ${status.label}`;
+                item.setAttribute('aria-label', item.title);
+            }
+        }
+    }
+
+    async refreshQueueStatuses() {
+        await Promise.allSettled(this._instances.filter(i => i.controller_mode === 'task_queue').map(async inst => {
+            if (this._queueReads.has(inst.title)) return;
+            this._queueReads.add(inst.title);
+            try {
+                const tasks = [];
+                for (let offset=0;;offset+=100) {
+                    const page = await queueRequest(inst.title, `tasks?offset=${offset}`);
+                    tasks.push(...page);
+                    if (page.length < 100) break;
+                }
+                if (this.isConnected && this._instances.some(i => i.title === inst.title && i.instance_id === inst.instance_id))
+                    this.setQueueStatus(inst.title, this.queueRollup(tasks));
+            } catch {
+                if (this.isConnected && this._instances.some(i => i.title === inst.title && i.instance_id === inst.instance_id))
+                    this.setQueueStatus(inst.title, this.queueRollup(null));
+            } finally {
+                this._queueReads.delete(inst.title);
+            }
+        }));
+    }
+
+    // Presentation only: persisted parent/queue ownership never changes.
+    sidebarChildren() {
+        const children = new Map();
+        const add = (parent, inst) => {
+            if (!children.has(parent)) children.set(parent, []);
+            children.get(parent).push(inst);
+        };
+        for (const inst of this._instances) {
+            if (!inst.parent) continue;
+            let parent = inst.parent;
+            const queue = this._instances.find(i => i.title === parent);
+            if (queue?.controller_mode === 'task_queue' && inst.queue_attempt?.role === 'reviewer') {
+                const root = inst.queue_attempt.root_attempt;
+                const workers = this._instances.filter(i => i.parent === parent &&
+                    i.queue_attempt && (i.queue_attempt.role || 'worker') === 'worker' &&
+                    (i.queue_attempt.root_attempt || i.queue_attempt.id) === root);
+                // Missing/ambiguous workers leave reviews visible under the controller.
+                if (root && workers.length === 1) parent = workers[0].title;
+            }
+            add(parent, inst);
+        }
+        for (const [parent, members] of children) {
+            if (this._instances.find(i => i.title === parent)?.queue_attempt)
+                members.sort((a,b) => (a.queue_attempt?.round || 0) - (b.queue_attempt?.round || 0));
+        }
+        return children;
     }
 
     get selectedTitle() {
@@ -221,7 +373,27 @@ class AmSidebar extends HTMLElement {
     }
 
     set selectedTitle(value) {
+        const changed = this._selectedTitle !== value;
         this._selectedTitle = value;
+        if (changed) {
+            const children = this.sidebarChildren();
+            let title = value, revealed = false;
+            const seen = new Set();
+            while (title && !seen.has(title)) {
+                seen.add(title);
+                const parent = [...children].find(([, members]) => members.some(i => i.title === title))?.[0];
+                if (!parent) break;
+                const inst = this._instances.find(i => i.title === parent);
+                const expanded = inst?.queue_attempt ? this._expandedReviews : this._expandedTeams;
+                if (!expanded.has(parent)) { expanded.add(parent); revealed = true; }
+                title = parent;
+            }
+            const root = this._instances.find(i => i.title === title);
+            if (root?.folder && !this._expandedFolders.has(root.folder)) {
+                this._expandedFolders.add(root.folder); revealed = true;
+            }
+            if (revealed) { this.render(); return; }
+        }
         this.updateSelection();
     }
 
@@ -238,17 +410,7 @@ class AmSidebar extends HTMLElement {
         const miniList = this.querySelector('#sidebar-mini-list');
         miniList.innerHTML = '';
 
-        // Build a map of parent -> children for team grouping
-        const childrenMap = new Map();
-        for (const inst of this._instances) {
-            if (inst.parent) {
-                if (!childrenMap.has(inst.parent)) {
-                    childrenMap.set(inst.parent, []);
-                }
-                childrenMap.get(inst.parent).push(inst);
-            }
-        }
-
+        const childrenMap = this.sidebarChildren();
         // Build folder info (instances per folder) without changing order
         const folderInstances = new Map();  // folder name -> instances
         for (const inst of this._instances) {
@@ -320,25 +482,17 @@ class AmSidebar extends HTMLElement {
         this.updateSelection();
     }
 
-    renderInstanceWithChildren(list, inst, childrenMap, rendered) {
+    renderInstanceWithChildren(list, inst, childrenMap, rendered, depth = 0) {
         if (rendered.has(inst.title)) return;
-
-        const item = this.createInstanceItem(inst, childrenMap.get(inst.title));
+        const children = childrenMap.get(inst.title) || [];
+        const item = this.createInstanceItem(inst, children);
+        if (depth > 1) item.classList.add('reviewer-instance');
         list.appendChild(item);
         rendered.add(inst.title);
-
-        // Render children if this is a loop instance and expanded
-        if ((inst.kind === 'loop' || inst.instance_type === 'loop')) {
-            const children = childrenMap.get(inst.title) || [];
-            const isExpanded = this._expandedTeams.has(inst.title);
-
-            if (isExpanded) {
-                for (const child of children) {
-                    const childItem = this.createInstanceItem(child);
-                    list.appendChild(childItem);
-                    rendered.add(child.title);
-                }
-            }
+        const expanded = inst.queue_attempt ? this._expandedReviews : this._expandedTeams;
+        if (expanded.has(inst.title)) {
+            for (const child of children)
+                this.renderInstanceWithChildren(list, child, childrenMap, rendered, depth + 1);
         }
     }
 
@@ -634,7 +788,7 @@ class AmSidebar extends HTMLElement {
 
         // Get stream for status
         const stream = streamManager.get(inst.title);
-        const status = stream?.status || inst.status || 'creating';
+        const status = inst.controller_mode === 'task_queue' ? this.queueDisplay(inst).state : this.conversationDisplayStatus(inst, stream);
         item.classList.add(status);
 
         // Add visual distinction for loop instances
@@ -656,27 +810,25 @@ class AmSidebar extends HTMLElement {
         // Collapse/expand arrow for loop instances
         const isLoop = (inst.kind === 'loop' || inst.instance_type === 'loop');
         const childCount = children?.length || 0;
-        const isExpanded = this._expandedTeams.has(inst.title);
-        const expandArrow = isLoop && childCount > 0
-            ? `<button class="team-expand-btn ${isExpanded ? 'expanded' : ''}" type="button" title="${isExpanded ? 'Collapse' : 'Expand'} ${inst.controller_mode === 'task_queue' ? 'queue' : 'team'}">
+        const hasReviews = !!inst.queue_attempt && childCount > 0;
+        const isExpanded = (hasReviews ? this._expandedReviews : this._expandedTeams).has(inst.title);
+        const expandArrow = (isLoop || hasReviews) && childCount > 0
+            ? `<button class="team-expand-btn ${isExpanded ? 'expanded' : ''}" type="button" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} ${hasReviews ? 'reviews' : 'conversations'}" title="${isExpanded ? 'Collapse' : 'Expand'} ${hasReviews ? 'reviews' : inst.controller_mode === 'task_queue' ? 'queue' : 'team'}">
+                 <span class="child-count">${childCount}</span>
                  <svg width="12" height="12" viewBox="0 0 12 12"><path d="M4 3L8 6L4 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                </button>`
-            : (isLoop ? '<span class="team-expand-placeholder"></span>' : '');
-        const childBadge = isLoop && childCount > 0
-            ? `<span class="child-count">${childCount}</span>`
             : '';
 
         item.innerHTML = `
             <div style="display:flex;align-items:center;gap:6px">
-                ${expandArrow}
                 <span class="status-dot ${status}"></span>
                 <span class="instance-title">${this.escapeHtml(this.displayName(inst))}</span>
                 ${presetBadge}
-                ${childBadge}
+                ${expandArrow}
             </div>
             <div class="instance-path" title="${this.escapeHtml(inst.path)}">${this.escapeHtml(inst.path)}</div>
             <div class="instance-meta">
-                <span class="status-label ${status}">${inst.controller_mode === 'task_queue' ? 'SQL controller' : status}</span>
+                <span class="status-label ${status}">${inst.controller_mode === 'task_queue' ? this.queueDisplay(inst).label : status}</span>
                 ${inst.permission_mode && inst.permission_mode !== 'acceptEdits' ? `<span>· ${inst.permission_mode}</span>` : ''}
             </div>
         `;
@@ -684,23 +836,8 @@ class AmSidebar extends HTMLElement {
         // Subscribe to stream updates for status changes (no replay needed).
         // Also keeps the mini-strip dot in sync.
         const unsub = stream.subscribe((event) => {
-            if (event.type === 'status') {
-                item.classList.remove('creating', 'loading', 'ready', 'running', 'paused', 'error', 'deleted');
-                item.classList.add(event.status);
-                const dot = item.querySelector('.status-dot');
-                const label = item.querySelector('.status-label');
-                dot.className = `status-dot ${event.status}`;
-                label.className = `status-label ${event.status}`;
-                label.textContent = inst.controller_mode === 'task_queue' ? 'SQL controller' : event.status;
-
-                // Sync mini-strip dot
-                const miniItem = this.querySelector(`.mini-item[data-title="${CSS.escape(inst.title)}"]`);
-                if (miniItem) {
-                    miniItem.className = `mini-item ${event.status}`;
-                    const miniDot = miniItem.querySelector('.status-dot');
-                    if (miniDot) miniDot.className = `status-dot ${event.status}`;
-                }
-            }
+            if (inst.controller_mode !== 'task_queue')
+                this.paintConversationStatus(inst, stream);
         }, { replay: false });
         this._unsubscribers.push(unsub);
 
@@ -726,7 +863,11 @@ class AmSidebar extends HTMLElement {
         if (expandBtn) {
             expandBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.toggleTeamExpanded(inst.title);
+                if (hasReviews) {
+                    if (this._expandedReviews.has(inst.title)) this._expandedReviews.delete(inst.title);
+                    else this._expandedReviews.add(inst.title);
+                    this.render();
+                } else this.toggleTeamExpanded(inst.title);
             });
         }
 
@@ -844,14 +985,14 @@ class AmSidebar extends HTMLElement {
 
     createMiniItem(inst) {
         const stream = streamManager.get(inst.title);
-        const status = stream?.status || inst.status || 'creating';
+        const status = inst.controller_mode === 'task_queue' ? this.queueDisplay(inst).state : this.conversationDisplayStatus(inst, stream);
 
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = `mini-item ${status}`;
         btn.dataset.title = inst.title;
-        btn.title = this.displayName(inst);
-        btn.setAttribute('aria-label', this.displayName(inst));
+        btn.title = inst.controller_mode === 'task_queue' ? `${this.displayName(inst)}: ${this.queueDisplay(inst).label}` : this.displayName(inst);
+        btn.setAttribute('aria-label', btn.title);
         btn.innerHTML = `<span class="status-dot ${status}"></span>`;
 
         btn.addEventListener('click', () => {

@@ -200,16 +200,25 @@ class AmTerminalPane extends HTMLElement {
         // Need either text or images
         if (!text && this._pendingImages.length === 0) return;
 
-        input.value = '';
+        if (this._sendingPrompt) return;
+        this._sendingPrompt = true;
+        const title = this._instance.title;
 
         // Prepare images for sending (strip _preview field)
         const images = this._pendingImages.map(({ media_type, data }) => ({ media_type, data }));
-        this.clearPendingImages();
-
         try {
-            await api.sendPrompt(this._instance.title, text, images.length > 0 ? images : null);
+            const result = await api.sendPrompt(title, text, images.length > 0 ? images : null);
+            if (this._instance?.title === title) {
+                if (input.value.trim() === text) input.value = '';
+                this.clearPendingImages();
+                if (result?.queue_managed === false) {
+                    this.appendNote('This conversation is outside the task queue. Messages here do not resume or update the task.');
+                }
+            }
         } catch (err) {
-            this.appendNote(`Error: ${err.message}`);
+            if (this._instance?.title === title) this.appendNote(`Error: ${err.message}`);
+        } finally {
+            this._sendingPrompt = false;
         }
     }
 

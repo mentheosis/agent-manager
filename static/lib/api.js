@@ -98,14 +98,22 @@ export async function sendPrompt(title, text, images = null) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`Failed to send prompt: ${r.status}`);
+    if (!r.ok) {
+        const error = await r.json().catch(() => null);
+        throw new Error(error?.detail || `Failed to send prompt: ${r.status}`);
+    }
+    return r.json();
 }
 
 export async function abortInstance(title) {
     const r = await fetch(`${BASE}/instances/${encodeURIComponent(title)}/abort`, {
         method: 'POST',
     });
-    if (!r.ok) throw new Error(`Failed to abort: ${r.status}`);
+    if (!r.ok) {
+        let detail;
+        try { detail = (await r.json()).detail; } catch (_) {}
+        throw new Error(typeof detail === 'string' ? detail : `Failed to cancel: ${r.status}`);
+    }
     return r.json();
 }
 

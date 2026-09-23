@@ -414,8 +414,12 @@ class CodexRuntime(BaseRuntime):
             servers["team"] = self.config.team_mcp
         args = []
         for name, config in servers.items():
-            for key in ("command", "args"):
-                args.extend(["-c", f"mcp_servers.{name}.{key}=" + json.dumps(config[key])])
+            for key in ("command", "args", "enabled_tools", "required"):
+                if key in config:
+                    args.extend(["-c", f"mcp_servers.{name}.{key}=" + json.dumps(config[key])])
+            for tool, settings in config.get("tools", {}).items():
+                if "approval_mode" in settings:
+                    args.extend(["-c", f"mcp_servers.{name}.tools.{json.dumps(tool)}.approval_mode=" + json.dumps(settings["approval_mode"])])
             if config.get("env"):
                 # TOML inline table; JSON object syntax is not TOML.
                 table = ", ".join(json.dumps(k) + "=" + json.dumps(v) for k, v in config["env"].items())

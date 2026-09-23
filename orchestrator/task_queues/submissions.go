@@ -12,6 +12,7 @@ import (
 )
 
 type Submission struct {
+	Origin        string     `json:"origin,omitempty"`
 	Outcome       string     `json:"outcome"`
 	Summary       string     `json:"summary"`
 	ArtifactPaths []string   `json:"artifact_paths,omitempty"`
@@ -20,6 +21,12 @@ type Submission struct {
 }
 
 func (s *Store) Submit(ctx context.Context, id, token, kind string, payload json.RawMessage) error {
+	if len(payload) > 1<<20 {
+		return errors.New("submission too large")
+	}
+	if handled, err := s.submitRound(ctx, id, token, kind, payload); handled {
+		return err
+	}
 	if !hmac.Equal([]byte(capability(s.Config.InternalToken, id)), []byte(token)) {
 		return errors.New("invalid attempt capability")
 	}

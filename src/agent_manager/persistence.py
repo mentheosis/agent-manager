@@ -34,6 +34,7 @@ class InstanceRecord:
     queue_lease_secs: int | None = None
     queue_task_limit_secs: int | None = None
     queue_task_limit_tokens: int | None = None
+    queue_review_round_limit: int | None = None
     queue_attempt: dict | None = None
     kind: str = "agent"
     permission_mode: str = "acceptEdits"
@@ -74,6 +75,7 @@ class InstanceRecord:
             "queue_lease_secs": self.queue_lease_secs,
             "queue_task_limit_secs": self.queue_task_limit_secs,
             "queue_task_limit_tokens": self.queue_task_limit_tokens,
+            "queue_review_round_limit": self.queue_review_round_limit,
             "queue_attempt": self.queue_attempt,
             "permission_mode": self.permission_mode,
             "model": self.model,
@@ -124,6 +126,7 @@ class InstanceRecord:
             queue_lease_secs=d.get("queue_lease_secs"),
             queue_task_limit_secs=d.get("queue_task_limit_secs"),
             queue_task_limit_tokens=d.get("queue_task_limit_tokens"),
+            queue_review_round_limit=d.get("queue_review_round_limit"),
             queue_attempt=d.get("queue_attempt"),
             permission_mode=d.get("permission_mode") or "acceptEdits",
             model=d.get("model") or None,

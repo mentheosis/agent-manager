@@ -34,6 +34,7 @@ class Instance:
     queue_lease_secs: int | None = None
     queue_task_limit_secs: int | None = None
     queue_task_limit_tokens: int | None = None
+    queue_review_round_limit: int | None = None
     queue_attempt: dict | None = None
     kind: str = "agent"  # "agent" | "loop"
     permission_mode: str = "acceptEdits"
@@ -90,7 +91,7 @@ class Instance:
         self._task = asyncio.create_task(self._run(), name=f"instance:{self.title}")
 
     async def _run(self) -> None:
-        if self.queue_attempt and self.queue_attempt.get("cancelled"):
+        if self.queue_attempt and self.queue_attempt.get("cancelled") and not self.queue_attempt.get("detached"):
             await self._set_status("ready")
             return
         if self.kind == "loop":
@@ -113,7 +114,13 @@ class Instance:
         # to the UI in real time. Turn boundaries are driven by "result" events,
         # not by iterator termination, so those out-of-band events no longer
         # queue until the next user prompt.
-        runtime = self._create_runtime()
+        try:
+            runtime = self._create_runtime()
+        except Exception as exc:
+            log.exception("instance %s runtime configuration failed", self.title)
+            await self._publish({"type": "error", "message": f"Could not start conversation: {exc}"})
+            await self._set_status("error")
+            return
         self._runtime = runtime
         # Track the memory file's hash so we can detect edits between turns.
         # Claude embeds the memory in its system prompt at SDK startup, so
@@ -390,7 +397,12 @@ class Instance:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        self.status = "deleted"
+        if self.queue_attempt:
+            # Queue turns remain visible after execution ends. Publish the final
+            # status so live subscribers do not retain their last running event.
+            await self._set_status("ready")
+        else:
+            self.status = "deleted"
 
     async def abort(self) -> None:
         """Abort the current operation and restart the SDK client.

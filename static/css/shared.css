@@ -103,3 +103,12 @@
         height: 32px;
     }
 }
+
+.status-dot.waiting-human { background: var(--yellow); }
+.status-label.waiting-human { color: var(--yellow); }
+.status-dot.blocked { background: var(--red); }
+.status-label.blocked { color: var(--red); }
+.status-dot.completed { background: var(--green); }
+.status-label.completed { color: var(--green); }
+.status-dot.idle, .status-dot.unknown { background: var(--text-dim); }
+.status-label.idle, .status-label.unknown { color: var(--text-dim); }

@@ -58,7 +58,8 @@ am-task-queue-panel.visible { display:flex; }
 .queue-heading .queue-status-badge { margin-bottom:8px; }
 .queue-workflow-status { --workflow-color:var(--text-muted, #999); display:inline-flex; align-items:center; gap:6px; white-space:nowrap; padding:3px 8px; border-radius:5px; border:1px solid var(--workflow-color); color:var(--workflow-color); background:color-mix(in srgb, var(--workflow-color) 12%, transparent); font-weight:600; }
 .queue-workflow-status::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
-.queue-workflow-status[data-state=active] { --workflow-color:var(--accent, #60a5fa); }
+.queue-workflow-status[data-state=running] { --workflow-color:var(--green, #48bb78); }
+.queue-workflow-status[data-state=mixed] { --workflow-color:var(--yellow, #e6b450); }
 .queue-workflow-status[data-state=completed] { --workflow-color:var(--green, #48bb78); }
 .queue-workflow-status[data-state=blocked] { --workflow-color:var(--red, #f87171); }
 .queue-workflow-status[data-state=awaiting-human] { --workflow-color:var(--yellow, #e6b450); }
@@ -68,3 +69,11 @@ am-task-queue-loader .preview-tasks tr:focus-visible { outline:2px solid var(--a
 am-task-queue-loader .preview-tasks th:first-child,am-task-queue-loader .preview-tasks td:first-child { width:auto; }
 am-task-queue-loader .preview-tasks [data-attention=true] td:last-child { color:var(--yellow, #e6b450); font-weight:600; }
 am-task-queue-loader .preview-attention { color:var(--yellow, #e6b450); background:color-mix(in srgb, var(--yellow, #e6b450) 12%, transparent); border:1px solid var(--yellow, #e6b450); border-left-width:4px; border-radius:5px; padding:12px; margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; font-weight:600; }
+
+.queue-task-reason-badge { white-space:normal; }
+.queue-task-status-reason { border-left:3px solid var(--yellow, #e6b450); background:color-mix(in srgb, var(--yellow, #e6b450) 8%, transparent); padding:10px 12px; margin-bottom:12px; }
+.queue-task-status-reason strong { color:var(--yellow, #e6b450); }
+.queue-task-status-reason p { margin:6px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+
+.queue-task-actions { white-space:nowrap; cursor:default; }
+.queue-task-actions button { margin:0 0 0 6px; }

@@ -128,6 +128,47 @@ func readDefinition(c Config, t Task) (*preparedDefinition, error) {
 	if repo == "" {
 		return nil, errors.New("instructions must be inside an approved repository")
 	}
+	if def.Reviewer != nil {
+		r := *def.Reviewer
+		if r.Provider == "" {
+			r.Provider = "codex"
+		}
+		if r.Permission == "" {
+			r.Permission = "read-only"
+			if r.Provider == "claude" {
+				r.Permission = "plan"
+			}
+		}
+		if !((r.Provider == "codex" && r.Permission == "read-only") || (r.Provider == "claude" && r.Permission == "plan")) {
+			return nil, errors.New("reviewer requires codex read-only or claude plan permissions")
+		}
+
+		name := r.Instructions
+		if !filepath.IsAbs(name) {
+			if !safeRelative(name) {
+				return nil, errors.New("invalid reviewer instruction path")
+			}
+			name = filepath.Join(repo, c.BasePath, name)
+		}
+		real, e := filepath.EvalSymlinks(name)
+		if e != nil {
+			return nil, e
+		}
+		rel, e := filepath.Rel(repo, real)
+		if e != nil || !safeRelative(filepath.ToSlash(rel)) {
+			return nil, errors.New("reviewer instructions must be inside the task repository")
+		}
+		info, e := os.Stat(real)
+		if e != nil || !info.Mode().IsRegular() || info.Size() > 2<<20 {
+			return nil, errors.New("invalid reviewer instruction file")
+		}
+		content, e := os.ReadFile(real)
+		if e != nil {
+			return nil, e
+		}
+		r.Content = string(content)
+		def.Reviewer = &r
+	}
 	file, err := os.Open(instructionPath)
 	if err != nil {
 		return nil, err

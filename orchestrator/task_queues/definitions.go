@@ -17,7 +17,16 @@ import (
 	"strings"
 )
 
+type Reviewer struct {
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Permission   string `json:"permission"`
+	Instructions string `json:"instructions"`
+	Content      string `json:"resolved_instructions,omitempty"`
+}
+
 type Definition struct {
+	Reviewer      *Reviewer       `json:"reviewer,omitempty"`
 	ReplayProfile string          `json:"replay_profile,omitempty"`
 	Instructions  string          `json:"instructions"`
 	Provider      string          `json:"provider"`
@@ -29,17 +38,22 @@ type Definition struct {
 }
 
 type Limits struct {
+	ReviewRounds int   `json:"review_round_limit"`
 	LeaseSeconds int   `json:"lease_secs"`
 	TaskSeconds  int   `json:"task_limit_secs"`
 	TaskTokens   int64 `json:"task_limit_tokens"`
 }
 
 func (c Config) limits() Limits {
-	return Limits{c.LeaseSeconds, c.MaxAttemptSeconds, c.MaxAttemptTokens}
+	rounds := c.ReviewRoundLimit
+	if rounds == 0 {
+		rounds = 8
+	}
+	return Limits{rounds, c.LeaseSeconds, c.MaxAttemptSeconds, c.MaxAttemptTokens}
 }
 func (l Limits) validate() error {
-	if l.LeaseSeconds < 15 || l.TaskSeconds < l.LeaseSeconds || l.TaskTokens < 1 {
-		return errors.New("invalid limits: lease >= 15, task time >= lease, tokens > 0 required")
+	if l.ReviewRounds < 1 || l.LeaseSeconds < 15 || l.TaskSeconds < l.LeaseSeconds || l.TaskTokens < 1 {
+		return errors.New("invalid limits: lease >= 15, task time >= lease, tokens > 0, review rounds > 0 required")
 	}
 	return nil
 }
@@ -95,7 +109,6 @@ type Snapshot struct {
 	Parameters           json.RawMessage   `json:"parameters"`
 	Upstream             json.RawMessage   `json:"upstream,omitempty"`
 	Prompt               string            `json:"prompt"`
-	Limits               Limits            `json:"limits"`
 }
 
 func safeRelative(p string) bool {
@@ -115,7 +128,7 @@ func resolveSnapshot(ctx context.Context, c Config, t Task, attempt string, upst
 	if !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(attempt) {
 		return "", nil, errors.New("invalid attempt ID")
 	}
-	snap := Snapshot{Limits: c.limits()}
+	snap := Snapshot{}
 	if len(saved) > 0 && string(saved) != "null" {
 		if err := json.Unmarshal(saved, &snap); err != nil {
 			return "", nil, err

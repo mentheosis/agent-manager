@@ -143,16 +143,47 @@ class AmTaskQueueTasks extends HTMLElement {
     header.onclick = () => toggle(detail.hidden);
     return cell;
   }
+  statusReason(task) {
+    if (!["blocked", "failed"].includes(task.status)) return null;
+    const result = task.latest_result || task.accepted_result || {};
+    const error = (task.latest_error || "").trim();
+    const generic = ["Submitted outcome recorded", "Worker execution ended"].includes(error);
+    const detail = (!generic && error) || result.blockers?.join("\n") || result.summary || "No reason was recorded. Inspect the latest conversation and activity.";
+    let label = "Task blocker";
+    if (/^Paused by operator:/.test(detail)) label = "Paused by you";
+    else if (/token budget|token allowance/i.test(detail)) label = "Token limit reached";
+    else if (/time budget|execution budget|execution deadline/i.test(detail)) label = "Time limit reached";
+    else if (/attempt budget/i.test(detail)) label = "Attempt limit reached";
+    else if (/execution infrastructure|structured submission|conversation disappeared/i.test(detail)) label = "Agent execution failed";
+    else if (/definition or workspace|required input|workspace could not/i.test(detail)) label = "Inputs or configuration";
+    else if (/lease.*expired/i.test(detail)) label = "Lease expired";
+    else if (/review round limit/i.test(detail)) label = "Review round limit";
+    else if (/without progress/i.test(detail)) label = "Review needs intervention";
+    return {label, detail};
+  }
+  canResume(task) {
+    return task.status === "blocked" && !!task.rounds?.length &&
+      /^(Review round limit reached|Time budget exhausted:|Token budget exhausted:|Controller (time|token) budget reserved for review:)/.test(task.latest_error || "");
+  }
+  retryUnavailable(task) {
+    return task.attempt_count >= task.max_attempts
+      ? `Retry unavailable: ${task.attempt_count}/${task.max_attempts} attempts used. Raising controller token/time limits does not add task attempts.`
+      : "";
+  }
   workflowStatus(tasks) {
     const statuses = tasks.map(task => task.status);
     if (statuses.length && statuses.every(status => status === "completed"))
       return { state: "completed", label: "Completed" };
-    if (statuses.some(status => ["blocked", "failed", "cancelled"].includes(status)))
+    const running = statuses.some(status => ["claimed", "running", "submitted", "reviewing"].includes(status));
+    const blocked = statuses.some(status => ["blocked", "failed", "cancelled"].includes(status));
+    if (running && blocked)
+      return { state: "mixed", label: "Mixed", reason: "Some tasks are running; others are blocked, failed, or cancelled." };
+    if (blocked)
       return { state: "blocked", label: "Blocked", reason: "One or more tasks are blocked, failed, or cancelled." };
+    if (running)
+      return { state: "running", label: "Running" };
     if (statuses.includes("awaiting_review"))
-      return { state: "awaiting-human", label: "Awaiting human", reason: "A task needs human approval. Other tasks may still be active." };
-    if (statuses.some(status => ["claimed", "running", "submitted"].includes(status)))
-      return { state: "active", label: "Active" };
+      return { state: "awaiting-human", label: "Awaiting human", reason: "A task needs human approval." };
     return { state: "idle", label: "Idle" };
   }
   expandedRows() {
@@ -178,7 +209,7 @@ class AmTaskQueueTasks extends HTMLElement {
     const body = document.createElement("tbody"); table.append(body); rows.append(table);
     for (const [workflow, members] of workflows) {
       const queued = members.filter(t => t.status === "queued").length;
-      const active = members.filter(t => ["claimed", "running", "submitted"].includes(t.status)).length;
+      const active = members.filter(t => ["claimed", "running", "submitted", "reviewing"].includes(t.status)).length;
       const completed = members.filter(t => t.status === "completed").length;
       const other = members.length - queued - active - completed;
       const status = this.workflowStatus(members);
@@ -189,10 +220,30 @@ class AmTaskQueueTasks extends HTMLElement {
       if (status.reason) badge.title = status.reason;
       statusCell.replaceChildren(badge);
       const taskTable = document.createElement("table"); taskTable.className = "queue-table queue-workflow-tasks";
-      taskTable.innerHTML = "<thead><tr><th></th><th>Task #</th><th>Name</th><th>Status</th><th>Attempts</th></tr></thead>";
+      taskTable.innerHTML = "<thead><tr><th></th><th>Task #</th><th>Name</th><th>Status</th><th>Attempts</th><th>Actions</th></tr></thead>";
       const taskBody = document.createElement("tbody"); taskTable.append(taskBody); workflowCell.append(taskTable);
       for (const task of members) {
-      const row = this.expandableRow(taskBody, [`#${task.id}`, task.task_type, task.status, `${task.attempt_count}/${task.max_attempts}`], `task:${task.id}`, open);
+      const row = this.expandableRow(taskBody, [`#${task.id}`, task.task_type, task.status === "running" && task.rounds?.length ? `${task.rounds.at(-1).role === "reviewer" ? "Reviewing" : "Working"} · round ${task.rounds.at(-1).number}` : task.status, `${task.attempt_count}/${task.max_attempts}`, ""], `task:${task.id}`, open);
+      const header = row.parentElement.previousElementSibling;
+      const taskBadge = textElement("span", header.children[3].textContent, "queue-workflow-status");
+      taskBadge.dataset.state = this.workflowStatus([task]).state;
+      header.children[3].replaceChildren(taskBadge);
+      const actionCell = header.children[5];
+      actionCell.className = "queue-task-actions";
+      actionCell.onclick = event => event.stopPropagation();
+      const reason = this.statusReason(task);
+      if (reason) {
+        const statusCell = row.parentElement.previousElementSibling.children[3];
+        const badge = textElement("span", reason.label === "Paused by you" ? "Paused by you" : `${task.status === "blocked" ? "Blocked" : "Failed"} · ${reason.label}`, "queue-workflow-status queue-task-reason-badge");
+        badge.dataset.state = "blocked";
+        badge.title = reason.detail;
+        statusCell.replaceChildren(badge);
+        const notice = textElement("div", "", "queue-task-status-reason");
+        notice.append(textElement("strong", reason.label), textElement("p", reason.detail));
+        const retryReason = this.retryUnavailable(task);
+        if (retryReason) notice.append(textElement("p", retryReason));
+        row.append(notice);
+      }
       row.append(
         textElement(
           "pre",
@@ -210,17 +261,45 @@ class AmTaskQueueTasks extends HTMLElement {
           ),
         ),
       );
+      if (task.rounds?.length) {
+        const roundTable = document.createElement("table");
+        roundTable.className = "queue-table";
+        roundTable.innerHTML = "<thead><tr><th>Round</th><th>Role</th><th>Decision</th><th>Summary</th></tr></thead>";
+        const roundBody = document.createElement("tbody"); roundTable.append(roundBody);
+        for (const turn of task.rounds) {
+          const tr = document.createElement("tr");
+          const checkpoint = turn.submission?.origin === "controller_checkpoint";
+          const interrupted = !turn.submission && !!turn.submitted_at;
+          for (const value of [turn.number, checkpoint ? "Controller checkpoint" : turn.role, checkpoint || interrupted ? "Interrupted" : turn.submission?.decision || turn.submission?.outcome || "In progress", turn.submission?.summary || ""]) {
+            tr.append(textElement("td", String(value)));
+          }
+          roundBody.append(tr);
+          if (turn.submission) {
+            const evidenceRow = document.createElement("tr"), cell = document.createElement("td"); cell.colSpan = 4;
+            const detail = document.createElement("details");
+            detail.append(textElement("summary", "Evidence and next steps"), textElement("pre", JSON.stringify(turn.submission, null, 2)));
+            cell.append(detail); evidenceRow.append(cell); roundBody.append(evidenceRow);
+          }
+        }
+        row.append(roundTable);
+      }
       const actions =
         task.status === "awaiting_review"
           ? ["approve", "reject"]
           : ["failed", "blocked"].includes(task.status)
-            ? ["retry"]
+            ? (this.canResume(task) ? ["resume_attempt", "retry"] : ["retry"])
             : ["completed", "cancelled"].includes(task.status)
               ? []
               : ["cancel"];
       for (const action of actions) {
-        const b = textElement("button", action);
-        b.onclick = async () => {
+        const b = textElement("button", action === "resume_attempt" ? "Resume" : action[0].toUpperCase() + action.slice(1));
+        const unavailable = action === "retry" ? this.retryUnavailable(task) : "";
+        b.disabled = !!unavailable;
+        if (unavailable) b.title = unavailable;
+        else if (action === "resume_attempt") b.title = "Continue the same attempt and worker conversation under the updated controller limits";
+        else if (action === "retry") b.title = "Start a new attempt using the latest task instructions and configuration";
+        b.onclick = async event => {
+          event.stopPropagation();
           b.disabled = true;
           try {
             await queueRequest(this._instance.title, "control", {
@@ -232,10 +311,10 @@ class AmTaskQueueTasks extends HTMLElement {
           } catch (error) {
             this.querySelector(".queue-error").textContent = error.message;
           } finally {
-            b.disabled = false;
+            b.disabled = !!unavailable;
           }
         };
-        row.append(b);
+        actionCell.append(b);
       }
       for (const artifact of (task.latest_result || task.accepted_result)
         ?.artifacts || []) {

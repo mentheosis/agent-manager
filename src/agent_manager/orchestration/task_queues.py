@@ -63,6 +63,34 @@ def mount_routes(app, registry, manager):
         except httpx.HTTPError as exc:
             raise HTTPException(503, 'Queue controller unavailable') from exc
 
+    async def send_conversation(child, text, images=None):
+        # SQL/controller decides eligibility before any provider sees the prompt.
+        # Keep old capabilities fenced even when an old conversation is reopened.
+        if images:
+            raise HTTPException(400, 'Queue conversation continuations currently accept text only')
+        # Persist before classification, runtime startup, or inbox delivery.
+        await child._publish({'type': 'user_prompt_received', 'text': text})
+        metadata = child.queue_attempt
+        result = await proxy(child.parent, 'control', 'POST', {
+            'action': 'conversation_prompt', 'actor': 'operator',
+            'task_id': metadata['task_id'],
+            'attempt_id': metadata.get('root_attempt') or metadata['id'],
+            'turn_id': metadata['id'], 'text': text,
+        })
+        if result.get('managed'):
+            return {'ok': True, 'queue_managed': True}
+        async with launch_lock:
+            if child.status == 'running' or not child._inbox.empty():
+                raise HTTPException(409, 'This conversation is already running')
+            await child.stop()
+            metadata['detached'] = True
+            await registry._save_records()
+            await child.start()
+            await child.send(text)
+        return {'ok': True, 'queue_managed': False}
+
+    app.state.send_queue_conversation = send_conversation
+
     async def delete_controller(title):
         inst = parent(title)
         pending = drains.pop(title, None)
@@ -90,6 +118,18 @@ def mount_routes(app, registry, manager):
 
     app.state.delete_queue_controller = delete_controller
 
+    async def cancel_queue_conversation(child):
+        if not child.parent:
+            raise HTTPException(409, 'Queue controller is unavailable; open its queue controls')
+        await proxy(child.parent, 'control', 'POST', {
+            'action': 'pause_attempt', 'task_id': child.queue_attempt['task_id'],
+            'turn_id': child.queue_attempt['id'],
+            'attempt_id': child.queue_attempt.get('root_attempt') or child.queue_attempt['id'],
+            'actor': 'operator'})
+        return {'ok': True}
+
+    app.state.cancel_queue_conversation = cancel_queue_conversation
+
     @app.get('/api/task-queue-profiles')
     async def list_profiles():
         try:
@@ -98,6 +138,7 @@ def mount_routes(app, registry, manager):
                      'default_lease_secs': p.get('default_lease_secs', 60),
                      'default_task_limit_secs': p.get('default_task_limit_secs', 3600),
                      'default_task_limit_tokens': p.get('default_task_limit_tokens', 2000000),
+                     'default_review_round_limit': p.get('default_review_round_limit', 8),
                      'tasks': list(p.get('tasks', {}))}
                     for name, p in profiles().items()]
         except (ValueError, OSError):
@@ -157,6 +198,7 @@ def mount_routes(app, registry, manager):
                 'limits': {
                     'lease_secs': setting('queue_lease_secs', 'default_lease_secs', 60),
                     'task_limit_secs': setting('queue_task_limit_secs', 'default_task_limit_secs', 3600),
+                    'review_round_limit': setting('queue_review_round_limit', 'default_review_round_limit', 8),
                     'task_limit_tokens': setting('queue_task_limit_tokens', 'default_task_limit_tokens', 2000000)}}}
         result = await proxy(title, 'status')
         return {**result, 'draining': title in drains}
@@ -229,11 +271,14 @@ def mount_routes(app, registry, manager):
         token = request.headers.get('authorization', '').removeprefix('Bearer ')
         if not token:
             raise HTTPException(401, 'Attempt capability required')
+        child = worker(title, body.get('attempt_id'))
+        if child and child.queue_attempt.get('detached'):
+            raise HTTPException(409, 'This conversation is outside the task queue')
         return await proxy(title, 'submit', 'POST', body, token)
 
     def worker(title, attempt):
         for inst in registry.list():
-            if inst.queue_attempt and inst.queue_attempt['id'] == attempt:
+            if inst.queue_attempt and (inst.queue_attempt['id'] == attempt or attempt in inst.queue_attempt.get('previous_turns', [])):
                 expected = instance_queue_config(parent(title))
                 actual = instance_queue_config(inst)
                 if any(expected.get(k) != actual.get(k) for k in ('dsn', 'queue_id', 'workspace_root')):
@@ -245,7 +290,7 @@ def mount_routes(app, registry, manager):
         if inst is None:
             return {'exists': False, 'busy': False, 'alive': False, 'launched': False}
         tokens, cost = 0, 0.0
-        for event in inst.history():
+        for event in inst.history()[inst.queue_attempt.get('history_start', 0):]:
             data = event.get('diagnostics') or event
             usage = data.get('usage') or {}
             if isinstance(usage, dict):
@@ -267,7 +312,10 @@ def mount_routes(app, registry, manager):
     async def attempt_state(title: str, attempt: str, request: Request):
         authenticate(request)
         parent(title)
-        return summary(worker(title, attempt))
+        child = worker(title, attempt)
+        if child and (child.queue_attempt['id'] != attempt or child.queue_attempt.get('detached')):
+            return {'exists': True, 'busy': False, 'alive': False, 'launched': True, 'conversation_id': child.instance_id}
+        return summary(child)
 
     @app.post('/api/task-queues/{title}/attempts/{attempt}')
     async def launch(title: str, attempt: str, request: Request):
@@ -299,13 +347,19 @@ def mount_routes(app, registry, manager):
             workspace = Path(body.get('workspace', '')).resolve()
             digest = hashlib.sha256(json.dumps({'prompt': prompt, 'execution': execution,
                 'workspace': str(workspace), 'use_isolated_workspace': use_isolated,
-                'repository': body.get('repository')}, sort_keys=True).encode()).hexdigest()
+                'repository': body.get('repository'), 'root_attempt': body.get('root_attempt'),
+                'role': body.get('role'), 'round': body.get('round'), 'resume_worker': body.get('resume_worker', False), 'resume_turn': body.get('resume_turn', ''), 'review_files': body.get('review_files', {})}, sort_keys=True).encode()).hexdigest()
             if existing:
                 if existing.queue_attempt.get('prompt_hash') != digest:
                     raise HTTPException(409, 'Attempt launch input changed')
                 return summary(existing)
             cfg = instance_queue_config(inst)
-            attempt_root = Path(cfg['workspace_root']).resolve() / 'attempts' / attempt
+            root_attempt = body.get('root_attempt') or attempt
+            if cancellation_path(inst, root_attempt).exists():
+                raise HTTPException(409, 'Root attempt was cancelled')
+            if not re.fullmatch(r'[a-f0-9]{32}', root_attempt):
+                raise HTTPException(400, 'Invalid root attempt')
+            attempt_root = Path(cfg['workspace_root']).resolve() / 'attempts' / root_attempt
             add_dirs = []
             if use_isolated:
                 expected = attempt_root
@@ -322,25 +376,104 @@ def mount_routes(app, registry, manager):
                 add_dirs = [str(inputs)]
             if workspace != expected or not workspace.is_dir():
                 raise HTTPException(400, 'Workspace does not match attempt')
+            review_files = body.get('review_files')
+            if review_files is None:
+                review_files = {}
+            if not isinstance(review_files, dict) or len(review_files) > 100:
+                raise HTTPException(400, 'Invalid review file manifest')
+            for label, location in review_files.items():
+                if not isinstance(label, str) or not isinstance(location, str):
+                    raise HTTPException(400, 'Invalid review file entry')
+                resolved = Path(location).resolve()
+                if not (resolved.is_relative_to(workspace) or resolved.is_relative_to(attempt_root / '.queue-inputs')) or not resolved.is_file():
+                    raise HTTPException(400, 'Review file is outside approved workspace/evidence')
+                review_files[label] = str(resolved)
             name = 'queue_' + attempt
             if registry.get(name):
                 raise HTTPException(409, 'Conversation name collision')
             workflow = body.get('workflow_id') or cfg['queue_id']
             attempt_number = body.get('attempt_number', 1)
-            child = Instance(title=name, display_title=f"{workflow}-{body['task_id']}-{attempt_number} {attempt[:8]}",
-                path=str(workspace), provider=execution['provider'], model=execution['model'],
-                permission_mode=execution['permission_mode'], add_dirs=add_dirs,
-                parent=title, queue_profile=inst.queue_profile, queue_id=cfg['queue_id'],
-                queue_attempt={'id': attempt, 'task_id': body['task_id'], 'launch_state': 'reserved', 'prompt_hash': digest, 'replay_profile': body.get('execution', {}).get('replay_profile')})
-            registry._wire_hooks(child)
-            registry._instances[name] = child
-            inst.children.append(name)
+            role_suffix = f" {body['role']} r{body.get('round', 1)}" if body.get('role') else ''
+            metadata = {'id': attempt, 'root_attempt': root_attempt, 'role': body.get('role'),
+                        'round': body.get('round'), 'review_files': review_files,
+                        'task_id': body['task_id'], 'launch_state': 'reserved', 'prompt_hash': digest,
+                        'replay_profile': body.get('execution', {}).get('replay_profile')}
+            display = f"{workflow}-{body['task_id']}-{attempt_number} {root_attempt[:8]}{role_suffix}"
+            if body.get('resume_worker') or body.get('resume_turn'):
+                if body.get('role') not in ('worker', 'reviewer'):
+                    raise HTTPException(400, 'Only a worker or reviewer conversation can resume')
+                candidates = [candidate for candidate in registry.list() if candidate.queue_attempt
+                              and candidate.queue_attempt.get('root_attempt') == root_attempt
+                              and (candidate.queue_attempt.get('role') or 'worker') == body.get('role')
+                              and (not body.get('resume_turn') or candidate.queue_attempt['id'] == body['resume_turn'])]
+                if len(candidates) != 1:
+                    raise HTTPException(409, 'Original conversation is missing or ambiguous; continuation was not delivered')
+                child = candidates[0]
+                worker(title, child.queue_attempt['id'])  # Verify queue ownership.
+                if not child.session_id:
+                    raise HTTPException(409, 'Conversation has no retained provider session; cannot resume feedback alone')
+                if child._task and not child._task.done() or not child._inbox.empty():
+                    raise HTTPException(409, 'Previous conversation turn has not stopped')
+                if (child.path, child.provider, child.model, child.permission_mode) != (
+                        str(workspace), execution['provider'], execution['model'], execution['permission_mode']):
+                    raise HTTPException(409, 'Conversation execution settings changed')
+                old = child.queue_attempt
+                metadata['previous_turns'] = [*old.get('previous_turns', []), old['id']]
+                metadata['replay_jobs'] = old.get('replay_jobs', [])
+                metadata['history_start'] = len(child.history())
+                child.queue_attempt = metadata
+                child.display_title = display
+                child.add_dirs = add_dirs
+                if child.parent != title:
+                    prior_parent = registry.get(child.parent) if child.parent else None
+                    if prior_parent and child.title in prior_parent.children:
+                        prior_parent.children.remove(child.title)
+                    child.parent = title
+                    if child.title not in inst.children:
+                        inst.children.append(child.title)
+            else:
+                child = Instance(title=name, display_title=display,
+                    path=str(workspace), provider=execution['provider'], model=execution['model'],
+                    permission_mode=execution['permission_mode'], add_dirs=add_dirs,
+                    parent=title, queue_profile=inst.queue_profile, queue_id=cfg['queue_id'], queue_attempt=metadata)
+                registry._wire_hooks(child)
+                registry._instances[name] = child
+                inst.children.append(name)
             # Persist reservation before launching. An ambiguous crash cannot cause
             # this attempt to be dispatched twice; the scheduler retries a new attempt.
             await registry._save_records()
             await child.start()
             await child.send(prompt)
             return summary(child)
+
+    @app.post('/api/task-queues/{title}/attempts/{attempt}/history')
+    async def attempt_history(title: str, attempt: str, request: Request):
+        from .controllers import attempt_token
+        token = request.headers.get('authorization', '').removeprefix('Bearer ')
+        if not hmac.compare_digest(token, attempt_token(attempt)):
+            raise HTTPException(401, 'Invalid turn capability')
+        child = worker(title, attempt)
+        if not child or child.queue_attempt['id'] != attempt or (child.queue_attempt.get('cancelled') or child.queue_attempt.get('detached')):
+            raise HTTPException(403, 'Turn is not active')
+        body = await request.json()
+        target_id = body.get('turn_id', attempt)
+        target = worker(title, target_id)
+        if target is None:
+            # Review history exposes both round IDs and conversation IDs. Resolve
+            # either, then apply the same queue ownership and attempt checks.
+            candidate = next((item for item in registry.list()
+                              if item.instance_id == target_id and item.queue_attempt), None)
+            if candidate is not None:
+                target = worker(title, candidate.queue_attempt['id'])
+        root = child.queue_attempt.get('root_attempt') or attempt
+        if not target or (target.queue_attempt.get('root_attempt') or target.queue_attempt['id']) != root:
+            raise HTTPException(403, 'History must belong to the same attempt')
+        offset = body.get('offset', 0)
+        if type(offset) is not int or offset < 0:
+            raise HTTPException(400, 'offset must be nonnegative')
+        events = target.history()
+        page = events[offset:offset + 50]
+        return {'events': page, 'next_offset': offset + len(page), 'has_more': offset + len(page) < len(events)}
 
     @app.post('/api/task-queues/{title}/attempts/{attempt}/replay')
     async def replay_attempt(title: str, attempt: str, request: Request):
@@ -351,7 +484,7 @@ def mount_routes(app, registry, manager):
         if not hmac.compare_digest(token, attempt_token(attempt)):
             raise HTTPException(401, 'Invalid attempt capability')
         child = worker(title, attempt)
-        if not child or child.queue_attempt.get('cancelled') or not child.queue_attempt.get('replay_profile'):
+        if not child or child.queue_attempt['id'] != attempt or (child.queue_attempt.get('cancelled') or child.queue_attempt.get('detached')) or not child.queue_attempt.get('replay_profile'):
             raise HTTPException(403, 'Replay is not enabled for this attempt')
         cfg = instance_queue_config(child)
         state = await queue_command(cfg, manager.find_binary(), 'attempt-status', {'attempt': attempt})
@@ -396,6 +529,31 @@ def mount_routes(app, registry, manager):
         except (httpx.HTTPError, ValueError):
             raise HTTPException(503, 'Host replay request unavailable; inspect the same run key before retrying')
 
+    @app.post('/api/task-queues/{title}/attempts/{attempt}/resume')
+    async def prepare_attempt_resume(title: str, attempt: str, request: Request):
+        authenticate(request)
+        inst = parent(title)
+        body = await request.json()
+        async with launch_lock:
+            children = [child for child in registry.list() if child.queue_attempt
+                        and child.queue_attempt.get('root_attempt') == attempt]
+            workers = [child for child in children if (child.queue_attempt.get('role') or 'worker') == 'worker']
+            if len(workers) != 1 or not workers[0].session_id:
+                raise HTTPException(409, 'Original worker session is unavailable; Resume cannot create a replacement')
+            if body.get('turn_id'):
+                target = next((child for child in children if child.queue_attempt['id'] == body['turn_id']), None)
+                if not target or not target.session_id:
+                    raise HTTPException(409, 'Original conversation session is unavailable')
+            for child in children:
+                worker(title, child.queue_attempt['id'])
+                if child.queue_attempt.get('detached') and child.status == 'ready' and child._inbox.empty():
+                    await child.stop()
+                if (child._task and not child._task.done()) or not child._inbox.empty():
+                    raise HTTPException(409, 'An attempt conversation is still active')
+            # Old rounds remain cancelled. Only a newly allocated round may launch.
+            cancellation_path(inst, attempt).unlink(missing_ok=True)
+        return {'ok': True}
+
     @app.delete('/api/task-queues/{title}/attempts/{attempt}')
     async def cancel_attempt(title: str, attempt: str, request: Request):
         authenticate(request)
@@ -404,11 +562,14 @@ def mount_routes(app, registry, manager):
             tombstone = cancellation_path(inst, attempt)
             tombstone.parent.mkdir(parents=True, exist_ok=True)
             tombstone.touch(exist_ok=True)
-            child = worker(title, attempt)
-            if child:
+            children = [child for child in registry.list() if child.queue_attempt and
+                        (child.queue_attempt['id'] == attempt or child.queue_attempt.get('root_attempt') == attempt)
+                        and not child.queue_attempt.get('detached')]
+            for child in children:
+                worker(title, child.queue_attempt['id'])  # Verify queue ownership.
                 await child.stop()
                 while not child._inbox.empty():
                     child._inbox.get_nowait()
                 child.queue_attempt['cancelled'] = True
-                await registry._save_records()
+            await registry._save_records()
         return {'ok': True}

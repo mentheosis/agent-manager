@@ -92,3 +92,10 @@ func (c *controllerControls) lockProcess() (*os.File, error) {
 	}
 	return file, nil
 }
+
+// Limits belong to the live controller, not the immutable task definition.
+func (s *Store) CurrentLimits() Limits {
+	s.controls.mu.Lock()
+	defer s.controls.mu.Unlock()
+	return s.controls.Limits
+}

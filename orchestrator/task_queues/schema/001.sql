@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS am_task_attempts (
  CHECK (status IN ('claimed','running','submitted','completed','failed','blocked','cancelled','awaiting_review'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE IF NOT EXISTS am_task_rounds (
+ id VARCHAR(32) PRIMARY KEY, attempt_id VARCHAR(36) NOT NULL,
+ round_number INT NOT NULL, role VARCHAR(16) NOT NULL,
+ prompt MEDIUMTEXT NOT NULL, submission JSON NULL, submission_hash CHAR(64) NULL,
+ conversation_id VARCHAR(64) NULL, resource_usage JSON NULL,
+ created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), completed_at DATETIME(6) NULL,
+ FOREIGN KEY (attempt_id) REFERENCES am_task_attempts(id),
+ UNIQUE KEY attempt_round_role (attempt_id,round_number,role),
+ CHECK (role IN ('worker','reviewer'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE IF NOT EXISTS am_work_log (
  id BIGINT PRIMARY KEY AUTO_INCREMENT, queue_id VARCHAR(128) NOT NULL,
  task_id BIGINT NULL, attempt_id VARCHAR(36) NULL, actor VARCHAR(128) NOT NULL,

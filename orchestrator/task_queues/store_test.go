@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +23,7 @@ func testStore(t *testing.T) *Store {
 	}
 	ctx := context.Background()
 	t.Cleanup(func() {
-		for _, table := range []string{"am_work_log", "am_task_attempts", "am_tasks", "am_queues", "am_schema_version"} {
+		for _, table := range []string{"am_task_rounds", "am_work_log", "am_task_attempts", "am_tasks", "am_queues", "am_schema_version"} {
 			s.DB.ExecContext(ctx, "DROP TABLE IF EXISTS "+table)
 		}
 		s.DB.Close()
@@ -330,11 +329,11 @@ func TestNeutralTaskReplayAndArtifactReview(t *testing.T) {
 	if e = s.Action(ctx, id, "retry", "", "reviewer"); e != nil {
 		t.Fatal(e)
 	}
-	// Profile edits and per-controller limits do not alter an executed task's retry.
+	// Retry resolves current instructions/model; controller limits stay live.
 	definition := s.Config.Tasks["neutral"]
 	definition.Model = "new-model"
 	s.Config.Tasks["neutral"] = definition
-	if e = s.ConfigureLimits(ctx, Limits{45, 120, 5000}, "operator"); e != nil {
+	if e = s.ConfigureLimits(ctx, Limits{8, 45, 120, 5000}, "operator"); e != nil {
 		t.Fatal(e)
 	}
 	if e = os.WriteFile(definition.Instructions, []byte("New instruction text"), 0600); e != nil {
@@ -354,9 +353,10 @@ func TestNeutralTaskReplayAndArtifactReview(t *testing.T) {
 	if e = json.Unmarshal(attempts[0].Snapshot, &retry); e != nil {
 		t.Fatal(e)
 	}
-	if !reflect.DeepEqual(first, retry) {
-		t.Fatal("retry inputs changed")
+	if retry.Task.Model != "new-model" || retry.Instructions != "New instruction text" || first.Instructions == retry.Instructions {
+		t.Fatal("retry did not resolve current task definition", retry)
 	}
+
 	nextID := enqueue(t, s, false, nil)
 	if _, e = s.DB.ExecContext(ctx, "UPDATE am_tasks SET parameters=? WHERE id=?", string(task.Parameters), nextID); e != nil {
 		t.Fatal(e)
@@ -374,7 +374,7 @@ func TestNeutralTaskReplayAndArtifactReview(t *testing.T) {
 	if e = json.Unmarshal(latest[0].Snapshot, &fresh); e != nil {
 		t.Fatal(e)
 	}
-	if fresh.Task.Model != "new-model" || fresh.Instructions != "New instruction text" || fresh.Limits.TaskTokens != 5000 {
+	if fresh.Task.Model != "new-model" || fresh.Instructions != "New instruction text" || s.CurrentLimits().TaskTokens != 5000 {
 		t.Fatal("fresh task ignored new configuration", fresh)
 	}
 	if e = s.Submit(ctx, a.ID, token, "progress", json.RawMessage(`{"summary":"stale write"}`)); e == nil {
@@ -387,11 +387,11 @@ func TestResourceBudgetStopsWorkerAndBlocksTask(t *testing.T) {
 	ctx := context.Background()
 	enqueue(t, s, false, nil)
 	resume(t, s, 1)
-	if err := s.ConfigureLimits(ctx, Limits{30, 60, 100}, "test"); err != nil {
+	if err := s.ConfigureLimits(ctx, Limits{8, 30, 60, 100}, "test"); err != nil {
 		t.Fatal(err)
 	}
 	a := claim(t, s)
-	if err := s.ConfigureLimits(ctx, Limits{30, 60, 1000}, "test"); err != nil {
+	if err := s.ConfigureLimits(ctx, Limits{8, 30, 60, 1000}, "test"); err != nil {
 		t.Fatal(err)
 	}
 	w := &fakeWorkers{states: map[string]WorkerState{a.ID: {Exists: true, Alive: true, Busy: true, Tokens: 101}}}
@@ -400,6 +400,16 @@ func TestResourceBudgetStopsWorkerAndBlocksTask(t *testing.T) {
 		t.Fatal(e)
 	}
 	got, e := s.Task(ctx, a.TaskID)
+	if e != nil || got.Status != "running" || w.cancels != 0 {
+		t.Fatal("raised limit did not take effect", got, e)
+	}
+	if err := s.ConfigureLimits(ctx, Limits{8, 30, 60, 100}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if e = scheduler.Tick(ctx); e != nil {
+		t.Fatal(e)
+	}
+	got, e = s.Task(ctx, a.TaskID)
 	if e != nil || got.Status != "blocked" || w.cancels != 1 {
 		t.Fatal(got, e)
 	}
@@ -547,5 +557,26 @@ func TestSharedSchedulerSnapshotsAndArchivesLiveCheckout(t *testing.T) {
 	got, err := s.Task(ctx, id)
 	if err != nil || got.Status != "completed" || !strings.Contains(string(got.Result), "sha256") {
 		t.Fatal("shared artifact result missing", got, err)
+	}
+}
+
+func TestTasksRemainReadableWithMissingAttemptHistory(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	id := enqueue(t, s, false, nil)
+	if _, e := s.DB.ExecContext(ctx, "UPDATE am_tasks SET latest_attempt=? WHERE id=?", ID(), id); e != nil {
+		t.Fatal(e)
+	}
+	tasks, e := s.Tasks(ctx, 0)
+	if e != nil || len(tasks) != 1 {
+		t.Fatalf("tasks=%v error=%v", tasks, e)
+	}
+	if tasks[0].Status != "queued" || !strings.Contains(tasks[0].LatestError, "history is missing") {
+		t.Fatalf("missing diagnostic or changed state: %+v", tasks[0])
+	}
+	resume(t, s, 1)
+	a := claim(t, s)
+	if a.TaskID != id {
+		t.Fatal("orphaned history prevented claiming task")
 	}
 }

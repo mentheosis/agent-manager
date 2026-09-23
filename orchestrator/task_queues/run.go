@@ -66,6 +66,8 @@ func Run(ctx context.Context, c Config, port int, log func(string)) error {
 		}
 		var body struct {
 			Action  string `json:"action"`
+			Turn    string `json:"turn_id"`
+			Text    string `json:"text"`
 			Limits  Limits `json:"limits"`
 			Max     *int   `json:"max_workers"`
 			Task    int64  `json:"task_id"`
@@ -100,8 +102,17 @@ func Run(ctx context.Context, c Config, port int, log func(string)) error {
 					}
 				}
 			}
+		case "conversation_prompt":
+			var managed bool
+			managed, e = scheduler.PromptTask(r.Context(), body.Task, body.Attempt, body.Actor, ConversationPrompt{body.Turn, body.Text})
+			respond(w, map[string]bool{"ok": e == nil, "managed": managed}, e)
+			return
+		case "resume_attempt":
+			e = scheduler.ResumeTask(r.Context(), body.Task, body.Attempt, body.Actor)
+		case "pause_attempt":
+			e = scheduler.PauseConversation(r.Context(), body.Task, body.Attempt, body.Turn, body.Actor)
 		case "cancel":
-			e = scheduler.CancelTask(r.Context(), body.Task, body.Actor)
+			e = scheduler.CancelTask(r.Context(), body.Task, body.Actor, body.Attempt)
 		default:
 			e = store.Action(r.Context(), body.Task, body.Action, body.Attempt, body.Actor)
 		}
@@ -132,7 +143,7 @@ func Run(ctx context.Context, c Config, port int, log func(string)) error {
 		}
 		mux.ServeHTTP(w, r)
 	})
-	return orchestration.Serve(ctx, port, secured, func(ctx context.Context) error { return scheduler.Run(ctx) })
+	return orchestration.Serve(ctx, port, secured, func(ctx context.Context) error { return scheduler.Run(ctx, &operations) })
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)

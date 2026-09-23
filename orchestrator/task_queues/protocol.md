@@ -45,11 +45,12 @@ Each task definition supplies:
   Use `{}` for no parameters. Constraints such as `minLength`, `enum`, `minimum` and
   `items` use JSON Schema syntax; external schema URLs are disabled.
 
-`default_max_workers`, `default_lease_secs`, `default_task_limit_secs`, and
-`default_task_limit_tokens` populate controller creation. If omitted, defaults are
-1 worker, 60 seconds, 3,600 seconds and 2,000,000 reported tokens. Operators can
-change all four per controller. Values must be positive, leases at least 15 seconds,
-and task time at least the lease duration. Token limits depend on provider reporting
+`default_max_workers`, `default_lease_secs`, `default_task_limit_secs`,
+`default_task_limit_tokens`, and `default_review_round_limit` populate controller
+creation. Defaults are 1 worker, 60 seconds, 3,600 seconds, 2,000,000 reported tokens,
+and 8 review rounds. Operators can change all five per controller. Review-round
+changes apply to active attempts and allow a blocked attempt to Resume. Values
+must be positive, leases at least 15 seconds, and task time at least the lease duration. Token limits depend on provider reporting
 and can overshoot; they are not hard billing caps. Reported cost remains recorded
 but there is no configured cost cutoff.
 
@@ -119,7 +120,7 @@ row/workflow revision. Direct SQL modification can violate these guarantees.
 ## Workspace mode
 
 `use_isolated_workspace` is a profile boolean, defaulting to `true` when omitted.
-The selected mode is saved in each attempt snapshot and retained on retry.
+The selected mode is saved in each attempt snapshot; Retry resolves the current profile mode.
 
 - `true`: export committed Git HEAD into a private attempt workspace, overlay the
   snapshotted instructions, and retain the source archive for replay.
@@ -128,8 +129,8 @@ The selected mode is saved in each attempt snapshot and retained on retry.
   No Git commit or source export is required, and preparation never cleans or overlays
   the checkout. The recorded Git revision, when available, is informational only.
 
-In shared mode, instructions/configuration/parameters/limits are still snapshotted,
-while retries read the current filesystem. The saved base prompt is retained; an
+In shared mode, instructions/task configuration/parameters are still snapshotted,
+and each retry renders a new base prompt from the current definition and filesystem; an
 attempt-specific context suffix identifies its evidence directory. Accepted predecessor
 files are copied to `queue-work/<queue_id>/attempts/<attempt-id>/.queue-inputs/` under
 the state directory, outside the checkout. Its absolute path is given in the prompt
@@ -142,7 +143,7 @@ The following source-export guarantees apply to isolated mode.
 
 ## Snapshots, repositories and retries
 
-The task resolver rereads the selected profile's task definitions for a new task,
+The task resolver rereads the selected profile's task definitions for every new attempt, including Retry,
 validates parameters, reads the instruction file and resolves the containing approved
 repository's current Git HEAD. The repository must have a commit. Instructions are
 captured from the current file, including uncommitted edits; repository code comes
@@ -152,16 +153,16 @@ the instruction file is overlaid with its exact snapshotted contents.
 
 `am_task_attempts.input_snapshot` stores the resolved task definition (including
 provider/model/normalized permission and parameter schema), exact instruction text,
-definition hash, actual parameters, effective limits, repository alias/commit/archive
-hash, accepted predecessor result, and final worker prompt. Limits are stored at claim;
-full preparation is stored before provider launch. A failure before preparation has
-no executed instruction snapshot; unblocking may resolve the corrected definition.
+definition hash, actual parameters, repository alias/commit/archive hash, accepted
+predecessor result, and final worker prompt. Full preparation is stored before provider
+launch. Controller limits remain live and are not part of the immutable snapshot.
 
-Retries, including explicit retries of executed tasks, reuse the preceding saved
-snapshot. They get a new attempt ID, conversation and workspace. Profile edits, changed Markdown or controller limit changes cannot alter the saved
-instructions/configuration. Isolated mode also retains source bytes; shared mode
-uses the live filesystem and updates the evidence-directory suffix per attempt. A restarted controller resumes the same prepared attempt without resending an
-already-reserved prompt. New task rows use current definitions. Controller default
+Retries resolve the current profile and instruction files using the task's stored
+parameters, validate inputs, and save a fresh snapshot. They receive a new attempt ID,
+conversation and workspace (or use the current shared checkout). Old proposals are not
+imported as new submissions. Prior attempts remain available for audit. A restarted
+controller recovers the same prepared attempt without resending an already-reserved
+prompt; Resume likewise preserves that attempt's assignment. Controller default
 changes affect new controllers; existing controller settings persist independently.
 
 Storage is derived automatically from:
@@ -199,7 +200,7 @@ Worker limits and pause state are per controller. Two controllers at limit 2 may
 more work; lowering it lets existing workers finish. Pause prevents new claims.
 The right panel shows pool-wide eligible backlog, active tasks/workers owned by this
 controller, and editable worker/lease/time/token settings. Changes to attempt limits
-apply to new tasks; retries retain their original snapshot limits. Unavailable counts
+apply to running attempts and future retries on the next scheduler cycle; leases use the current duration on renewal. Limits are controller settings and are not included in task snapshots. Unavailable counts
 are displayed as unavailable, not zero.
 
 Launch uses attempt ID as its idempotency key. The backend persists conversation

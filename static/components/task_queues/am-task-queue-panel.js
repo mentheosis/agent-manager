@@ -12,7 +12,7 @@ class AmTaskQueuePanel extends HTMLElement {
   }
   connectedCallback() {
     document.addEventListener("queue-tasks-updated", this._onTasks);
-    this.innerHTML = `<div class="queue-resize-handle" role="separator" aria-label="Resize task queue panel" aria-orientation="vertical" tabindex="0"></div><div class="queue-panel-content"><section class="queue-controller-section"><h3>Controller</h3><p class="queue-state queue-status-badge" data-state="unknown">Checking controller…</p><div class="queue-controls"><button data-action="start">Start / resume</button><button data-action="pause">Pause dispatch</button><button data-action="stop">Drain and stop</button></div><p class="queue-help">Pause stops new assignments. Drain lets active workers finish before stopping.</p><p class="queue-error" role="alert"></p></section><section><h3>Task activity</h3><dl><dt>Queued</dt><dd data-count="queued">—</dd><dt>Active</dt><dd data-count="active">—</dd><dt>Completed</dt><dd data-count="completed">—</dd><dt>Other</dt><dd data-count="other">—</dd></dl></section><section><h3>Worker capacity</h3><dl><dt>Active workers here</dt><dd data-count="workers">—</dd></dl><form><label>Max workers<input name="max-workers" type="number" min="1" value="1" required></label><button>Apply</button></form><p class="queue-effective">Effective limit unavailable</p><p class="queue-help">Lowering the limit lets active workers finish. Each controller has its own limit.</p></section><section><h3>Task limits</h3><form class="attempt-limits"><label>Lease seconds<input name="lease" type="number" min="15" required></label><label>Task time limit (seconds)<input name="seconds" type="number" min="15" required></label><label>Task token limit<input name="tokens" type="number" min="1" required></label><button>Apply task limits</button></form><p class="attempt-effective"></p></section></div>`;
+    this.innerHTML = `<div class="queue-resize-handle" role="separator" aria-label="Resize task queue panel" aria-orientation="vertical" tabindex="0"></div><div class="queue-panel-content"><section class="queue-controller-section"><h3>Controller</h3><p class="queue-state queue-status-badge" data-state="unknown">Checking controller…</p><div class="queue-controls"><button data-action="start">Start / resume</button><button data-action="pause">Pause dispatch</button><button data-action="stop">Drain and stop</button></div><p class="queue-help">Pause stops new assignments. Drain lets active workers finish before stopping.</p><p class="queue-error" role="alert"></p></section><section><h3>Task activity</h3><dl><dt>Queued</dt><dd data-count="queued">—</dd><dt>Active</dt><dd data-count="active">—</dd><dt>Completed</dt><dd data-count="completed">—</dd><dt>Other</dt><dd data-count="other">—</dd></dl></section><section><h3>Worker capacity</h3><dl><dt>Active workers here</dt><dd data-count="workers">—</dd></dl><form><label>Max workers<input name="max-workers" type="number" min="1" value="1" required></label><button>Apply</button></form><p class="queue-effective">Effective limit unavailable</p><p class="queue-help">Lowering the limit lets active workers finish. Each controller has its own limit.</p></section><section><h3>Task limits</h3><form class="attempt-limits"><label>Lease seconds<input name="lease" type="number" min="15" required></label><label>Task time limit (seconds)<input name="seconds" type="number" min="15" required></label><label>Review round limit<input name="rounds" type="number" min="1" value="8" required></label><label>Task token limit<input name="tokens" type="number" min="1" required></label><button>Apply task limits</button></form><p class="attempt-effective"></p></section></div>`;
     const handle = this.querySelector(".queue-resize-handle");
     const resize = width => {
       const maximum = Math.max(260, Math.min(720, window.innerWidth - 320));
@@ -105,12 +105,12 @@ class AmTaskQueuePanel extends HTMLElement {
         : "Queue settings unavailable.";
       if (q && !this._initialized) {
         this.querySelector("input").value = q.max_workers;
-        if (q.limits) for (const [name, key] of [["lease", "lease_secs"], ["seconds", "task_limit_secs"], ["tokens", "task_limit_tokens"]])
+        if (q.limits) for (const [name, key] of [["lease", "lease_secs"], ["seconds", "task_limit_secs"], ["tokens", "task_limit_tokens"], ["rounds", "review_round_limit"]])
           this.querySelector(`[name=${name}]`).value = q.limits[key];
         this._initialized = true;
       }
       this.querySelector(".attempt-effective").textContent = q?.limits
-        ? `New tasks: lease ${q.limits.lease_secs}s · time ${q.limits.task_limit_secs}s · tokens ${q.limits.task_limit_tokens}. Retries retain original limits.` : "";
+        ? `Current limits: lease ${q.limits.lease_secs}s · time ${q.limits.task_limit_secs}s · tokens ${q.limits.task_limit_tokens} · review rounds ${q.limits.review_round_limit}. Changes apply to active attempts.` : "";
 
     } catch (error) {
       if (title === this._instance?.title) {
@@ -138,6 +138,7 @@ class AmTaskQueuePanel extends HTMLElement {
         if (action === "limits") body.limits = {
           lease_secs: Number(this.querySelector("[name=lease]").value),
           task_limit_secs: Number(this.querySelector("[name=seconds]").value),
+          review_round_limit: Number(this.querySelector("[name=rounds]").value),
           task_limit_tokens: Number(this.querySelector("[name=tokens]").value),
         };
         await queueRequest(title, "control", body);

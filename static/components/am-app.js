@@ -367,7 +367,7 @@ class AmApp extends HTMLElement {
         const terminal = this.querySelector('am-terminal-pane');
         const isLoop = inst.kind === 'loop' || inst.instance_type === 'loop';
         terminal.instance = isLoop ? null : inst;
-        if (isLoop || inst.queue_attempt) terminal.disablePrompt();
+        if (isLoop) terminal.disablePrompt();
         else terminal.enablePrompt();
 
         // Update team panel (show for loop instances on conversation tab)

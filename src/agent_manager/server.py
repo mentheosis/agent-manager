@@ -208,6 +208,7 @@ class CreateInstanceBody(BaseModel):
     queue_lease_secs: int | None = None
     queue_task_limit_secs: int | None = None
     queue_task_limit_tokens: int | None = None
+    queue_review_round_limit: int | None = None
     name: str = Field(min_length=1)
     path: str = Field(min_length=1)
     provider: str = "claude"
@@ -723,7 +724,7 @@ def build_app() -> FastAPI:
                 body.queue_id = body.queue_profile
                 from .orchestration.controllers import validate_limits
                 for field, key in [('queue_initial_max_workers', 'initial_max_workers'), ('queue_lease_secs', 'lease_seconds'),
-                                   ('queue_task_limit_secs', 'max_attempt_seconds'), ('queue_task_limit_tokens', 'max_attempt_tokens')]:
+                                   ('queue_task_limit_secs', 'max_attempt_seconds'), ('queue_task_limit_tokens', 'max_attempt_tokens'), ('queue_review_round_limit', 'review_round_limit')]:
                     value = getattr(body, field)
                     if value is not None:
                         cfg[key] = value
@@ -732,6 +733,7 @@ def build_app() -> FastAPI:
                 body.queue_lease_secs = cfg['lease_seconds']
                 body.queue_task_limit_secs = cfg['max_attempt_seconds']
                 body.queue_task_limit_tokens = cfg['max_attempt_tokens']
+                body.queue_review_round_limit = cfg['review_round_limit']
             inst = await registry.create(
                 body.name,
                 body.path,
@@ -748,6 +750,7 @@ def build_app() -> FastAPI:
                 queue_lease_secs=body.queue_lease_secs,
                 queue_task_limit_secs=body.queue_task_limit_secs,
                 queue_task_limit_tokens=body.queue_task_limit_tokens,
+                queue_review_round_limit=body.queue_review_round_limit,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -772,14 +775,14 @@ def build_app() -> FastAPI:
         return {**_summary(inst), "history": inst.history()}
 
     async def kill_protection(inst):
-        if inst and inst.queue_attempt:
+        if inst and inst.queue_attempt and not inst.queue_attempt.get("detached"):
             if inst.status in ('creating', 'running') or not inst._inbox.empty():
                 return "This attempt is active in the queue. Use the queue controls to cancel it."
             from .orchestration.controllers import instance_queue_config
             from .orchestration.task_loading import queue_command
             try:
                 result = await queue_command(instance_queue_config(inst), orchestrator_manager.find_binary(),
-                    'attempt-status', {'attempt': inst.queue_attempt['id']})
+                    'attempt-status', {'attempt': inst.queue_attempt.get('root_attempt') or inst.queue_attempt['id']})
             except (ValueError, OSError, asyncio.TimeoutError):
                 return "Could not verify that the queue attempt has finished."
             if result['status'] not in ('', 'completed', 'failed', 'blocked', 'cancelled', 'awaiting_review'):
@@ -1153,11 +1156,13 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
-        if inst.kind == "loop" or inst.queue_attempt:
+        if inst.kind == "loop":
             raise HTTPException(status_code=400, detail="Use the controller controls for managed work")
         images = None
         if body.images:
             images = [{"media_type": img.media_type, "data": img.data} for img in body.images]
+        if inst.queue_attempt:
+            return await app.state.send_queue_conversation(inst, body.text, images)
         await inst.send(body.text, images=images)
         return {"ok": True}
 
@@ -1167,7 +1172,9 @@ def build_app() -> FastAPI:
         inst = registry.get(title)
         if not inst:
             raise HTTPException(status_code=404)
-        if inst.queue_attempt or inst.controller_mode == "task_queue":
+        if inst.queue_attempt and not inst.queue_attempt.get("detached"):
+            return await app.state.cancel_queue_conversation(inst)
+        if inst.controller_mode == "task_queue":
             raise HTTPException(409, "Use queue cancellation/drain controls")
         await inst.abort()
         return {"ok": True}

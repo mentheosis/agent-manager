@@ -22,8 +22,10 @@
     font-size: var(--fs-md);
     font-weight: 600;
     outline: none;
-    min-width: 80px;
-    max-width: 240px;
+    flex: 0 1 60%;
+    min-width: 0;
+    max-width: 60%;
+    box-sizing: border-box;
 }
 
 #toolbar-title:hover { border-color: var(--border); }
@@ -107,4 +109,15 @@
 .filter-label {
     font-size: var(--fs-sm);
     color: var(--text);
+}
+
+/* Keep controls readable while the title gives up space on narrow views. */
+#toolbar > .toolbar-btn,
+#toolbar > .filter-dropdown,
+#toolbar > .type-badge {
+    flex-shrink: 0;
+}
+
+@media (max-width: 600px) {
+    #toolbar { flex-wrap: wrap; }
 }

@@ -549,3 +549,9 @@ Remaining release work is deployment configuration, explicit consumer migration,
 manual team verification and a live provider pilot at max_workers=1. Broader rollout
 requires the separate isolation and provider-account quota controls described in the
 protocol; it must not assume that attempt fencing is a hostile-worker sandbox.
+
+## Worker/reviewer rounds
+
+Implemented optional per-task iterative review; see [REVIEW_LOOP.md](REVIEW_LOOP.md)
+for the configuration, durable state machine, budget behavior, initial schema setup,
+and verification plan. The existing scheduler remains the sole execution authority.

@@ -8,6 +8,7 @@
     "default_lease_secs": 60,
     "default_task_limit_secs": 3600,
     "default_task_limit_tokens": 2000000,
+    "default_review_round_limit": 8,
     "tasks": {
       "report": {
         "instructions": "/workspace/sample/tasks/report.md",

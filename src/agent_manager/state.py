@@ -79,6 +79,7 @@ class Registry:
                 queue_lease_secs=rec.queue_lease_secs,
                 queue_task_limit_secs=rec.queue_task_limit_secs,
                 queue_task_limit_tokens=rec.queue_task_limit_tokens,
+                queue_review_round_limit=rec.queue_review_round_limit,
                 queue_attempt=rec.queue_attempt,
                 permission_mode=rec.permission_mode,
                 model=rec.model or None,
@@ -216,6 +217,7 @@ class Registry:
         queue_lease_secs: int | None = None,
         queue_task_limit_secs: int | None = None,
         queue_task_limit_tokens: int | None = None,
+        queue_review_round_limit: int | None = None,
     ) -> Instance:
         """Create an instance from a free-form display name.
 
@@ -258,6 +260,7 @@ class Registry:
                 queue_lease_secs=queue_lease_secs,
                 queue_task_limit_secs=queue_task_limit_secs,
                 queue_task_limit_tokens=queue_task_limit_tokens,
+                queue_review_round_limit=queue_review_round_limit,
                 instance_type="loop" if kind == "loop" else provider,
                 permission_mode=permission_mode,
                 model=model or None,
@@ -555,6 +558,7 @@ class Registry:
                     queue_lease_secs=i.queue_lease_secs,
                     queue_task_limit_secs=i.queue_task_limit_secs,
                     queue_task_limit_tokens=i.queue_task_limit_tokens,
+                    queue_review_round_limit=i.queue_review_round_limit,
                     queue_attempt=i.queue_attempt,
                     permission_mode=i.permission_mode,
                     model=i.model or None,

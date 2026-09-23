@@ -65,3 +65,5 @@ uses the same resolved repository-relative artifact path in predecessor evidence
 Relative instruction paths also use this base and require exactly one repository;
 absolute instruction paths remain supported. Working directories do not change.
 Retries retain their saved resolved paths, while launch guidance is regenerated.
+
+`default_review_round_limit` sets the initial maximum review rounds per attempt (default 8). Change **Review round limit** in the controller panel to extend a running or blocked attempt; use Resume after raising a blocked attempt’s limit.

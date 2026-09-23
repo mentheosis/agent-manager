@@ -13,6 +13,7 @@ import (
 
 // Config is delivered by the trusted supervisor environment, never by task data.
 type Config struct {
+	ReviewRoundLimit     int                   `json:"review_round_limit"`
 	BasePath             string                `json:"base_path,omitempty"`
 	UseIsolatedWorkspace *bool                 `json:"use_isolated_workspace,omitempty"`
 	ProfilePath          string                `json:"profile_path"`
@@ -57,6 +58,12 @@ func LoadConfig() (Config, error) {
 	}
 	if c.MaxAttemptTokens == 0 {
 		c.MaxAttemptTokens = 2000000
+	}
+	if c.ReviewRoundLimit == 0 {
+		c.ReviewRoundLimit = 8
+	}
+	if c.ReviewRoundLimit < 1 {
+		return c, errors.New("review_round_limit must be positive")
 	}
 	if c.MaxAttemptTokens < 1 {
 		return c, errors.New("invalid attempt budget")

@@ -492,3 +492,12 @@ async def test_instance_slash_command_does_not_call_provider_runtime() -> None:
     assert inst.status == "ready"
 
     await inst.stop()
+
+@pytest.mark.asyncio
+async def test_stopped_queue_turn_publishes_ready_without_deleting_conversation():
+    inst = Instance(title='turn', path='/tmp', provider='codex', queue_attempt={'id':'a'*32})
+    inst.status = 'running'
+    await inst.stop()
+    assert inst.status == 'ready'
+    assert inst.history()[-1]['type'] == 'status'
+    assert inst.history()[-1]['status'] == 'ready'
