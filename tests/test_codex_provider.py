@@ -1208,3 +1208,18 @@ def test_codex_scoped_queue_mcp_permissions():
     assert not any('default_tools_approval_mode' in value for value in args)
     command = runtime._build_command('review', [])
     assert '--dangerously-bypass-approvals-and-sandbox' not in command
+
+
+def test_mcp_exec_item_preserves_server_and_tool_identity() -> None:
+    from agent_manager.providers.codex_events import translate_codex_event
+
+    events = translate_codex_event({
+        "type": "item.started",
+        "item": {
+            "id": "mcp-read", "type": "mcp_tool_call",
+            "server": "task_queue", "tool": "queue_read_file",
+            "arguments": {"path": "report.md"},
+        },
+    })
+    assert events[0]["name"] == "mcp.task_queue.queue_read_file"
+    assert events[0]["input"] == {"path": "report.md"}

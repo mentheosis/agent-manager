@@ -853,6 +853,9 @@ class AmTerminalPane extends HTMLElement {
             labelEl.appendChild(preview);
         }
 
+        const historyTarget = this.historyTargetForTool(event);
+        if (historyTarget) el.appendChild(this.createHistoryTarget(historyTarget));
+
         const toolSummaryText = this.summaryTextForToolUse(event);
         if (event.type === 'tool_use' && toolSummaryText) {
             const displayEl = document.createElement('pre');
@@ -877,6 +880,51 @@ class AmTerminalPane extends HTMLElement {
         }
 
         return el;
+    }
+
+    historyTargetForTool(event) {
+        if (event.type !== 'tool_use') return null;
+        let input = event.input;
+        if (typeof input === 'string') {
+            try { input = JSON.parse(input); } catch { return null; }
+        }
+        const name = event.mcp_tool || event.name || '';
+        if (!/(?:^|[._])queue_read_history$/.test(name) && input?.tool !== 'queue_read_history') return null;
+        input = input?.arguments ?? input;
+        if (!input?.turn_id) return null;
+        const instances = this.closest('am-app')?.instances || [];
+        const currentAttempt = this._instance?.queue_attempt?.root_attempt;
+        const matches = instances.filter(instance => {
+            const attempt = instance.queue_attempt;
+            if (!attempt || (currentAttempt && attempt.root_attempt !== currentAttempt)) return false;
+            return instance.title === input.turn_id || attempt.id === input.turn_id ||
+                attempt.previous_turns?.includes(input.turn_id);
+        });
+        return { instance: matches.length === 1 ? matches[0] : null, id: input.turn_id, offset: input.offset ?? 0 };
+    }
+
+    createHistoryTarget(target) {
+        const row = document.createElement('div');
+        row.className = 'event-body tool-history-target';
+        row.append('Reading history: ');
+        if (target.instance) {
+            const link = document.createElement('a');
+            link.textContent = target.instance.display_title || target.instance.title;
+            link.href = `/${encodeURIComponent(target.instance.title)}/conversation`;
+            link.addEventListener('click', event => {
+                if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                event.stopPropagation();
+                this.dispatchEvent(new CustomEvent('instance-selected', {
+                    bubbles: true, detail: { instance: target.instance },
+                }));
+            });
+            row.append(link);
+        } else {
+            row.append(`Conversation unavailable (${target.id})`);
+        }
+        row.append(` · Starting at event ${target.offset}`);
+        return row;
     }
 
     createToolRawDetails(bodyText) {
@@ -1043,8 +1091,11 @@ class AmTerminalPane extends HTMLElement {
             case 'assistant_text':
             case 'thinking':
                 return event.text ?? '';
-            case 'tool_use':
-                return this.formatToolInput(event.input);
+            case 'tool_use': {
+                const name = event.name || 'Unknown tool';
+                const identity = [event.mcp_server && `MCP server: ${event.mcp_server}`, `Tool: ${event.mcp_tool || name}`].filter(Boolean).join('\n');
+                return `${identity}\n\nInputs:\n${this.formatToolInput(event.input)}`;
+            }
             case 'tool_result':
                 return event.output ?? '';
             case 'artifact':

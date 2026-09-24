@@ -35,6 +35,7 @@ class AmTaskQueueTasks extends HTMLElement {
           b.dataset.view !== "tasks";
         this.querySelector(".loop-events").hidden =
           b.dataset.view !== "activity";
+        if (b.dataset.view === "activity") this.scrollToBottom();
       }),
     );
     this.querySelector(".queue-load").onclick = () => this.querySelector("am-task-queue-loader").open(this._instance);
@@ -89,13 +90,18 @@ class AmTaskQueueTasks extends HTMLElement {
         this.renderTasks(tasks);
         this._signature = signature;
       }
+      const output = this.querySelector(".loop-events");
+      const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 100;
       appendQueueLogs(
-        this.querySelector(".loop-events"),
+        output,
         logs,
         title,
         this._filters,
       );
-      if (logs.length) this._after = logs[logs.length - 1].id;
+      if (logs.length) {
+        this._after = logs[logs.length - 1].id;
+        if (follow && !output.hidden) this.scrollToBottom();
+      }
       this.querySelector(".queue-error").textContent = "";
       this.querySelector(".queue-prev").hidden = true;
       this.querySelector(".queue-next").hidden = true;
@@ -107,6 +113,11 @@ class AmTaskQueueTasks extends HTMLElement {
     } finally {
       this._busy = false;
     }
+  }
+  scrollToBottom() {
+    const activity = this.querySelector(".loop-events");
+    const output = activity.hidden ? this.querySelector(".queue-task-list") : activity;
+    output.scrollTop = output.scrollHeight;
   }
   async loadAllTasks(title) {
     const tasks = [];

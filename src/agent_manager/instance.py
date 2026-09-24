@@ -451,7 +451,11 @@ class Instance:
             self._subscribers.remove(q)
 
     def history(self) -> list[Event]:
-        return list(self._history)
+        events = list(self._history)
+        if self.provider == "codex":
+            from .providers.codex_tool_identity import enrich_mcp_history
+            return enrich_mcp_history(events, self.session_id)
+        return events
 
     def debug_state(self) -> dict[str, object]:
         task = self._task

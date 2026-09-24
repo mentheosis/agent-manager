@@ -113,9 +113,16 @@ def translate_codex_event(raw: dict[str, Any], system_context: dict[str, Any] | 
 
         if _is_tool_item(item_type):
             tool_name = str(item.get("name") or item.get("tool_name") or item_type or "codex_tool")
+            # MCP exec items carry their identity separately from arguments.
+            # Preserve it in the normalized name before extracting the inputs.
+            if "mcp" in item_type.lower() and item.get("tool"):
+                tool_name = ".".join(str(part) for part in ("mcp", item.get("server"), item["tool"]) if part)
             tool_id = item_id or f"codex-{abs(hash(str(raw))) & 0xffffffff:x}"
             if event_type == "item.started":
-                events.append(_tool_use_event(tool_id, tool_name, _tool_input_from(item, raw)))
+                event = _tool_use_event(tool_id, tool_name, _tool_input_from(item, raw))
+                if "mcp" in item_type.lower() and item.get("tool"):
+                    event.update(mcp_server=item.get("server"), mcp_tool=item["tool"])
+                events.append(event)
             elif event_type == "item.updated":
                 # Progress on a long-running command is not its result.
                 return []

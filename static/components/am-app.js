@@ -175,9 +175,9 @@ class AmApp extends HTMLElement {
             }
         });
 
-        // Scroll terminal to bottom
+        // Scroll the visible conversation/controller view to bottom
         this.addEventListener('scroll-to-bottom', () => {
-            this.querySelector('am-terminal-pane').scrollToBottom();
+            this.querySelector('.tab-pane.active')?.scrollToBottom?.();
         });
 
         // Manual reconnect requested from the disconnected banner

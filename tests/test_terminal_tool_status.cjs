@@ -58,3 +58,22 @@ test('matching output resolves a pending tool successfully', () => {
     pane.appendEventToCurrentTurn({ type: 'tool_result', tool_id: 'call-1', is_error: false });
     assert.deepEqual([...classes], ['success']);
 });
+
+
+test('history tool resolves current and earlier rounds to the worker conversation', () => {
+    const pane = Object.create(Component.prototype);
+    const worker = {title: 'worker', display_title: 'TRX worker r5', queue_attempt: {
+        root_attempt: 'attempt', id: 'round5', previous_turns: ['round4'],
+    }};
+    pane._instance = {queue_attempt: {root_attempt: 'attempt'}};
+    pane.closest = () => ({instances: [worker]});
+    for (const id of ['round5', 'round4', 'worker']) {
+        const target = pane.historyTargetForTool({type: 'tool_use', name: 'mcp.queue.queue_read_history', input: {turn_id: id, offset: 700}});
+        assert.equal(target.instance, worker);
+        assert.equal(target.offset, 700);
+    }
+    const missing = pane.historyTargetForTool({type: 'tool_use', name: 'queue_read_history', input: {turn_id: 'deleted'}});
+    assert.equal(missing.instance, null);
+    assert.equal(missing.offset, 0);
+    assert.equal(pane.historyTargetForTool({type: 'tool_use', name: 'different_tool', input: {turn_id: 'round5'}}), null);
+});

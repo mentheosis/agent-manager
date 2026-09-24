@@ -73,6 +73,11 @@ class AmLoopPane extends HTMLElement {
         }
     }
 
+    scrollToBottom() {
+        const output = this.querySelector('.loop-events');
+        output.scrollTop = output.scrollHeight;
+    }
+
     renderEvent(event) {
         if (event.type === 'connection' && event.status === 'reconnected' && this._instance) {
             for (const item of streamManager.get(this._instance.title).eventHistory) this.renderEvent(item);
