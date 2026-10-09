@@ -12,6 +12,8 @@ import (
 )
 
 type Submission struct {
+	HandoffSource string     `json:"handoff_source,omitempty"`
+	Handoff       *Handoff   `json:"handoff,omitempty"`
 	Origin        string     `json:"origin,omitempty"`
 	Outcome       string     `json:"outcome"`
 	Summary       string     `json:"summary"`
@@ -72,6 +74,9 @@ func (s *Store) Submit(ctx context.Context, id, token, kind string, payload json
 		if e := json.Unmarshal(payload, &p); e != nil {
 			return e
 		}
+		if err := p.Handoff.validate(); err != nil {
+			return err
+		}
 		if p.Outcome != "completed" && p.Outcome != "blocked" && p.Outcome != "failed" {
 			return errors.New("invalid outcome")
 		}
@@ -96,6 +101,7 @@ func (s *Store) Submit(ctx context.Context, id, token, kind string, payload json
 		if e != nil {
 			return e
 		}
+		p.HandoffSource = "worker"
 		p.Artifacts = artifacts
 		p.ArtifactPaths = nil
 		raw, e := json.Marshal(p)

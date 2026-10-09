@@ -26,6 +26,7 @@ type Round struct {
 	Tokens       int64           `json:"tokens"`
 }
 type ReviewDecision struct {
+	Handoff            *Handoff `json:"handoff,omitempty"`
 	Decision           string   `json:"decision"`
 	Summary            string   `json:"summary"`
 	Evidence           []string `json:"evidence"`
@@ -34,6 +35,9 @@ type ReviewDecision struct {
 }
 
 func (d ReviewDecision) validate(proposal Submission) error {
+	if err := d.Handoff.validate(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(d.Summary) == "" || len(d.Summary) > 16000 {
 		return errors.New("review requires a summary (max 16000 characters)")
 	}
@@ -61,6 +65,9 @@ func (d ReviewDecision) validate(proposal Submission) error {
 			return errors.New("only a completed proposal can be accepted")
 		}
 	case "escalate":
+		if d.Handoff != nil && (d.Handoff.Category == "engineering" || d.Handoff.Category == "none") {
+			return errors.New("unfinished engineering requires continue; escalation must identify a concrete external dependency")
+		}
 		if strings.TrimSpace(d.ExternalDependency) == "" {
 			return errors.New("escalate requires an external_dependency and human action")
 		}
@@ -106,6 +113,15 @@ func (s *Store) newRound(ctx context.Context, a Attempt, n int, role, prompt str
 		count, _ := result.RowsAffected()
 		if count == 0 {
 			return nil
+		}
+		headline := "Worker is working"
+		nextAction := "No action needed; the worker is continuing the task."
+		if role == "reviewer" {
+			headline = "Awaiting review"
+			nextAction = "The reviewer will assess the latest worker submission."
+		}
+		if err := s.log(ctx, tx, a.TaskID, a.ID, "controller", "task_status", headline, TaskExplanation{Handoff: Handoff{Headline: headline, Category: "none", NextAction: nextAction}, Source: "controller"}); err != nil {
+			return err
 		}
 		return s.log(ctx, tx, a.TaskID, a.ID, "controller", role+"_round", fmt.Sprintf("%s · round %d", role, n), map[string]any{"round": n, "role": role, "turn_id": id})
 	})
@@ -174,6 +190,9 @@ func (s *Store) submitRound(ctx context.Context, id, token, kind string, payload
 			if e := json.Unmarshal(payload, &p); e != nil {
 				return e
 			}
+			if err := p.Handoff.validate(); err != nil {
+				return err
+			}
 			if p.Outcome != "completed" && p.Outcome != "blocked" && p.Outcome != "failed" {
 				return errors.New("invalid outcome")
 			}
@@ -194,6 +213,7 @@ func (s *Store) submitRound(ctx context.Context, id, token, kind string, payload
 			if e != nil {
 				return e
 			}
+			p.HandoffSource = "worker"
 			p.Artifacts = artifacts
 			p.ArtifactPaths = nil
 			body = p

@@ -77,3 +77,7 @@ am-task-queue-loader .preview-attention { color:var(--yellow, #e6b450); backgrou
 
 .queue-task-actions { white-space:nowrap; cursor:default; }
 .queue-task-actions button { margin:0 0 0 6px; }
+
+.queue-task-headline { margin-top:4px; font-size:var(--fs-sm); color:var(--text-dim); max-width:48ch; white-space:normal; }
+.queue-task-status-reason[data-category="system_error"], .queue-task-status-reason[data-category="engineering"] { border-left:3px solid var(--red); }
+.queue-task-status-reason[data-category="human_input"], .queue-task-status-reason[data-category="waiting"], .queue-task-status-reason[data-category="limit"] { border-left:3px solid var(--yellow); }

@@ -444,6 +444,7 @@ def test_worker_continuation_reuses_session_and_delivers_feedback_once(queue_app
     child=app.state.registry.get('queue_'+first)
     identity=child.instance_id
     child.session_id='retained-provider-thread'
+    child.queue_attempt['athena_jobs'] = ['prior-athena-job']
     child._history=[{'type':'result','usage':{'input_tokens':900,'output_tokens':100}}]
     assert client.delete(f'/api/task-queues/queue/attempts/{first}',headers=headers).status_code==200
     feedback='Reviewer feedback: test the missing historical checkpoint.'
@@ -455,6 +456,7 @@ def test_worker_continuation_reuses_session_and_delivers_feedback_once(queue_app
     assert resumed.json()['tokens']==0  # Do not count previous rounds again.
     assert child.session_id=='retained-provider-thread'
     assert child.queue_attempt['id']==second and first in child.queue_attempt['previous_turns']
+    assert child.queue_attempt['athena_jobs'] == ['prior-athena-job']
     assert child.queue_attempt['history_start']>=1
     assert app.state.registry.get('queue_'+second) is None
     repeated=client.post(url,headers=headers,json=continuation)
@@ -600,3 +602,114 @@ def test_conversation_continuation_reuses_session_and_rotates_capability(queue_a
     assert child.queue_attempt['previous_turns'] == [old]
     assert not child.queue_attempt.get('cancelled')
     sends.assert_awaited_once_with(body['prompt'])
+
+
+def test_stopped_controller_prompt_failure_is_saved_in_conversation(queue_app):
+    client, app, parent, manager = queue_app
+    child = Instance(title='waiting_worker', path=parent.path, parent=parent.title,
+        queue_profile='test', queue_id='test', session_id='saved',
+        queue_attempt={'id':'b'*32, 'root_attempt':'a'*32, 'role':'worker', 'task_id':7})
+    app.state.registry._instances[child.title] = child
+    response = client.post('/api/instances/waiting_worker/send', json={'text':'Please improve logging'})
+    assert response.status_code == 409
+    events = child.history()
+    assert any(e.get('type') == 'user_prompt_received' and e.get('text') == 'Please improve logging' for e in events)
+    assert any(e.get('type') == 'error' and 'Start the queue controller first' in e.get('message', '')
+               and 'prompt is saved' in e['message'] for e in events)
+
+
+@pytest.mark.parametrize('status,pending,expected', [('ready',False,200), ('running',False,409), ('ready',True,409)])
+def test_prepare_resume_closes_only_idle_listener(queue_app, monkeypatch, status, pending, expected):
+    client, app, parent, manager = queue_app
+    child = Instance(title='waiting_worker', path=parent.path, parent=parent.title,
+        queue_profile='test', queue_id='test', session_id='saved',
+        queue_attempt={'id':'b'*32, 'root_attempt':'a'*32, 'role':'worker', 'task_id':7})
+    app.state.registry._instances[child.title] = child
+    child.status = status
+    child._task = SimpleNamespace(done=lambda: False)
+    if pending:
+        child._inbox.put_nowait('pending')
+    async def stop(instance):
+        instance._task = None
+    stopped = AsyncMock(side_effect=stop)
+    monkeypatch.setattr(Instance, 'stop', lambda instance: stopped(instance))
+    response = client.post('/api/task-queues/queue/attempts/'+'a'*32+'/resume',
+        headers={'Authorization':'Bearer '+internal_token()}, json={'turn_id':'b'*32})
+    assert response.status_code == expected, response.text
+    assert stopped.await_count == (1 if expected == 200 else 0)
+    assert child.session_id == 'saved'
+
+
+def test_athena_relay_pins_profile_and_scopes_jobs(queue_app, monkeypatch):
+    from agent_manager.orchestration.controllers import attempt_token
+    from agent_manager.orchestration import task_loading, athena
+    client, app, parent, manager = queue_app
+    attempt = '9' * 32
+    child = Instance(title='athena-worker', provider='codex', path=parent.path, parent=parent.title,
+        queue_profile='test', status='ready', queue_attempt={'id': attempt, 'task_id': 77})
+    app.state.registry._instances[child.title] = child
+    url = f'/api/task-queues/queue/attempts/{attempt}/athena'
+    headers = {'Authorization': 'Bearer ' + attempt_token(attempt)}
+    monkeypatch.setattr(task_loading, 'queue_command', AsyncMock(return_value={'status': 'running'}))
+    monkeypatch.setattr(manager, 'find_binary', lambda: '/test/orchestrator')
+    monkeypatch.setenv('AM_QUEUE_ATHENA_PROFILE', 'approved-audit')
+    relay = AsyncMock(return_value={'result': {'content': [
+        {'type': 'text', 'text': json.dumps({'id': 'owned-job', 'state': 'running'})}]}})
+    monkeypatch.setattr(athena, 'host_athena_call', relay)
+    assert client.post(url, json={'action': 'query', 'sql': 'SELECT 1'}).status_code == 401
+    assert client.post(url, headers=headers, json={'action': 'query', 'sql': 'SELECT 1', 'profile': 'other'}).status_code == 400
+    assert client.post(url, headers=headers, json={'action': 'job_logs', 'job_id': 'foreign'}).status_code == 403
+    for value in (0, 1001, True, '10'):
+        assert client.post(url, headers=headers, json={'action': 'query', 'sql': 'SELECT 1', 'max_rows': value}).status_code == 400
+    relay.assert_not_awaited()
+    response = client.post(url, headers=headers, json={'action': 'query', 'sql': 'SELECT 1', 'max_rows': 10})
+    assert response.status_code == 200, response.text
+    relay.assert_awaited_once_with('athena_query', {'profile': 'approved-audit', 'sql': 'SELECT 1', 'max_rows': 10})
+    assert child.queue_attempt['athena_jobs'] == ['owned-job']
+    assert client.post(url, headers=headers, json={'action': 'job_status', 'job_id': 'owned-job'}).status_code == 200
+    relay.assert_awaited_with('get_job_status', {'job_id': 'owned-job'})
+    assert client.post(url, headers=headers, json={'action': 'job_logs', 'job_id': 'owned-job', 'since_line': 201}).status_code == 200
+    relay.assert_awaited_with('tail_job_log', {'job_id': 'owned-job', 'since_line': 201, 'max_lines': 200})
+    assert client.post(url, headers=headers, json={'action': 'job_logs', 'job_id': 'owned-job', 'since_line': 0}).status_code == 400
+    calls = relay.await_count
+    child.queue_attempt['role'] = 'reviewer'
+    assert client.post(url, headers=headers, json={'action': 'query', 'sql': 'SELECT 1'}).status_code == 403
+    assert 'queue_athena' not in worker_mcp(child, manager)['queue']['enabled_tools']
+    child.queue_attempt['role'] = 'worker'
+    assert 'queue_athena' in worker_mcp(child, manager)['queue']['enabled_tools']
+    monkeypatch.setattr(task_loading, 'queue_command', AsyncMock(return_value={'status': 'completed'}))
+    assert client.post(url, headers=headers, json={'action': 'query', 'sql': 'SELECT 1'}).status_code == 409
+    assert relay.await_count == calls
+
+    # Continued turns retain jobs, but the prior turn's capability is revoked.
+    old_attempt = '8' * 32
+    child.queue_attempt['previous_turns'] = [old_attempt]
+    old_headers = {'Authorization': 'Bearer ' + attempt_token(old_attempt)}
+    old_url = f'/api/task-queues/queue/attempts/{old_attempt}/athena'
+    assert client.post(old_url, headers=old_headers, json={'action': 'job_status', 'job_id': 'owned-job'}).status_code == 403
+    child.queue_attempt['cancelled'] = True
+    assert client.post(url, headers=headers, json={'action': 'query', 'sql': 'SELECT 1'}).status_code == 403
+
+
+def test_athena_host_call_auth_and_error_visibility(monkeypatch):
+    import asyncio
+    import httpx
+    from agent_manager.orchestration.athena import host_athena_call
+    monkeypatch.setenv('DOCKER_MCP_URL', 'http://host-mcp:9090')
+    monkeypatch.setenv('DOCKER_MCP_TOKEN', 'backend-only-token')
+    response_body = {'result': {'isError': True, 'content': [{'type': 'text', 'text': 'Table not allowed'}]}}
+    requests = []
+    real_client = httpx.AsyncClient
+    def handler(request):
+        requests.append(request)
+        assert request.headers['Authorization'] == 'Bearer backend-only-token'
+        assert json.loads(request.content)['params']['name'] == 'athena_query'
+        return httpx.Response(200, json=response_body)
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    assert asyncio.run(host_athena_call('athena_query', {'sql': 'SELECT 1'})) == response_body
+    assert len(requests) == 1
+    monkeypatch.delenv('DOCKER_MCP_TOKEN')
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(host_athena_call('athena_query', {'sql': 'SELECT 1'}))
+    assert error.value.status_code == 503

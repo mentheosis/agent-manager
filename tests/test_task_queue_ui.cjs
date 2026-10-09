@@ -302,3 +302,16 @@ test('sidebar uses persisted activity age immediately despite fresh restart even
  assert.equal(view.conversationDisplayStatus({},stream,now),'ready');
  assert.equal(view.conversationDisplayStatus({status:'ready',created_at:'2026-09-22T12:00:00Z'},{eventHistory:[]},now),'idle');
 });
+
+test('activity presents structured status as readable prose without raw JSON', () => {
+ const captured=[];
+ const context={queueFilters:{},createActivityRow(event){captured.push(event);return event;}};
+ const source=fs.readFileSync(path.join(__dirname,'../static/components/task_queues/am-task-queue-activity.js'),'utf8')
+  .replace(/^import .*;$/gm,'').replace('export function','function');
+ vm.runInNewContext(source,context);
+ context.appendQueueLogs({append(){}},[{event_type:'task_status',actor:'controller',task_id:3,created_at:'2026-09-25T10:00:00Z',summary:'Waiting',data:{headline:'Waiting for access',completed:'Producer works',remaining:'Real-data check',reason:'Rate limited',next_action:'Retry tomorrow',actor:'operator',source:'reviewer'}}], 'queue', {});
+ assert.match(captured[0].text,/Completed: Producer works/);
+ assert.match(captured[0].text,/Next action: Retry tomorrow/);
+ assert.match(captured[0].text,/Source: reviewer/);
+ assert.doesNotMatch(captured[0].text,/"next_action"/);
+});

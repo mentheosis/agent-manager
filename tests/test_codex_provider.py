@@ -1150,11 +1150,14 @@ async def test_codex_runtime_resumes_after_capturing_session_id(tmp_path: Path, 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     args_log = tmp_path / "args.log"
+    prompts_log = tmp_path / "prompts.log"
     fake_codex = bin_dir / "codex"
     fake_codex.write_text(
         "#!/bin/sh\n"
         "printf '%s' \"$*\" | tr '\\n' ' ' >> \"$CODEX_ARGS_LOG\"\n"
         "printf '\\n' >> \"$CODEX_ARGS_LOG\"\n"
+        "cat >> \"$CODEX_PROMPTS_LOG\"\n"
+        "printf '\\n' >> \"$CODEX_PROMPTS_LOG\"\n"
         "printf '%s\\n' '{\"type\":\"thread.started\",\"id\":\"session-1\"}'\n"
         "printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}'\n"
         "printf '%s\\n' '{\"type\":\"turn.completed\",\"session_id\":\"session-1\"}'\n",
@@ -1163,6 +1166,7 @@ async def test_codex_runtime_resumes_after_capturing_session_id(tmp_path: Path, 
     fake_codex.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     monkeypatch.setenv("CODEX_ARGS_LOG", str(args_log))
+    monkeypatch.setenv("CODEX_PROMPTS_LOG", str(prompts_log))
 
     async def fake_metadata(cwd: str | None = None) -> dict[str, str]:
         return {"configured_model": "gpt-default", "active_model_label": "gpt-default"}
@@ -1189,8 +1193,12 @@ async def test_codex_runtime_resumes_after_capturing_session_id(tmp_path: Path, 
     # `exec --json --cd <tmp> -c developer_instructions="..."` now.
     assert args[0].startswith(f"exec --json --cd {tmp_path} -c developer_instructions=")
     assert args[1].startswith("exec resume --json --skip-git-repo-check -c developer_instructions=")
-    assert " first" in args[0]
-    assert " second" in args[1]
+    # Prompts travel over stdin; resume must retain the captured session ID.
+    assert args[0].endswith(" -")
+    assert args[1].endswith(" session-1 -")
+    assert " first" not in args[0]
+    assert " second" not in args[1]
+    assert prompts_log.read_text(encoding="utf-8").splitlines() == ["first", "second"]
     # The artifact protocol is now embedded in the developer_instructions value.
     assert "agent-manager:artifact" in args[0]
     assert "agent-manager:artifact" in args[1]

@@ -110,7 +110,7 @@ def worker_mcp(instance, manager) -> dict:
         raise RuntimeError('am-orchestrator binary is unavailable')
     review = attempt.get('role') == 'reviewer'
     allowed = ['queue_progress', 'queue_read_history'] + (
-        ['queue_read_file', 'queue_submit_review'] if review else ['queue_submit_result', 'queue_replay'])
+        ['queue_read_file', 'queue_submit_review'] if review else ['queue_submit_result', 'queue_replay', 'queue_athena'])
     result = {'queue': {'command': binary, 'required': True,
         'enabled_tools': allowed,
         'tools': {name: {'approval_mode': 'approve'} for name in allowed},

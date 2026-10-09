@@ -242,7 +242,29 @@ class AmTaskQueueTasks extends HTMLElement {
       const actionCell = header.children[5];
       actionCell.className = "queue-task-actions";
       actionCell.onclick = event => event.stopPropagation();
-      const reason = this.statusReason(task);
+      const explanation = task.explanation;
+      if (explanation) {
+        const summary = textElement("div", explanation.headline, "queue-task-headline");
+        header.children[3].append(summary);
+        const notice = textElement("section", "", "queue-task-status-reason");
+        notice.dataset.category = explanation.category;
+        const categoryLabels = {human_input:"Needs your input",waiting:"Waiting for access or time",engineering:"Engineering remains",system_error:"System error",limit:"Controller limit"};
+        if (categoryLabels[explanation.category]) {
+          const category = textElement("span", categoryLabels[explanation.category], "queue-workflow-status");
+          category.dataset.state = ["system_error","engineering"].includes(explanation.category) ? "blocked" : "awaiting-human";
+          notice.append(category);
+        }
+        notice.append(textElement("strong", explanation.headline));
+        for (const [field, label] of [["completed","Completed"],["remaining","Remaining"],["reason","Why"],["next_action","Next action"],["actor","Who acts"],["retry_after","Retry after"],["readiness","Readiness"]]) {
+          if (!explanation[field]) continue;
+          const line = textElement("p", "");
+          line.append(textElement("strong", `${label}: `), document.createTextNode(explanation[field]));
+          notice.append(line);
+        }
+        notice.append(textElement("small", `Source: ${explanation.source}${explanation.updated_at ? ` · ${new Date(explanation.updated_at).toLocaleString()}` : " · timestamp unavailable"}`));
+        row.append(notice);
+      }
+      const reason = explanation ? null : this.statusReason(task);
       if (reason) {
         const statusCell = row.parentElement.previousElementSibling.children[3];
         const badge = textElement("span", reason.label === "Paused by you" ? "Paused by you" : `${task.status === "blocked" ? "Blocked" : "Failed"} · ${reason.label}`, "queue-workflow-status queue-task-reason-badge");
@@ -255,7 +277,10 @@ class AmTaskQueueTasks extends HTMLElement {
         if (retryReason) notice.append(textElement("p", retryReason));
         row.append(notice);
       }
-      row.append(
+      const rawDetails = document.createElement("details");
+      rawDetails.append(textElement("summary", "Raw task data"));
+      row.append(rawDetails);
+      rawDetails.append(
         textElement(
           "pre",
           JSON.stringify(

@@ -1,4 +1,7 @@
 export const queueFilters = {
+  task_status: "Task status",
+  worker_submitted: "Worker submissions",
+  reviewer_submitted: "Reviewer decisions",
   claimed: "Claims",
   started: "Worker starts",
   progress: "Progress",

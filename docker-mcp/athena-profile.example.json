@@ -11,11 +11,12 @@
     "aws_profile": "REPLACE_WITH_HOST_QUERY_PROFILE",
     "region": "eu-west-1",
     "catalog": "awsdatacatalog",
-    "database": "prod_dl_staked",
+    "database": "athena_db",
     "workgroup": "staked-prod",
     "output_location": "s3://kn-bdp-dl-staked-prod/appdev/staging/",
     "allowed_tables": [
-      "awsdatacatalog.prod_dl_staked.transactions_cumulatives"
+      "awsdatacatalog.athena_db.table1",
+      "awsdatacatalog.athena_db.table2"
     ]
   }
 }

@@ -183,8 +183,12 @@ func TestReviewLimitIsLiveAndRoundBlockedAttemptResumes(t *testing.T) {
 }
 
 func TestHumanPromptResumesWorkerOrReviewerWithoutReplacingAttempt(t *testing.T) {
-	for _, role := range []string{"worker", "reviewer"} {
-		t.Run(role, func(t *testing.T) {
+	for _, scenario := range []struct{ role, status string }{
+		{"worker", "blocked"}, {"reviewer", "blocked"},
+		{"worker", "awaiting_review"}, {"reviewer", "awaiting_review"},
+	} {
+		role := scenario.role
+		t.Run(role+"_"+scenario.status, func(t *testing.T) {
 			s := testStore(t)
 			ctx := context.Background()
 			id := enqueue(t, s, false, nil)
@@ -212,6 +216,17 @@ func TestHumanPromptResumesWorkerOrReviewerWithoutReplacingAttempt(t *testing.T)
 			}
 			if e := s.Finish(ctx, *a, "blocked", "Node export needed"); e != nil {
 				t.Fatal(e)
+			}
+			if scenario.status == "awaiting_review" {
+				for _, table := range []string{"am_tasks", "am_task_attempts"} {
+					key := any(id)
+					if table == "am_task_attempts" {
+						key = a.ID
+					}
+					if _, e := s.DB.ExecContext(ctx, "UPDATE "+table+" SET status='awaiting_review' WHERE id=?", key); e != nil {
+						t.Fatal(e)
+					}
+				}
 			}
 			turn := workerID
 			if role == "reviewer" {

@@ -67,3 +67,23 @@ absolute instruction paths remain supported. Working directories do not change.
 Retries retain their saved resolved paths, while launch guidance is regenerated.
 
 `default_review_round_limit` sets the initial maximum review rounds per attempt (default 8). Change **Review round limit** in the controller panel to extend a running or blocked attempt; use Resume after raising a blocked attempt’s limit.
+
+## Athena access for workers
+
+Queue workers expose `queue_athena` through their existing attempt-authenticated MCP
+server. The backend relays to the host MCP configured by `DOCKER_MCP_URL` and
+`DOCKER_MCP_TOKEN`; those credentials stay out of worker environments. Queries use
+the fixed `prod-audit` host profile. Set `AM_QUEUE_ATHENA_PROFILE` on agent-manager
+to use a different approved Athena profile. The host enforces read-only SQL and its
+table allowlist. Reviewers do not receive this tool.
+
+Use `action=query` with SQL and optional max_rows (1–1000, default 100). The response
+contains a host job ID. Poll `action=job_status` with that ID, then read
+`action=job_logs` from since_line 1 and follow next_cursor. Only jobs recorded for
+that worker can be read; ownership carries into continued turns of the same worker.
+Require a successful exit and an Athena SUCCEEDED result; a job ID alone is not a
+successful query. See [the sample host profile](../../../docker-mcp/athena-profile.example.json).
+
+Deploy the updated backend and rebuild `am-orchestrator` before starting/resuming a
+worker to load this tool. Restarting only the host MCP does not update agent-manager
+or an already running worker's tool list.

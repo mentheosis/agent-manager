@@ -71,12 +71,21 @@ def mount_routes(app, registry, manager):
         # Persist before classification, runtime startup, or inbox delivery.
         await child._publish({'type': 'user_prompt_received', 'text': text})
         metadata = child.queue_attempt
-        result = await proxy(child.parent, 'control', 'POST', {
-            'action': 'conversation_prompt', 'actor': 'operator',
-            'task_id': metadata['task_id'],
-            'attempt_id': metadata.get('root_attempt') or metadata['id'],
-            'turn_id': metadata['id'], 'text': text,
-        })
+        try:
+            result = await proxy(child.parent, 'control', 'POST', {
+                'action': 'conversation_prompt', 'actor': 'operator',
+                'task_id': metadata['task_id'],
+                'attempt_id': metadata.get('root_attempt') or metadata['id'],
+                'turn_id': metadata['id'], 'text': text,
+            })
+        except HTTPException as exc:
+            await child._publish({
+                'type': 'error',
+                'message': f'Queue continuation did not start: {exc.detail}. '
+                           'Your prompt is saved above. Resolve the reported issue, '
+                           'then submit the prompt again.',
+            })
+            raise
         if result.get('managed'):
             return {'ok': True, 'queue_managed': True}
         async with launch_lock:
@@ -420,6 +429,7 @@ def mount_routes(app, registry, manager):
                 old = child.queue_attempt
                 metadata['previous_turns'] = [*old.get('previous_turns', []), old['id']]
                 metadata['replay_jobs'] = old.get('replay_jobs', [])
+                metadata['athena_jobs'] = old.get('athena_jobs', [])
                 metadata['history_start'] = len(child.history())
                 child.queue_attempt = metadata
                 child.display_title = display
@@ -474,6 +484,51 @@ def mount_routes(app, registry, manager):
         events = target.history()
         page = events[offset:offset + 50]
         return {'events': page, 'next_offset': offset + len(page), 'has_more': offset + len(page) < len(events)}
+
+    @app.post('/api/task-queues/{title}/attempts/{attempt}/athena')
+    async def athena_attempt(title: str, attempt: str, request: Request):
+        import json, os
+        from .controllers import attempt_token
+        from .task_loading import queue_command
+        from .athena import athena_arguments, host_athena_call
+
+        token = request.headers.get('authorization', '').removeprefix('Bearer ')
+        if not hmac.compare_digest(token, attempt_token(attempt)):
+            raise HTTPException(401, 'Invalid attempt capability')
+        child = worker(title, attempt)
+        if (not child or child.queue_attempt['id'] != attempt
+                or child.queue_attempt.get('role') == 'reviewer'
+                or child.queue_attempt.get('cancelled') or child.queue_attempt.get('detached')):
+            raise HTTPException(403, 'Athena is not enabled for this conversation')
+        state = await queue_command(instance_queue_config(child), manager.find_binary(),
+                                    'attempt-status', {'attempt': attempt})
+        if state.get('status') not in ('claimed', 'running'):
+            raise HTTPException(409, 'Attempt is no longer active')
+        raw = await request.body()
+        if len(raw) > 100000:
+            raise HTTPException(413, 'Athena request too large')
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            raise HTTPException(400, 'Invalid Athena JSON')
+        jobs = child.queue_attempt.setdefault('athena_jobs', [])
+        tool, args = athena_arguments(body, jobs, os.environ.get('AM_QUEUE_ATHENA_PROFILE', 'prod-audit'))
+        result = await host_athena_call(tool, args)
+        if tool == 'athena_query' and not result.get('error') and not result.get('result', {}).get('isError'):
+            for content in result.get('result', {}).get('content', []):
+                if content.get('type') != 'text':
+                    continue
+                try:
+                    job = json.loads(content['text'])
+                except (ValueError, KeyError):
+                    continue
+                if isinstance(job, dict) and isinstance(job.get('id'), str) and job['id']:
+                    jobs.append(job['id'])
+                    await registry._save_records()
+                    break
+            else:
+                raise HTTPException(502, 'Host Athena returned no job ID; query launch may be uncertain')
+        return result
 
     @app.post('/api/task-queues/{title}/attempts/{attempt}/replay')
     async def replay_attempt(title: str, attempt: str, request: Request):
@@ -546,7 +601,9 @@ def mount_routes(app, registry, manager):
                     raise HTTPException(409, 'Original conversation session is unavailable')
             for child in children:
                 worker(title, child.queue_attempt['id'])
-                if child.queue_attempt.get('detached') and child.status == 'ready' and child._inbox.empty():
+                # A ready runtime can still be listening for its next prompt.
+                # Close that idle listener, retaining the provider session.
+                if child.status == 'ready' and child._inbox.empty():
                     await child.stop()
                 if (child._task and not child._task.done()) or not child._inbox.empty():
                     raise HTTPException(409, 'An attempt conversation is still active')

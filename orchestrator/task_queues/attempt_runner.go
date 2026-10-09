@@ -272,6 +272,9 @@ func (s *Scheduler) tickReviewed(ctx context.Context, a Attempt, snap Snapshot, 
 	if e = json.Unmarshal(latestWorkerRound(rounds).Submission, &proposal); e != nil {
 		return e
 	}
+	proposal.HandoffSource = "reviewer"
+	proposal.Handoff = decision.Handoff
+	proposal.Summary = decision.Summary
 	if decision.Decision == "escalate" {
 		proposal.Outcome = "blocked"
 		proposal.Summary = decision.Summary

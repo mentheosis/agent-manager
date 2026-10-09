@@ -133,7 +133,11 @@ class CodexRuntime(BaseRuntime):
                 yield {"type": "result", "subtype": "error", "is_error": True}
                 return
 
-            cmd = self._build_command(self._prompt_with_context(message.text), image_paths)
+            # Both fresh and resumed exec accept '-' to read the prompt from stdin.
+            # Keep arbitrarily large review/history prompts out of argv (E2BIG).
+            prompt_path = Path(tmpdir) / "prompt.txt"
+            prompt_path.write_text(self._prompt_with_context(message.text), encoding="utf-8")
+            cmd = self._build_command("-", image_paths)
             system_context = await self._system_init_context()
             diagnostics: dict[str, Any] = self._latest_transcript_diagnostics() or {}
             log.info("instance %s: starting Codex command: %s", self.config.title, cmd[:4])
@@ -147,14 +151,18 @@ class CodexRuntime(BaseRuntime):
                 transcript_offset = 0
 
             try:
-                self._proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    cwd=self.config.cwd,
-                    env={k: v for k, v in os.environ.items() if k not in self.config.exclude_env},
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    limit=CODEX_STREAM_LIMIT,
-                )
+                # A file descriptor avoids pipe backpressure while the child starts;
+                # the child owns its copy, so closing the parent handle is safe.
+                with prompt_path.open("rb") as prompt_input:
+                    self._proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        cwd=self.config.cwd,
+                        env={k: v for k, v in os.environ.items() if k not in self.config.exclude_env},
+                        stdin=prompt_input,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        limit=CODEX_STREAM_LIMIT,
+                    )
             except FileNotFoundError:
                 yield {"type": "error", "message": "codex CLI is not installed"}
                 yield {"type": "result", "subtype": "error", "is_error": True}

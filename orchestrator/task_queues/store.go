@@ -26,6 +26,8 @@ type Store struct {
 	controls *controllerControls
 }
 type Task struct {
+	UpdatedAt    *time.Time      `json:"updated_at,omitempty"`
+	Explanation  TaskExplanation `json:"explanation"`
 	Rounds       []Round         `json:"rounds,omitempty"`
 	ID           int64           `json:"id"`
 	QueueID      string          `json:"queue_id"`
@@ -292,7 +294,7 @@ func (s *Store) Attempts(ctx context.Context) ([]Attempt, error) {
 func (s *Store) Task(ctx context.Context, id int64) (Task, error) {
 	var t Task
 	var latest sql.NullString
-	e := s.DB.QueryRowContext(ctx, "SELECT id,queue_id,workflow_id,task_type,status,parameters,attempt_count,max_attempts,human_review_required,latest_attempt,depends_on,COALESCE(accepted_result,'null') FROM am_tasks WHERE id=? AND queue_id=?", id, s.Config.QueueID).Scan(&t.ID, &t.QueueID, &t.Workflow, &t.Type, &t.Status, &t.Parameters, &t.AttemptCount, &t.MaxAttempts, &t.Review, &latest, &t.Depends, &t.Result)
+	e := s.DB.QueryRowContext(ctx, "SELECT id,queue_id,workflow_id,task_type,status,parameters,attempt_count,max_attempts,human_review_required,latest_attempt,depends_on,COALESCE(accepted_result,'null'),updated_at FROM am_tasks WHERE id=? AND queue_id=?", id, s.Config.QueueID).Scan(&t.ID, &t.QueueID, &t.Workflow, &t.Type, &t.Status, &t.Parameters, &t.AttemptCount, &t.MaxAttempts, &t.Review, &latest, &t.Depends, &t.Result, &t.UpdatedAt)
 	if string(t.Result) == "null" {
 		t.Result = nil
 	}
@@ -309,6 +311,7 @@ func (s *Store) Task(ctx context.Context, id int64) (Task, error) {
 	if e == nil && t.Latest != "" {
 		t.Rounds, e = s.Rounds(ctx, t.Latest)
 	}
+	t.Explanation = explainTask(t)
 	return t, e
 }
 func (s *Store) Prepare(ctx context.Context, a Attempt, workspace string, snapshot json.RawMessage) error {
@@ -408,6 +411,10 @@ func (s *Store) Finish(ctx context.Context, a Attempt, outcome, reason string) e
 			}
 			return nil
 		}(), min(300, 5*count), a.TaskID); e != nil {
+			return e
+		}
+		explanation := explainTask(Task{Status: next, LatestResult: json.RawMessage(submission), LatestError: reason})
+		if e := s.log(ctx, tx, a.TaskID, a.ID, "controller", "task_status", explanation.Headline, explanation); e != nil {
 			return e
 		}
 		return s.log(ctx, tx, a.TaskID, a.ID, a.Owner, next, reason, map[string]any{"submission": json.RawMessage(submission)})
